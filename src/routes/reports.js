@@ -252,9 +252,12 @@ router.get("/backup", async (req, res, next) => {
 
     pruneBackups(backupsDir);
 
+    // Inviamo il file come buffer (niente streaming da disco): il backup e'
+    // piccolo, e cosi' il download e' affidabile su ogni versione di Node.
+    const data = fs.readFileSync(backupPath);
     res.setHeader("Content-Type", "application/x-sqlite3");
     res.setHeader("Content-Disposition", `attachment; filename="${backupName}"`);
-    res.sendFile(backupPath);
+    res.send(data);
   } catch (err) {
     next(err);
   }
