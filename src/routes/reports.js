@@ -61,7 +61,8 @@ router.get("/today", (req, res) => {
   const summary = db.prepare(`
     SELECT
       COUNT(*) AS sales_count,
-      COALESCE(SUM(total_cents), 0) AS revenue_cents
+      COALESCE(SUM(total_cents), 0) AS revenue_cents,
+      COALESCE(SUM(discount_cents), 0) AS discount_cents
     FROM sales
     WHERE voided=0 AND date(created_at,'localtime')=date('now','localtime')
   `).get();
@@ -181,6 +182,7 @@ router.get("/transactions.csv", (req, res) => {
       datetime(created_at, 'localtime') AS created_local,
       operator,
       payment_method,
+      discount_cents,
       total_cents,
       voided,
       session_id
@@ -196,6 +198,7 @@ router.get("/transactions.csv", (req, res) => {
     "datetime",
     "operator",
     "payment_method",
+    "discount_eur",
     "total_eur",
     "voided",
     "session_id",
@@ -208,6 +211,7 @@ router.get("/transactions.csv", (req, res) => {
       r.created_local || "",
       r.operator || "",
       r.payment_method || "",
+      centsToEuroString(r.discount_cents),
       centsToEuroString(r.total_cents),
       r.voided ? "1" : "0",
       r.session_id == null ? "" : String(r.session_id),

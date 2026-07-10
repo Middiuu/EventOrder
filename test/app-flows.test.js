@@ -131,9 +131,10 @@ test("flussi vendite, report, export, backup e annullo funzionano insieme", asyn
       assert.equal(today.summary.revenue_cents, product.price_cents * 2);
       assert.equal(today.byProduct[0].qty_sold, 2);
 
-      const now = new Date();
-      const todayYmd = now.toISOString().slice(0, 10);
-      const tomorrow = new Date(now.getTime() + 86400000).toISOString().slice(0, 10);
+      const pad2 = (n) => String(n).padStart(2, "0");
+      const localYmd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+      const todayYmd = localYmd(new Date());
+      const tomorrow = localYmd(new Date(Date.now() + 86400000));
       const exportRes = await request({
         url: `/api/reports/export.csv?from=${todayYmd}&to=${tomorrow}`,
       });
@@ -352,15 +353,83 @@ test("storno di una vendita specifica e export per-transazione", async () => {
       assert.equal(voidAgain.status, 400);
 
       // export per-transazione
-      const now = new Date();
-      const todayYmd = now.toISOString().slice(0, 10);
-      const tomorrow = new Date(now.getTime() + 86400000).toISOString().slice(0, 10);
+      const pad2 = (n) => String(n).padStart(2, "0");
+      const localYmd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+      const todayYmd = localYmd(new Date());
+      const tomorrow = localYmd(new Date(Date.now() + 86400000));
       const csv = await request({
         url: `/api/reports/transactions.csv?from=${todayYmd}&to=${tomorrow}`,
       });
       assert.equal(csv.status, 200);
       assert.match(csv.text, /sale_number;datetime;operator/);
       assert.match(csv.text, /Luca/);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("sconto percentuale e omaggio applicati correttamente", async () => {
+  const harness = createHarness({ printTicket: async () => {} });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const product = (await request({ url: "/api/products" })).json()[0];
+
+      await request({
+        method: "POST",
+        url: "/api/sessions/open",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opening_float_cents: 0 }),
+      });
+
+      // sconto 10% su 2 pezzi
+      const disc = await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: [{ product_id: product.id, qty: 2 }],
+          payment_method: "card",
+          discount: { type: "percent", value: 10 },
+        }),
+      });
+      assert.equal(disc.status, 200);
+      const db1 = disc.json();
+      assert.equal(db1.subtotal_cents, product.price_cents * 2);
+      assert.equal(db1.discount_cents, Math.round(product.price_cents * 2 * 0.1));
+      assert.equal(db1.total_cents, product.price_cents * 2 - db1.discount_cents);
+
+      // omaggio: totale 0
+      const gift = await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: [{ product_id: product.id, qty: 1 }],
+          payment_method: "cash",
+          discount: { type: "gift" },
+        }),
+      });
+      assert.equal(gift.status, 200);
+      assert.equal(gift.json().total_cents, 0);
+      assert.equal(gift.json().discount_cents, product.price_cents);
+
+      // percentuale fuori range -> 400
+      const bad = await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: [{ product_id: product.id, qty: 1 }],
+          discount: { type: "percent", value: 150 },
+        }),
+      });
+      assert.equal(bad.status, 400);
+
+      // il report del giorno riporta lo sconto totale erogato
+      const today = (await request({ url: "/api/reports/today" })).json();
+      assert.equal(today.summary.discount_cents, db1.discount_cents + product.price_cents);
     });
   } finally {
     harness.cleanup();

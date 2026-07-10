@@ -11,15 +11,16 @@
 @import url("/vendor/@fontsource/space-grotesk/700.css");
 
 :root{
-  --bg:#0E1730;
-  --bg-deep:#0A1024;
-  --surface:#17224A;
-  --surface-2:#1E2C5A;
-  --well:#0A1026;            /* inset "display" della cassa */
-  --ink:#EDF0FA;
-  --muted:#94A0C6;
-  --line:rgba(255,255,255,0.10);
-  --line-soft:rgba(255,255,255,0.055);
+  /* Forme e tipografia (condivise) */
+  --radius-xl:26px;
+  --radius-lg:20px;
+  --radius-md:15px;
+  --display:"Space Grotesk","Segoe UI",system-ui,sans-serif;
+  --body:"Manrope","Segoe UI",system-ui,sans-serif;
+
+  /* Accenti e "display cassa" — condivisi tra i due temi.
+     Il pozzetto del denaro resta scuro anche di giorno: come un vero LED,
+     l'ambra ci si illumina sopra in entrambi i temi. */
   --amber:#FFC24B;
   --amber-deep:#F0A93A;
   --amber-soft:rgba(255,194,75,0.14);
@@ -27,26 +28,85 @@
   --coral:#FF6F61;
   --festoon-blue:#6AA6FF;
   --festoon-pink:#FF8FB1;
-  --shadow:0 24px 60px rgba(3, 6, 20, 0.55);
+  --well:#0A1026;
+  --well-ink:#EDF0FA;
+  --well-muted:#94A0C6;
   --glow:0 0 20px rgba(255,194,75,0.45);
-  --radius-xl:26px;
-  --radius-lg:20px;
-  --radius-md:15px;
-  --display:"Space Grotesk","Segoe UI",system-ui,sans-serif;
-  --body:"Manrope","Segoe UI",system-ui,sans-serif;
+
+  /* Tema scuro — identità "Festa serale" (default) */
+  --bg:#0E1730;
+  --bg-deep:#0A1024;
+  --surface:#17224A;
+  --surface-2:#1E2C5A;
+  --ink:#EDF0FA;
+  --muted:#94A0C6;
+  --line:rgba(255,255,255,0.10);
+  --line-soft:rgba(255,255,255,0.055);
+  --shadow:0 24px 60px rgba(3, 6, 20, 0.55);
+  --topbar-bg:rgba(23,34,74,0.72);
+  --thead-bg:rgba(255,255,255,0.04);
+  --glow-top:rgba(255,194,75,0.10);
+  --money-ink:var(--amber);
+  --money-glow:var(--glow);
+  --chart-grid:rgba(255,255,255,0.08);
+}
+
+/* Tema chiaro — "Festa di giorno".
+   Applicato se il sistema è chiaro (salvo override esplicito su scuro)
+   oppure se l'utente sceglie il tema chiaro col toggle. */
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#EEF1FA;
+    --bg-deep:#E3E8F5;
+    --surface:#FFFFFF;
+    --surface-2:#EEF1FA;
+    --ink:#16204A;
+    --muted:#5C688F;
+    --line:rgba(20,30,70,0.14);
+    --line-soft:rgba(20,30,70,0.07);
+    --shadow:0 18px 44px rgba(30,40,90,0.14);
+    --topbar-bg:rgba(255,255,255,0.80);
+    --thead-bg:rgba(20,30,70,0.05);
+    --glow-top:rgba(255,194,75,0.20);
+    --money-ink:#9A6410;
+    --money-glow:none;
+    --chart-grid:rgba(20,30,70,0.10);
+  }
+}
+:root[data-theme="light"]{
+  --bg:#EEF1FA;
+  --bg-deep:#E3E8F5;
+  --surface:#FFFFFF;
+  --surface-2:#EEF1FA;
+  --ink:#16204A;
+  --muted:#5C688F;
+  --line:rgba(20,30,70,0.14);
+  --line-soft:rgba(20,30,70,0.07);
+  --shadow:0 18px 44px rgba(30,40,90,0.14);
+  --topbar-bg:rgba(255,255,255,0.80);
+  --thead-bg:rgba(20,30,70,0.05);
+  --glow-top:rgba(255,194,75,0.20);
+  --money-ink:#9A6410;
+  --money-glow:none;
+  --chart-grid:rgba(20,30,70,0.10);
 }
 
 * { box-sizing:border-box; }
 
+/* L'attributo `hidden` deve sempre vincere: alcune classi (.field, .disc-line,
+   .modal-shell…) impostano display e altrimenti annullerebbero `hidden`. */
+[hidden] { display: none !important; }
+
 html {
   min-height:100%;
   background:
-    radial-gradient(1100px 560px at 50% -12%, rgba(255,194,75,0.10), transparent 62%),
+    radial-gradient(1100px 560px at 50% -12%, var(--glow-top), transparent 62%),
     radial-gradient(900px 500px at 88% 8%, rgba(106,166,255,0.08), transparent 60%),
     linear-gradient(180deg, var(--bg) 0%, var(--bg-deep) 100%);
   background-attachment: fixed;
   -webkit-text-size-adjust: 100%;
   scroll-padding-top: 96px;
+  transition: background .3s ease;
 }
 
 body {
@@ -92,7 +152,7 @@ button, input, select, textarea, a, label { touch-action: manipulation; }
   justify-content:space-between;
   gap: 18px;
   padding: 16px 20px;
-  background: rgba(23, 34, 74, 0.72);
+  background: var(--topbar-bg);
   border: 1px solid var(--line);
   border-radius: 20px;
   box-shadow: var(--shadow);
@@ -134,7 +194,10 @@ button, input, select, textarea, a, label { touch-action: manipulation; }
 
 .nav-pills a {
   text-decoration:none;
-  padding: 11px 16px;
+  display:inline-flex;
+  align-items:center;
+  min-height:48px;
+  padding: 0 16px;
   border-radius: 999px;
   color: var(--muted);
   border: 1px solid transparent;
@@ -205,7 +268,7 @@ button, input, select, textarea, a, label { touch-action: manipulation; }
 .surface-card {
   position: relative;
   overflow: hidden;
-  background: linear-gradient(180deg, var(--surface) 0%, rgba(20, 29, 63, 0.96) 100%);
+  background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow);
@@ -303,7 +366,16 @@ select.input { appearance:none; -webkit-appearance:none; }
 }
 .btn-secondary { background: var(--surface-2); }
 .btn-center { text-align:center; justify-content:center; text-decoration:none; }
-.btn-compact { padding: 13px 16px; min-height:46px; }
+.btn-compact { padding: 13px 16px; min-height:48px; }
+
+.theme-toggle {
+  flex:none;
+  width:48px; min-width:48px;
+  padding:0;
+  display:grid; place-items:center;
+  font-size:1.15rem;
+  line-height:1;
+}
 
 /* ---- Product tiles ---- */
 .product-card {
@@ -324,7 +396,7 @@ select.input { appearance:none; -webkit-appearance:none; }
   font-family: var(--display);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: var(--amber);
+  color: var(--money-ink);
 }
 
 /* ---- Cart ---- */
@@ -345,7 +417,7 @@ select.input { appearance:none; -webkit-appearance:none; }
 
 .qtyBtns { display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:flex-end; }
 .qtyBtn {
-  width: 42px; height: 42px; padding: 0;
+  width: 48px; height: 48px; padding: 0;
   border:1px solid var(--line);
   border-radius: 12px;
   background:var(--surface);
@@ -378,7 +450,7 @@ select.input { appearance:none; -webkit-appearance:none; }
   box-shadow: inset 0 1px 0 rgba(0,0,0,0.4);
 }
 .cart-total > span, .pay-total > span {
-  color: var(--muted);
+  color: var(--well-muted);
   text-transform: uppercase;
   letter-spacing: 0.12em;
   font-size: 0.78rem;
@@ -412,7 +484,7 @@ select.input { appearance:none; -webkit-appearance:none; }
   overflow:auto;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  background: rgba(10, 16, 38, 0.4);
+  background: var(--surface-2);
   -webkit-overflow-scrolling: touch;
 }
 .table-tools { display:grid; gap: 14px; justify-items:end; }
@@ -423,7 +495,7 @@ select.input { appearance:none; -webkit-appearance:none; }
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted);
-  background: rgba(255,255,255,0.04);
+  background: var(--thead-bg);
 }
 .data-table tbody tr { border-top: 1px solid var(--line-soft); }
 .data-table tbody tr.sortable-ghost { opacity: 0.4; }
@@ -450,11 +522,12 @@ select.input { appearance:none; -webkit-appearance:none; }
   font-family: var(--display);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  color: var(--amber);
-  text-shadow: var(--glow);
+  color: var(--money-ink);
+  text-shadow: var(--money-glow);
   font-size: clamp(2rem, 4vw, 3rem);
   line-height: 1;
 }
+.metric-note { margin-top: 10px; }
 .report-list { display:grid; gap: 0; margin-top: 12px; }
 .report-list-tight { margin-top:14px; border-top:1px solid var(--line); padding-top:8px; }
 
@@ -523,10 +596,15 @@ select.input { appearance:none; -webkit-appearance:none; }
   overflow: auto;
   padding: 24px;
   border-radius: var(--radius-xl);
-  background: linear-gradient(180deg, var(--surface) 0%, rgba(16, 23, 48, 0.98) 100%);
+  background: var(--surface);
   border: 1px solid var(--line);
-  box-shadow: 0 30px 70px rgba(3,6,20,0.7);
+  box-shadow: 0 30px 70px rgba(3,6,20,0.5);
 }
+
+.dialog-card { width: min(440px, calc(100vw - 32px)); }
+.dialog-title { margin: 0 0 6px; font-size: 1.3rem; }
+.dialog-message { margin: 0 0 16px; color: var(--muted); line-height: 1.55; }
+.dialog-input-field { margin-bottom: 4px; }
 
 .flash { outline: 3px solid rgba(255,194,75,0.6); transition: outline .25s ease; }
 
@@ -569,6 +647,17 @@ select.input { appearance:none; -webkit-appearance:none; }
   color:#141C34;
   border-color:transparent;
 }
+
+/* Sconto / omaggio */
+.disc-block { display:grid; gap:8px; margin:6px 0 4px; }
+.disc-options { display:flex; gap:8px; flex-wrap:wrap; }
+.disc-opt { flex:1 1 auto; text-align:center; justify-content:center; }
+.disc-opt.is-active { background:var(--amber); color:#141C34; border-color:transparent; }
+.disc-line {
+  display:flex; align-items:center; justify-content:space-between;
+  color:var(--coral); font-weight:700; padding-top:2px;
+}
+.disc-line strong { font-family:var(--display); font-variant-numeric:tabular-nums; }
 .cash-panel { border-top:1px solid var(--line); padding-top:14px; margin-top:4px; }
 .quick-cash { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0; }
 .quick-cash-btn { flex:1 1 auto; text-align:center; justify-content:center; font-variant-numeric:tabular-nums; }

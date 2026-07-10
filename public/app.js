@@ -41,6 +41,46 @@ function applyBranding() {
   if (taglineEl && tagline) taglineEl.textContent = tagline;
 }
 
+// Tema chiaro/scuro: rispetta le preferenze di sistema, con override salvato
+function effectiveTheme() {
+  const attr = document.documentElement.getAttribute("data-theme");
+  if (attr) return attr;
+  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
+function initThemeToggle() {
+  const topbar = document.querySelector(".topbar");
+  if (!topbar || topbar.querySelector(".theme-toggle")) return;
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn btn-secondary btn-compact theme-toggle";
+
+  function sync() {
+    const isLight = effectiveTheme() === "light";
+    // mostra l'azione: se ora è chiaro offro il tema scuro, e viceversa
+    btn.textContent = isLight ? "🌙" : "☀️";
+    btn.setAttribute("aria-label", isLight ? "Passa al tema scuro" : "Passa al tema chiaro");
+    btn.title = btn.getAttribute("aria-label");
+  }
+
+  btn.addEventListener("click", () => {
+    const next = effectiveTheme() === "light" ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem("eo-theme", next); } catch {}
+    sync();
+    // ridisegna i grafici del report con i colori del nuovo tema
+    if (document.querySelector("#reportBox") && typeof initReport === "function") {
+      initReport().catch(() => {});
+    }
+  });
+
+  sync();
+  const nav = topbar.querySelector(".nav-pills");
+  if (nav) nav.insertAdjacentElement("afterend", btn);
+  else topbar.appendChild(btn);
+}
+
 // Firma visiva: un festone di luminarie sotto la topbar
 function renderFestoon() {
   const topbar = document.querySelector(".topbar");
@@ -107,6 +147,75 @@ function closeModal(el) {
   document.body.style.overflow = "";
 }
 
+// Dialog a tema (sostituisce i nativi confirm/prompt, non ottimizzati per il touch)
+function ensureDialog() {
+  let el = document.querySelector("#appDialog");
+  if (el) return el;
+  el = document.createElement("div");
+  el.id = "appDialog";
+  el.className = "modal-shell";
+  el.hidden = true;
+  el.innerHTML = `
+    <div class="modal-backdrop" data-dlg="cancel"></div>
+    <div class="modal-card dialog-card" role="dialog" aria-modal="true" aria-labelledby="appDialogTitle">
+      <h2 id="appDialogTitle" class="dialog-title"></h2>
+      <p class="dialog-message"></p>
+      <label class="field dialog-input-field" hidden>
+        <span class="field-label dialog-input-label"></span>
+        <input class="input dialog-input" type="text" />
+      </label>
+      <div class="actions">
+        <button class="btn btn-primary dialog-ok" type="button">Conferma</button>
+        <button class="btn btn-secondary" type="button" data-dlg="cancel">Annulla</button>
+      </div>
+    </div>`;
+  document.body.appendChild(el);
+  return el;
+}
+
+function openDialog({ title, message, input, okLabel } = {}) {
+  return new Promise((resolve) => {
+    const el = ensureDialog();
+    el.querySelector(".dialog-title").textContent = title || "";
+    const msgEl = el.querySelector(".dialog-message");
+    msgEl.textContent = message || "";
+    msgEl.hidden = !message;
+    const field = el.querySelector(".dialog-input-field");
+    const inputEl = el.querySelector(".dialog-input");
+    if (input) {
+      field.hidden = false;
+      el.querySelector(".dialog-input-label").textContent = input.label || "";
+      inputEl.value = input.value || "";
+    } else {
+      field.hidden = true;
+    }
+    const ok = el.querySelector(".dialog-ok");
+    ok.textContent = okLabel || "Conferma";
+    openModal(el);
+
+    function cleanup(result) {
+      closeModal(el);
+      ok.removeEventListener("click", onOk);
+      el.removeEventListener("click", onCancel);
+      document.removeEventListener("keydown", onKey);
+      resolve(result);
+    }
+    const onOk = () => cleanup(input ? inputEl.value : true);
+    const onCancel = (e) => { if (e.target?.getAttribute?.("data-dlg") === "cancel") cleanup(input ? null : false); };
+    const onKey = (e) => {
+      if (e.key === "Escape") cleanup(input ? null : false);
+      else if (e.key === "Enter") { e.preventDefault(); onOk(); }
+    };
+    ok.addEventListener("click", onOk);
+    el.addEventListener("click", onCancel);
+    document.addEventListener("keydown", onKey);
+    setTimeout(() => (input ? inputEl : ok).focus(), 0);
+  });
+}
+
+const uiConfirm = (message, title = "Conferma") => openDialog({ title, message });
+const uiPrompt = (title, label, value = "") => openDialog({ title, input: { label, value } });
+
 // --------------------
 // CASSA
 async function initCassa() {
@@ -144,6 +253,13 @@ async function initCassa() {
   const payChangeEl = document.querySelector("#payChange");
   const confirmPayBtn = document.querySelector("#confirmPayBtn");
   const payMethodBtns = Array.from(document.querySelectorAll(".pay-method"));
+  const discOptBtns = Array.from(document.querySelectorAll(".disc-opt"));
+  const discValueField = document.querySelector("#discValueField");
+  const discValueEl = document.querySelector("#discValue");
+  const discValueLabel = document.querySelector("#discValueLabel");
+  const discLine = document.querySelector("#discLine");
+  const discLineLabel = document.querySelector("#discLineLabel");
+  const discLineAmount = document.querySelector("#discLineAmount");
 
   if (!grid) return;
 
@@ -154,6 +270,7 @@ async function initCassa() {
   let isPrinting = false;
   let session = null;
   let payMethod = "cash";
+  let discType = "none"; // none | percent | amount | gift
 
   function showToast(msg) {
     if (!toastEl) return;
@@ -362,6 +479,45 @@ async function initCassa() {
   }
   searchEl?.addEventListener("input", applySearch);
 
+  // ---- Sconto / omaggio
+  function currentDiscountCents() {
+    const subtotal = cartTotal();
+    if (discType === "gift") return subtotal;
+    if (discType === "percent") {
+      const pct = Number(String(discValueEl?.value || "").replace(",", "."));
+      if (!Number.isFinite(pct) || pct <= 0) return 0;
+      return Math.round(subtotal * Math.min(pct, 100) / 100);
+    }
+    if (discType === "amount") {
+      const c = eurToCents(discValueEl?.value);
+      if (c === null) return 0;
+      return Math.min(c, subtotal);
+    }
+    return 0;
+  }
+
+  function payableTotal() {
+    return cartTotal() - currentDiscountCents();
+  }
+
+  function setDiscount(type) {
+    discType = type;
+    discOptBtns.forEach(b => b.classList.toggle("is-active", b.getAttribute("data-disc") === type));
+    const needsValue = type === "percent" || type === "amount";
+    if (discValueField) discValueField.hidden = !needsValue;
+    if (needsValue && discValueLabel) discValueLabel.textContent = type === "percent" ? "Percentuale (%)" : "Sconto (€)";
+    if (needsValue && discValueEl) { discValueEl.value = ""; setTimeout(() => discValueEl.focus(), 0); }
+    refreshPayment();
+  }
+
+  function discountBody() {
+    if (discType === "none") return undefined;
+    if (discType === "gift") return { type: "gift" };
+    if (discType === "percent") return { type: "percent", value: Number(String(discValueEl?.value || "").replace(",", ".")) || 0 };
+    if (discType === "amount") return { type: "amount", value: eurToCents(discValueEl?.value) || 0 };
+    return undefined;
+  }
+
   // ---- Pagamento
   function setPayMethod(method) {
     payMethod = method;
@@ -376,17 +532,34 @@ async function initCassa() {
     for (const step of [500, 1000, 2000, 5000, 10000]) {
       values.add(Math.ceil(total / step) * step);
     }
-    const sorted = [...values].filter(v => v >= total).sort((a, b) => a - b).slice(0, 5);
+    const sorted = [...values].filter(v => v >= total && v > 0).sort((a, b) => a - b).slice(0, 5);
     quickCashEl.innerHTML = sorted.map(v =>
       `<button type="button" class="btn btn-secondary btn-compact quick-cash-btn" data-cash="${v}">${money(v)}</button>`
     ).join("");
   }
 
+  // Aggiorna totale, riga sconto, tasti rapidi e resto in modo coerente
+  function refreshPayment() {
+    const discount = currentDiscountCents();
+    const total = payableTotal();
+    if (payTotalEl) payTotalEl.textContent = money(total);
+    if (discLine) {
+      discLine.hidden = discount <= 0;
+      if (discount > 0) {
+        if (discLineLabel) discLineLabel.textContent = discType === "gift" ? "Omaggio" : "Sconto";
+        if (discLineAmount) discLineAmount.textContent = `− ${money(discount)}`;
+      }
+    }
+    buildQuickCash(total);
+    updatePayChange();
+  }
+
   function updatePayChange() {
     if (!payChangeEl) return;
-    const total = cartTotal();
-    if (payMethod !== "cash") {
+    const total = payableTotal();
+    if (payMethod !== "cash" || total <= 0) {
       payChangeEl.textContent = money(0);
+      payChangeEl.className = "diff-ok";
       if (confirmPayBtn) confirmPayBtn.disabled = false;
       return;
     }
@@ -403,6 +576,8 @@ async function initCassa() {
   }
 
   payMethodBtns.forEach(b => b.addEventListener("click", () => setPayMethod(b.getAttribute("data-method"))));
+  discOptBtns.forEach(b => b.addEventListener("click", () => setDiscount(b.getAttribute("data-disc"))));
+  discValueEl?.addEventListener("input", refreshPayment);
   cashReceivedEl?.addEventListener("input", updatePayChange);
   quickCashEl?.addEventListener("click", (e) => {
     const v = e.target?.getAttribute?.("data-cash");
@@ -413,26 +588,30 @@ async function initCassa() {
 
   printBtn?.addEventListener("click", () => {
     if (!session || cart.size === 0) return;
-    const total = cartTotal();
-    if (payTotalEl) payTotalEl.textContent = money(total);
     if (cashReceivedEl) cashReceivedEl.value = "";
-    buildQuickCash(total);
+    setDiscount("none");
     setPayMethod("cash");
+    refreshPayment();
     openModal(paymentModal);
     setTimeout(() => cashReceivedEl?.focus(), 0);
   });
 
   confirmPayBtn?.addEventListener("click", async () => {
     if (isPrinting) return;
-    const total = cartTotal();
+    const total = payableTotal();
     const body = {
       items: Array.from(cart.values()).map(it => ({ product_id: it.product.id, qty: it.qty })),
       payment_method: payMethod,
+      discount: discountBody(),
     };
     if (payMethod === "cash") {
-      const received = eurToCents(cashReceivedEl?.value);
-      if (received === null || received < total) return alert("Contanti ricevuti insufficienti.");
-      body.cash_received_cents = received;
+      if (total <= 0) {
+        body.cash_received_cents = 0;
+      } else {
+        const received = eurToCents(cashReceivedEl?.value);
+        if (received === null || received < total) return alert("Contanti ricevuti insufficienti.");
+        body.cash_received_cents = received;
+      }
     }
     try {
       isPrinting = true;
@@ -466,7 +645,7 @@ async function initCassa() {
 
   clearBtn?.addEventListener("click", async () => {
     if (cart.size === 0) return;
-    const ok = confirm("Svuotare il carrello?");
+    const ok = await uiConfirm("Vuoi svuotare il carrello corrente?", "Svuota carrello");
     if (!ok) return;
     cart.clear();
     renderCart();
@@ -582,6 +761,11 @@ async function initProdotti() {
         handle: ".table-handle",
         ghostClass: "sortable-ghost",
         chosenClass: "sortable-chosen",
+        // Touch: piccola pressione prima di trascinare, così lo scroll col dito
+        // non fa partire un riordino accidentale (col mouse resta immediato).
+        delay: 140,
+        delayOnTouchOnly: true,
+        touchStartThreshold: 6,
         onEnd: async (evt) => {
           if (evt.oldIndex === evt.newIndex) return;
           if ((searchEl?.value || "").trim()) {
@@ -716,9 +900,11 @@ function renderReportCharts(byProduct) {
   const qty = byProduct.map((item) => Number(item.qty_sold));
   // Palette "Festa serale": ambra, menta, corallo, blu, rosa luminaria
   const palette = ["#FFC24B", "#57D6A6", "#FF6F61", "#6AA6FF", "#FF8FB1", "#C6A2FF"];
-  const ink = "#EDF0FA";
-  const muted = "#94A0C6";
-  const grid = "rgba(255,255,255,0.08)";
+  const cssVar = (n, fb) => (getComputedStyle(document.documentElement).getPropertyValue(n).trim() || fb);
+  const ink = cssVar("--ink", "#EDF0FA");
+  const muted = cssVar("--muted", "#94A0C6");
+  const grid = cssVar("--chart-grid", "rgba(255,255,255,0.08)");
+  const segBorder = cssVar("--surface", "#0E1730");
   const sym = APP_CONFIG.currencySymbol || "€";
 
   reportRevenueChart = new window.Chart(revenueCanvas, {
@@ -758,7 +944,7 @@ function renderReportCharts(byProduct) {
         label: "Quantita'",
         data: qty,
         backgroundColor: palette,
-        borderColor: "#0E1730",
+        borderColor: segBorder,
         borderWidth: 2,
       }]
     },
@@ -807,6 +993,7 @@ async function initReport() {
         <h2>Incasso del giorno</h2>
         <div class="small">${s.sales_count} vendite registrate</div>
         <div class="metric-value">${euro(s.revenue_cents)}</div>
+        ${s.discount_cents > 0 ? `<div class="small metric-note">Sconti e omaggi erogati: <b>${euro(s.discount_cents)}</b></div>` : ""}
         <div class="report-list report-list-tight">${payLines || ""}</div>
       </section>
       <section class="surface-card">
@@ -941,7 +1128,7 @@ async function initSales() {
   listEl.addEventListener("click", async (e) => {
     const id = e.target?.getAttribute?.("data-void");
     if (!id) return;
-    const reason = prompt("Motivo dell'annullo:", "");
+    const reason = await uiPrompt("Annulla vendita", "Motivo dell'annullo (opzionale)", "");
     if (reason === null) return;
     try {
       await api(`/api/sales/${encodeURIComponent(id)}/void`, {
@@ -965,6 +1152,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     await loadConfig();
     applyBranding();
     renderFestoon();
+    initThemeToggle();
     await initCassa();
     await initProdotti();
     await initSales();

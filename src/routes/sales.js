@@ -67,7 +67,40 @@ function createSalesRouter({ printTicket }) {
       return { product_id: p.id, name: p.name, qty: it.qty, unit_price_cents: unit, line_total_cents: line };
     });
 
-    const totalCents = computedItems.reduce((a, b) => a + b.line_total_cents, 0);
+    const subtotalCents = computedItems.reduce((a, b) => a + b.line_total_cents, 0);
+
+    // Sconto / omaggio (opzionale): { type: 'percent'|'amount'|'gift', value }
+    let discountType = null;
+    let discountValue = null;
+    let discountCents = 0;
+    const discount = req.body?.discount;
+    if (discount && discount.type && discount.type !== "none") {
+      const type = String(discount.type);
+      if (type === "gift") {
+        discountType = "gift";
+        discountCents = subtotalCents;
+      } else if (type === "percent") {
+        const pct = Number(discount.value);
+        if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+          return res.status(400).json({ error: "Percentuale sconto non valida (0-100)" });
+        }
+        discountType = "percent";
+        discountValue = Math.round(pct);
+        discountCents = Math.round(subtotalCents * pct / 100);
+      } else if (type === "amount") {
+        const amt = Number(discount.value);
+        if (!Number.isInteger(amt) || amt < 0) {
+          return res.status(400).json({ error: "Importo sconto non valido" });
+        }
+        discountType = "amount";
+        discountValue = amt;
+        discountCents = Math.min(amt, subtotalCents);
+      } else {
+        return res.status(400).json({ error: "Tipo di sconto non valido" });
+      }
+    }
+
+    const totalCents = subtotalCents - discountCents;
 
     // Contanti: calcolo del resto. Per carta/altro non c'e' resto.
     let cashReceivedCents = null;
@@ -87,9 +120,11 @@ function createSalesRouter({ printTicket }) {
 
       const saleInfo = db.prepare(`
         INSERT INTO sales
-          (sale_number, total_cents, payment_method, cash_received_cents, change_cents, operator, session_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(saleNumber, totalCents, paymentMethod, cashReceivedCents, changeCents, session.operator, session.id);
+          (sale_number, total_cents, discount_cents, discount_type, discount_value,
+           payment_method, cash_received_cents, change_cents, operator, session_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(saleNumber, totalCents, discountCents, discountType, discountValue,
+             paymentMethod, cashReceivedCents, changeCents, session.operator, session.id);
 
       const saleId = saleInfo.lastInsertRowid;
 
@@ -113,6 +148,10 @@ function createSalesRouter({ printTicket }) {
         saleNumber: result.saleNumber,
         createdAt: result.createdAt,
         items: computedItems,
+        subtotalCents,
+        discountCents,
+        discountType,
+        discountValue,
         totalCents,
         paymentMethod,
         cashReceivedCents,
@@ -132,6 +171,8 @@ function createSalesRouter({ printTicket }) {
       ok: true,
       sale_number: result.saleNumber,
       total_cents: totalCents,
+      subtotal_cents: subtotalCents,
+      discount_cents: discountCents,
       payment_method: paymentMethod,
       change_cents: changeCents,
     });

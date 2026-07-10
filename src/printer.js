@@ -7,7 +7,14 @@ function formatMoney(cents) {
 
 const PAYMENT_LABEL = { cash: "Contanti", card: "Carta", other: "Altro" };
 
-function buildTicketText({ saleNumber, createdAt, items, totalCents, paymentMethod, cashReceivedCents, changeCents, operator }) {
+function discountLabel(discountType, discountValue) {
+  if (discountType === "gift") return "Omaggio";
+  if (discountType === "percent") return `Sconto ${discountValue}%`;
+  if (discountType === "amount") return "Sconto";
+  return "Sconto";
+}
+
+function buildTicketText({ saleNumber, createdAt, items, subtotalCents, discountCents, discountType, discountValue, totalCents, paymentMethod, cashReceivedCents, changeCents, operator }) {
   const lines = [];
   lines.push(config.BUSINESS_NAME.toUpperCase());
   lines.push(new Date(createdAt).toLocaleString(config.LOCALE));
@@ -21,6 +28,10 @@ function buildTicketText({ saleNumber, createdAt, items, totalCents, paymentMeth
   }
 
   lines.push("--------------------------");
+  if (discountCents > 0) {
+    lines.push(`Subtotale: ${formatMoney(subtotalCents)}`);
+    lines.push(`${discountLabel(discountType, discountValue)}: -${formatMoney(discountCents)}`);
+  }
   lines.push(`Totale: ${formatMoney(totalCents)}`);
 
   if (paymentMethod) {

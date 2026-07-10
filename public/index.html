@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>EventOrder - Cassa</title>
+  <script>(function(){try{var t=localStorage.getItem("eo-theme");if(t)document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
   <link rel="stylesheet" href="/app.css" />
 </head>
 <body class="page-cassa">
@@ -125,6 +126,24 @@
           <div class="pay-total">
             <span>Totale da incassare</span>
             <strong id="payTotal" class="totalBig">€ 0,00</strong>
+          </div>
+
+          <div class="disc-block">
+            <span class="field-label">Sconto / omaggio</span>
+            <div class="disc-options" role="group" aria-label="Sconto o omaggio">
+              <button class="btn btn-secondary btn-compact disc-opt is-active" data-disc="none" type="button">Nessuno</button>
+              <button class="btn btn-secondary btn-compact disc-opt" data-disc="percent" type="button">Sconto %</button>
+              <button class="btn btn-secondary btn-compact disc-opt" data-disc="amount" type="button">Sconto €</button>
+              <button class="btn btn-secondary btn-compact disc-opt" data-disc="gift" type="button">Omaggio</button>
+            </div>
+            <label class="field" id="discValueField" hidden>
+              <span class="field-label" id="discValueLabel">Valore</span>
+              <input class="input" id="discValue" type="number" step="0.01" min="0" inputmode="decimal" placeholder="0" />
+            </label>
+            <div class="disc-line" id="discLine" hidden>
+              <span id="discLineLabel">Sconto</span>
+              <strong id="discLineAmount">− € 0,00</strong>
+            </div>
           </div>
 
           <div class="pay-methods" role="group" aria-label="Metodo di pagamento">

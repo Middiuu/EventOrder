@@ -15,6 +15,9 @@ db.pragma("foreign_keys = ON");
 // perche' "CREATE TABLE IF NOT EXISTS" non altera tabelle gia' presenti.
 function runMigrations() {
   const expectedSalesColumns = {
+    discount_cents: "INTEGER NOT NULL DEFAULT 0",
+    discount_type: "TEXT",
+    discount_value: "INTEGER",
     payment_method: "TEXT NOT NULL DEFAULT 'cash'",
     cash_received_cents: "INTEGER",
     change_cents: "INTEGER",
