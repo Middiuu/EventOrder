@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>EventOrder - Report</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body class="page-report">
+  <div class="page-shell">
+    <header class="topbar">
+      <div class="brand-lockup">
+        <div class="brand-mark">E</div>
+        <div>
+          <div class="eyebrow">EventOrder</div>
+          <div class="brand-title">Report e salvataggi</div>
+        </div>
+      </div>
+      <nav class="nav-pills" aria-label="Navigazione principale">
+        <a href="/">Cassa</a>
+        <a href="/products.html">Prodotti</a>
+        <a href="/sales.html">Vendite</a>
+        <a class="is-active" href="/reports.html">Report</a>
+      </nav>
+    </header>
+
+    <main class="page-content stack">
+      <section class="surface-card">
+        <div class="section-heading">
+          <div>
+            <div class="eyebrow">Export & backup</div>
+            <h2>Strumenti amministrativi</h2>
+          </div>
+          <p class="section-note">Nel CSV il campo “A” e' incluso: il sistema calcola automaticamente il giorno successivo come limite tecnico.</p>
+        </div>
+
+        <div class="report-controls">
+          <label class="field">
+            <span class="field-label">Da</span>
+            <input id="fromDate" class="input" type="date" />
+          </label>
+
+          <label class="field">
+            <span class="field-label">A (incluso)</span>
+            <input id="toDate" class="input" type="date" />
+          </label>
+
+          <button class="btn btn-secondary" id="downloadCsvBtn" type="button">CSV per prodotto</button>
+          <button class="btn btn-secondary" id="downloadTxCsvBtn" type="button">CSV transazioni</button>
+          <a class="btn btn-primary btn-center" href="/api/reports/backup">Backup database</a>
+        </div>
+      </section>
+
+      <div id="reportBox" class="stack"></div>
+
+      <div id="toast" class="toast"></div>
+    </main>
+  </div>
+
+  <script src="/vendor/chart.js/dist/chart.umd.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

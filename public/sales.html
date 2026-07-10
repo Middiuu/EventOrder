@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>EventOrder - Vendite</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body class="page-vendite">
+  <div class="page-shell">
+    <header class="topbar">
+      <div class="brand-lockup">
+        <div class="brand-mark">E</div>
+        <div>
+          <div class="eyebrow">EventOrder</div>
+          <div class="brand-title">Storico vendite</div>
+        </div>
+      </div>
+      <nav class="nav-pills" aria-label="Navigazione principale">
+        <a href="/">Cassa</a>
+        <a href="/products.html">Prodotti</a>
+        <a class="is-active" href="/sales.html">Vendite</a>
+        <a href="/reports.html">Report</a>
+      </nav>
+    </header>
+
+    <main class="page-content stack">
+      <section class="surface-card">
+        <div class="section-heading">
+          <div>
+            <div class="eyebrow">Registro</div>
+            <h2>Vendite recenti</h2>
+          </div>
+          <div class="section-actions">
+            <p class="section-note">Puoi annullare una vendita indicando il motivo. Le vendite annullate restano nello storico.</p>
+            <button class="btn btn-secondary btn-compact" id="refreshSalesBtn" type="button">Aggiorna</button>
+          </div>
+        </div>
+
+        <div id="salesList" class="stack"></div>
+      </section>
+
+      <div id="toast" class="toast"></div>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

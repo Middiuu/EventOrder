@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>EventOrder - Cassa</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body class="page-cassa">
+  <div class="page-shell">
+    <header class="topbar">
+      <div class="brand-lockup">
+        <div class="brand-mark">E</div>
+        <div>
+          <div class="eyebrow">EventOrder</div>
+          <div class="brand-title">Cassa evento locale</div>
+        </div>
+      </div>
+      <nav class="nav-pills" aria-label="Navigazione principale">
+        <a class="is-active" href="/">Cassa</a>
+        <a href="/products.html">Prodotti</a>
+        <a href="/sales.html">Vendite</a>
+        <a href="/reports.html">Report</a>
+      </nav>
+    </header>
+
+    <main class="page-content">
+      <section class="session-bar" id="sessionBar" hidden>
+        <div class="session-info">
+          <span class="session-dot" id="sessionDot"></span>
+          <span id="sessionStatus">Cassa chiusa</span>
+        </div>
+        <div class="session-actions">
+          <button class="btn btn-primary btn-compact" id="openSessionBtn" type="button" hidden>Apri cassa</button>
+          <button class="btn btn-secondary btn-compact" id="closeSessionBtn" type="button" hidden>Chiudi cassa</button>
+        </div>
+      </section>
+
+      <section class="dashboard-layout">
+        <div class="stack">
+          <section class="surface-card">
+            <div class="section-heading">
+              <div>
+                <div class="eyebrow">Catalogo</div>
+                <h2>Prodotti disponibili</h2>
+              </div>
+              <div class="field-wrap field-wrap-search">
+                <label class="sr-only" for="search">Cerca prodotto</label>
+                <input id="search" class="input" placeholder="Cerca prodotto o categoria" />
+              </div>
+            </div>
+
+            <div class="grid products-grid" id="productsGrid"></div>
+          </section>
+        </div>
+
+        <aside class="stack sidebar-stack">
+          <section class="surface-card cart-card" id="cartCard">
+            <div class="section-heading section-heading-tight">
+              <div>
+                <div class="eyebrow">Ticket corrente</div>
+                <h2>Carrello</h2>
+              </div>
+            </div>
+
+            <div id="cart" class="cart-list"></div>
+
+            <div class="cart-total">
+              <span>Totale</span>
+              <strong id="total" class="totalBig">€ 0,00</strong>
+            </div>
+
+            <div class="actions actions-vertical">
+              <button class="btn btn-primary" id="printBtn" disabled type="button">Incassa e stampa</button>
+              <button class="btn btn-secondary" id="clearBtn" type="button">Svuota carrello</button>
+            </div>
+
+            <p class="helper-text" id="cartHelper">La stampa registra la vendita e genera il ticket della comanda corrente.</p>
+          </section>
+        </aside>
+      </section>
+
+      <div id="toast" class="toast"></div>
+
+      <!-- Modale apertura cassa -->
+      <div id="openSessionModal" class="modal-shell" hidden>
+        <div class="modal-backdrop" data-close-modal="1"></div>
+        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="openSessionTitle">
+          <div class="section-heading section-heading-tight">
+            <div>
+              <div class="eyebrow">Turno</div>
+              <h2 id="openSessionTitle">Apri cassa</h2>
+            </div>
+          </div>
+          <form id="openSessionForm" class="product-form">
+            <div class="form-grid">
+              <label class="field" id="operatorField" hidden>
+                <span class="field-label">Operatore</span>
+                <select class="input" name="operator"></select>
+              </label>
+              <label class="field">
+                <span class="field-label">Fondo cassa (€)</span>
+                <input class="input" name="float_eur" type="number" step="0.01" min="0" placeholder="0,00" value="0" />
+              </label>
+            </div>
+            <div class="actions">
+              <button class="btn btn-primary" type="submit">Apri cassa</button>
+              <button class="btn btn-secondary" type="button" data-close-modal="1">Annulla</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Modale pagamento -->
+      <div id="paymentModal" class="modal-shell" hidden>
+        <div class="modal-backdrop" data-close-modal="1"></div>
+        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="paymentTitle">
+          <div class="section-heading section-heading-tight">
+            <div>
+              <div class="eyebrow">Incasso</div>
+              <h2 id="paymentTitle">Pagamento</h2>
+            </div>
+          </div>
+
+          <div class="pay-total">
+            <span>Totale da incassare</span>
+            <strong id="payTotal" class="totalBig">€ 0,00</strong>
+          </div>
+
+          <div class="pay-methods" role="group" aria-label="Metodo di pagamento">
+            <button class="btn btn-secondary pay-method is-active" data-method="cash" type="button">Contanti</button>
+            <button class="btn btn-secondary pay-method" data-method="card" type="button">Carta</button>
+            <button class="btn btn-secondary pay-method" data-method="other" type="button">Altro</button>
+          </div>
+
+          <div id="cashPanel" class="cash-panel">
+            <label class="field">
+              <span class="field-label">Contanti ricevuti (€)</span>
+              <input class="input" id="cashReceived" type="number" step="0.01" min="0" inputmode="decimal" placeholder="0,00" />
+            </label>
+            <div class="quick-cash" id="quickCash"></div>
+            <div class="pay-change">
+              <span>Resto</span>
+              <strong id="payChange">€ 0,00</strong>
+            </div>
+          </div>
+
+          <div class="actions">
+            <button class="btn btn-primary" id="confirmPayBtn" type="button">Conferma e stampa</button>
+            <button class="btn btn-secondary" type="button" data-close-modal="1">Annulla</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modale chiusura cassa -->
+      <div id="closeSessionModal" class="modal-shell" hidden>
+        <div class="modal-backdrop" data-close-modal="1"></div>
+        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="closeSessionTitle">
+          <div class="section-heading section-heading-tight">
+            <div>
+              <div class="eyebrow">Chiusura</div>
+              <h2 id="closeSessionTitle">Chiudi cassa</h2>
+            </div>
+          </div>
+
+          <div class="report-list" id="closeSummary"></div>
+
+          <form id="closeSessionForm" class="product-form">
+            <label class="field">
+              <span class="field-label">Contanti contati in cassa (€)</span>
+              <input class="input" name="counted_eur" type="number" step="0.01" min="0" placeholder="0,00" />
+            </label>
+            <div class="pay-change">
+              <span>Differenza</span>
+              <strong id="closeDifference">€ 0,00</strong>
+            </div>
+            <div class="actions">
+              <button class="btn btn-primary" type="submit">Chiudi cassa</button>
+              <button class="btn btn-secondary" type="button" data-close-modal="1">Annulla</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

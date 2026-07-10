@@ -1,0 +1,23 @@
+# Node
+node_modules/
+
+# Database locale
+pos.sqlite
+*.sqlite
+*.sqlite-journal
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+backups/
+
+# Claude Code (impostazioni locali/macchina)
+.claude/settings.local.json

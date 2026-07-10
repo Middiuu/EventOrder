@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>EventOrder - Accesso</title>
+  <link rel="stylesheet" href="/app.css" />
+</head>
+<body class="page-login">
+  <div class="login-shell">
+    <section class="surface-card login-card">
+      <div class="brand-lockup">
+        <div class="brand-mark">E</div>
+        <div>
+          <div class="eyebrow">EventOrder</div>
+          <div class="brand-title">Accesso</div>
+        </div>
+      </div>
+
+      <form id="loginForm" class="product-form">
+        <label class="field">
+          <span class="field-label">PIN</span>
+          <input class="input" id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="••••" autofocus />
+        </label>
+        <div id="loginError" class="login-error" hidden></div>
+        <div class="actions">
+          <button class="btn btn-primary" type="submit">Entra</button>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <script>
+    const form = document.querySelector("#loginForm");
+    const pinEl = document.querySelector("#pin");
+    const errEl = document.querySelector("#loginError");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      errEl.hidden = true;
+      try {
+        const res = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pin: pinEl.value })
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || "PIN errato");
+        }
+        window.location.href = "/";
+      } catch (err) {
+        errEl.textContent = err.message;
+        errEl.hidden = false;
+        pinEl.value = "";
+        pinEl.focus();
+      }
+    });
+  </script>
+</body>
+</html>
