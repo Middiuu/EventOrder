@@ -1,133 +1,165 @@
-# EventOrder 🧾
+<div align="center">
 
-**EventOrder** è un piccolo **registratore di cassa locale non fiscale**,
-configurabile per qualsiasi attività o evento (sagre, mercatini, banchetti,
-eventi privati, ecc.).
+# 🎟️ EventOrder
 
-L'applicazione consente di:
-- selezionare prodotti da un catalogo personalizzabile
-- **aprire e chiudere il turno di cassa** con fondo iniziale e riconciliazione contanti
-- incassare scegliendo il **metodo di pagamento** (contanti/carta/altro) con **calcolo del resto**
-- stampare un ticket non fiscale e registrare automaticamente le vendite
-- consultare lo **storico vendite** e annullare una vendita con motivo
-- consultare incasso del giorno (per prodotto e per pagamento), con **export CSV**
-  (aggregato e per-transazione) e backup del database
+### Il registratore di cassa per le tue feste.
 
-È pensata per l'uso locale: **veloce, minimale, zero burocrazia**. Nessun dato
-esce dalla macchina su cui gira.
+**Veloce al banco. Tutto in locale. Zero burocrazia.**
 
----
+Pensato per sagre, mercatini, banchetti, feste di paese e Pro Loco:
+apri la cassa, tocca i prodotti, incassi e stampi il ticket. Fine.
 
-## Stack tecnologico
+![Licenza MIT](https://img.shields.io/badge/licenza-MIT-FFC24B)
+![Node 20](https://img.shields.io/badge/Node-20_LTS-57D6A6)
+![Non fiscale](https://img.shields.io/badge/documento-non_fiscale-6AA6FF)
+![Offline](https://img.shields.io/badge/dati-100%25_locali-FF6F61)
 
-- **Node.js 20 LTS**
-- **Express 5**
-- **SQLite** (file locale, `better-sqlite3`)
-- **HTML / CSS / JavaScript** (nessun build step)
-- Stampa ticket: **ESC/POS** (USB / LAN – in arrivo, attualmente stub su console)
+<br>
 
----
+<img src="docs/screenshots/cassa.png" alt="EventOrder — la schermata cassa" width="860">
 
-## Requisiti
+</div>
 
-- **Node.js 20** (consigliato tramite `nvm` — vedi `.nvmrc`)
-- Git
-- Browser moderno (Chrome, Firefox, Safari)
+<br>
 
-> `better-sqlite3` è un modulo nativo: usare la versione di Node indicata in
-> `.nvmrc` evita problemi di compilazione.
+## Perché EventOrder
 
-### Uso con nvm (consigliato)
+Alle feste non serve un gestionale: serve **battere una comanda in due secondi**,
+sapere quanto c'è in cassa a fine serata e non perdere un incasso. EventOrder fa
+esattamente questo, girando in locale sul tuo computer o tablet — **nessun account,
+nessun canone, nessun dato che esce dalla macchina**.
 
-```bash
-nvm use
-```
+- ⚡ **Veloce** — catalogo a griglia, un tap per aggiungere, totale sempre in vista.
+- 💶 **Pensato per i contanti** — calcolo del resto, tasti rapidi (€20, €50, €100…).
+- 🌙 **Bello anche di sera** — tema notturno "Festa serale" e tema chiaro per il giorno.
+- 🔌 **Autonomo** — un file database locale, backup con un clic.
 
-## Avvio rapido
+<br>
+
+## Cosa puoi fare
+
+### 💶 Incassi in un lampo — con resto, sconti e omaggi
+
+Scegli **contanti, carta o altro**. Per i contanti inserisci quanto ti danno e il
+**resto è calcolato al volo**. Applichi al volo uno **sconto in percentuale o in
+euro**, oppure segni un **omaggio** ("offerto della casa").
+
+<div align="center">
+<img src="docs/screenshots/pagamento.png" alt="Schermata di pagamento con sconto e calcolo del resto" width="560">
+</div>
+
+### 🧾 Turni di cassa e chiusura
+
+Apri il turno con il **fondo cassa** iniziale, vendi, e a fine serata **chiudi la
+cassa**: EventOrder ti dice quanti contanti dovrebbero esserci, tu li conti e vedi
+subito l'eventuale **scostamento**. Come un vero registratore (ma non fiscale).
+
+### 📜 Storico vendite e storni
+
+Ogni vendita finisce nel registro. Hai sbagliato una comanda? **Annullala** con un
+motivo: resta nello storico ma esce dai conti.
+
+<div align="center">
+<img src="docs/screenshots/vendite.png" alt="Storico delle vendite con storno" width="820">
+</div>
+
+### 📊 Numeri chiari e report del giorno
+
+Incasso del giorno, **suddivisione per prodotto e per metodo di pagamento**,
+sconti e omaggi erogati, con grafici a colpo d'occhio. Esporti tutto in **CSV**
+(aggregato o riga-per-vendita) e fai il **backup del database**.
+
+<div align="center">
+<img src="docs/screenshots/report.png" alt="Report del giorno con grafici" width="860">
+</div>
+
+### 🌗 Giorno e notte
+
+Interfaccia **touch-first** (bottoni grandi, niente fronzoli) con **tema chiaro e
+scuro**: il notturno taglia i riflessi sotto i gazebo, il chiaro è perfetto di
+giorno. Cambia con un tocco, la scelta viene ricordata.
+
+<div align="center">
+<img src="docs/screenshots/cassa-chiaro.png" alt="EventOrder in tema chiaro" width="860">
+</div>
+
+<br>
+
+## Provalo in 1 minuto
 
 ```bash
 npm install
-cp .env.example .env   # opzionale: personalizza branding/valuta
+cp .env.example .env      # opzionale: personalizza nome, valuta, operatori
 npm run dev
 ```
 
-L'app si avvia di default su [http://localhost:3000](http://localhost:3000).
+Apri **http://localhost:3000** e sei in cassa. Al primo avvio trovi qualche
+prodotto demo (disattivabile): entra nella pagina **Prodotti** e crea i tuoi.
 
-Alla prima esecuzione:
-- viene creato il database locale `pos.sqlite`
-- viene applicato lo schema
-- vengono inseriti alcuni prodotti demo (disattivabile con `POS_SEED_DEMO=0`)
+> Serve **Node.js 20** (vedi `.nvmrc`). Con `nvm`: `nvm use`.
 
-## Configurazione (generalizzazione)
+<br>
 
-Tutto il branding e la localizzazione sono guidati da variabili d'ambiente, così
-lo stesso software si adatta a qualsiasi attività senza toccare il codice. Vedi
-`.env.example` per l'elenco completo.
+## Lo fai tuo in un attimo
 
-| Variabile | Default | Descrizione |
-|---|---|---|
-| `PORT` | `3000` | Porta HTTP del server |
-| `APP_NAME` | `POS` | Nome mostrato nell'interfaccia (header, titoli pagina) |
-| `BUSINESS_NAME` | = `APP_NAME` | Nome dell'attività stampato sul ticket |
-| `APP_TAGLINE` | `Cassa locale` | Sottotitolo opzionale |
-| `CURRENCY_SYMBOL` | `€` | Simbolo di valuta |
-| `LOCALE` | `it-IT` | Locale per date e formattazione |
-| `OPERATORS` | *(vuoto)* | Elenco operatori (`Anna,Luca`) scelti all'apertura del turno |
-| `APP_PIN` | *(vuoto)* | PIN unico per proteggere l'accesso; vuoto = nessuna protezione |
-| `POS_SEED_DEMO` | `1` | Prodotti demo al primo avvio (`0` per disattivare) |
-| `BACKUP_KEEP` | `20` | Numero di backup da conservare (`0` = illimitato) |
-| `POS_DB_PATH` | `./pos.sqlite` | Percorso del file database |
-
-Esempio `.env` per un evento specifico:
+Nome, valuta, operatori e accesso si impostano da `.env` — **stesso software,
+qualsiasi evento**, senza toccare il codice.
 
 ```env
 APP_NAME=Sagra del Paese
 BUSINESS_NAME=Pro Loco 2026
 CURRENCY_SYMBOL=€
-LOCALE=it-IT
+OPERATORS=Anna,Luca,Marco
+# APP_PIN=1234        # opzionale: protegge l'accesso con un PIN
 ```
 
-Il frontend legge questi valori a runtime da `GET /api/config`.
+| Variabile | Cosa fa |
+|---|---|
+| `APP_NAME` / `BUSINESS_NAME` | Nome nell'app / nome stampato sul ticket |
+| `CURRENCY_SYMBOL` / `LOCALE` | Valuta e formato di date e numeri |
+| `OPERATORS` | Operatori selezionabili all'apertura del turno |
+| `APP_PIN` | PIN d'accesso (vuoto = nessuna protezione) |
+| `POS_SEED_DEMO` | Prodotti demo al primo avvio (`0` per disattivare) |
+| `BACKUP_KEEP` | Quanti backup conservare |
 
-## Pagine disponibili
+<br>
 
-- `/` cassa principale (turno, carrello, pagamento con resto)
-- `/products.html` gestione prodotti (con riordino drag-and-drop)
-- `/sales.html` storico vendite e annullo con motivo
-- `/reports.html` report del giorno, export CSV e backup DB
-- `/login.html` accesso con PIN (solo se `APP_PIN` è impostato)
+## Le pagine
 
-## Flusso d'uso a un evento
+| | |
+|---|---|
+| **Cassa** | Vendita: catalogo, carrello, incasso |
+| **Prodotti** | Catalogo con riordino drag-and-drop |
+| **Vendite** | Storico e storni |
+| **Report** | Numeri del giorno, export CSV, backup |
 
-1. **Apri la cassa** inserendo il fondo iniziale (ed eventualmente l'operatore).
-2. Vendi: aggiungi prodotti al carrello, premi **Incassa e stampa**, scegli il
-   metodo di pagamento (per i contanti il resto è calcolato in automatico).
-3. Correggi eventuali errori dalla pagina **Vendite** (annullo con motivo).
-4. A fine serata **chiudi la cassa**: il sistema mostra i contanti attesi, tu
-   inserisci quelli contati e vedi subito l'eventuale scostamento.
-5. Esporta i CSV e fai il **backup** del database dalla pagina Report.
+<br>
 
-## Script
+<details>
+<summary><b>Sotto il cofano</b> (per chi sviluppa)</summary>
+
+<br>
+
+- **Node.js 20 + Express 5**, **SQLite** (`better-sqlite3`), frontend **vanilla JS** (nessun build step).
+- Importi gestiti in **centesimi interi** (niente errori di arrotondamento).
+- Report e chiusura usano l'**ora locale** per attribuire correttamente le vendite a cavallo della mezzanotte.
+- Backup con la copia **online consistente** di SQLite e rotazione automatica.
+- Branding/valuta esposti al frontend via `GET /api/config`.
+- Suite di test con `node:test` su database e flussi applicativi.
 
 ```bash
-npm run dev    # sviluppo con reload (nodemon)
-npm start      # avvio produzione
-npm test       # controllo sintattico + suite di test
+npm run dev    # sviluppo con reload
+npm start      # avvio
+npm test       # controllo sintattico + test
 ```
 
-`npm test` esegue il controllo sintattico dei file JavaScript principali e una
-suite di test su database e flussi applicativi (prodotti, vendite, report,
-export, backup, config e riordino).
+**Stampa ticket**: attualmente il ticket viene scritto su console (stub); l'integrazione
+ESC/POS (USB/LAN) è il prossimo passo.
 
-## Note operative
+</details>
 
-- Le vendite vengono salvate in `pos.sqlite` (percorso configurabile).
-- Il backup usa la copia online consistente di SQLite (`db.backup()`), la salva
-  in `backups/` con rotazione automatica e la scarica via browser.
-- Gli importi sono gestiti in **centesimi interi** per evitare errori di
-  arrotondamento.
-- Il report "oggi" e l'export CSV usano l'ora **locale** per attribuire
-  correttamente le vendite a cavallo della mezzanotte.
-- La stampa ticket è ancora uno stub: per ora il ticket viene scritto su console
-  in formato testuale. L'integrazione ESC/POS (USB/LAN) è il prossimo passo.
-```
+<br>
+
+<div align="center">
+<sub>EventOrder — cassa locale non fiscale · Licenza MIT</sub>
+</div>
