@@ -11,12 +11,18 @@
   "engines": {
     "node": ">=20.0.0"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "pos",
+    "cassa",
+    "registratore-di-cassa",
+    "eventi",
+    "sagre",
+    "non-fiscale"
+  ],
+  "author": "Emidio Schirano <emidioschirano@gmail.com>",
+  "license": "MIT",
   "dependencies": {
     "@fontsource/manrope": "^5.2.8",
-    "@fontsource/newsreader": "^5.2.10",
     "@fontsource/space-grotesk": "^5.2.10",
     "better-sqlite3": "^12.11.1",
     "chart.js": "^4.5.1",
