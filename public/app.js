@@ -41,6 +41,17 @@ function applyBranding() {
   if (taglineEl && tagline) taglineEl.textContent = tagline;
 }
 
+// Firma visiva: un festone di luminarie sotto la topbar
+function renderFestoon() {
+  const topbar = document.querySelector(".topbar");
+  if (!topbar || topbar.parentElement.querySelector(".festoon")) return;
+  const festoon = document.createElement("div");
+  festoon.className = "festoon";
+  festoon.setAttribute("aria-hidden", "true");
+  festoon.innerHTML = Array.from({ length: 22 }, () => "<i></i>").join("");
+  topbar.insertAdjacentElement("afterend", festoon);
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -272,7 +283,7 @@ async function initCassa() {
       b.className = "btn product-card";
       b.innerHTML = `
         <div class="product-card-title">${escapeHtml(p.name)}</div>
-        <div class="product-card-meta">${escapeHtml(p.category)} • ${euro(p.price_cents)}</div>
+        <div class="product-card-meta">${escapeHtml(p.category)} • <span class="product-price">${euro(p.price_cents)}</span></div>
       `;
       b.onclick = () => addProduct(p);
       grid.appendChild(b);
@@ -703,31 +714,37 @@ function renderReportCharts(byProduct) {
   const labels = byProduct.map((item) => item.name);
   const revenues = byProduct.map((item) => Number(item.revenue_cents) / 100);
   const qty = byProduct.map((item) => Number(item.qty_sold));
-  const palette = ["#9f3d2a", "#cf7853", "#2f6a4e", "#d6a14f", "#7a5c3e", "#4d6b8a"];
+  // Palette "Festa serale": ambra, menta, corallo, blu, rosa luminaria
+  const palette = ["#FFC24B", "#57D6A6", "#FF6F61", "#6AA6FF", "#FF8FB1", "#C6A2FF"];
+  const ink = "#EDF0FA";
+  const muted = "#94A0C6";
+  const grid = "rgba(255,255,255,0.08)";
+  const sym = APP_CONFIG.currencySymbol || "€";
 
   reportRevenueChart = new window.Chart(revenueCanvas, {
     type: "bar",
     data: {
       labels,
       datasets: [{
-        label: "Incasso €",
+        label: "Incasso",
         data: revenues,
-        borderRadius: 12,
+        borderRadius: 10,
         backgroundColor: palette,
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false }
-      },
+      plugins: { legend: { display: false } },
       scales: {
         y: {
           beginAtZero: true,
-          ticks: {
-            callback: (value) => `€ ${value}`
-          }
+          ticks: { color: muted, callback: (value) => `${sym} ${value}` },
+          grid: { color: grid }
+        },
+        x: {
+          ticks: { color: muted },
+          grid: { display: false }
         }
       }
     }
@@ -741,16 +758,15 @@ function renderReportCharts(byProduct) {
         label: "Quantita'",
         data: qty,
         backgroundColor: palette,
-        borderWidth: 0,
+        borderColor: "#0E1730",
+        borderWidth: 2,
       }]
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       plugins: {
-        legend: {
-          position: "bottom"
-        }
+        legend: { position: "bottom", labels: { color: ink, padding: 14 } }
       },
       cutout: "62%"
     }
@@ -948,6 +964,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   try {
     await loadConfig();
     applyBranding();
+    renderFestoon();
     await initCassa();
     await initProdotti();
     await initSales();
