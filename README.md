@@ -9,10 +9,10 @@
 Pensato per sagre, mercatini, banchetti, feste di paese e Pro Loco:
 apri la cassa, tocca i prodotti, incassi e stampi il ticket. Fine.
 
-![Licenza MIT](https://img.shields.io/badge/licenza-MIT-FFC24B)
-![Node 20](https://img.shields.io/badge/Node-20_LTS-57D6A6)
-![Non fiscale](https://img.shields.io/badge/documento-non_fiscale-6AA6FF)
-![Offline](https://img.shields.io/badge/dati-100%25_locali-FF6F61)
+![Licenza MIT](https://img.shields.io/badge/licenza-MIT-5B4BF0)
+![Node 20](https://img.shields.io/badge/Node-20_LTS-16A34A)
+![Non fiscale](https://img.shields.io/badge/documento-non_fiscale-52525B)
+![Offline](https://img.shields.io/badge/dati-100%25_locali-7D6FFF)
 
 <br>
 
@@ -31,7 +31,7 @@ nessun canone, nessun dato che esce dalla macchina**.
 
 - ⚡ **Veloce** — catalogo a griglia, un tap per aggiungere, totale sempre in vista.
 - 💶 **Pensato per i contanti** — calcolo del resto, tasti rapidi (€20, €50, €100…).
-- 🌙 **Bello anche di sera** — tema notturno "Festa serale" e tema chiaro per il giorno.
+- 🌙 **Chiaro e scuro** — interfaccia curata con tema scuro di default e tema chiaro per il giorno.
 - 🔌 **Autonomo** — un file database locale, backup con un clic.
 
 <br>
@@ -75,9 +75,9 @@ sconti e omaggi erogati, con grafici a colpo d'occhio. Esporti tutto in **CSV**
 
 ### 🌗 Giorno e notte
 
-Interfaccia **touch-first** (bottoni grandi, niente fronzoli) con **tema chiaro e
-scuro**: il notturno taglia i riflessi sotto i gazebo, il chiaro è perfetto di
-giorno. Cambia con un tocco, la scelta viene ricordata.
+Interfaccia **touch-first** (bottoni grandi, numeri in monospazio, niente fronzoli)
+con **tema scuro e chiaro**: lo scuro riposa la vista di sera, il chiaro è perfetto
+di giorno. Cambia con un tocco, la scelta viene ricordata.
 
 <div align="center">
 <img src="docs/screenshots/cassa-chiaro.png" alt="EventOrder in tema chiaro" width="860">
