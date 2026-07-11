@@ -91,7 +91,17 @@ router.get("/today", (req, res) => {
     ORDER BY revenue_cents DESC
   `).all();
 
-  res.json({ summary, byProduct, byPayment });
+  const byHour = db.prepare(`
+    SELECT
+      CAST(strftime('%H', datetime(created_at, 'localtime')) AS INTEGER) AS hour,
+      COALESCE(SUM(total_cents), 0) AS revenue_cents
+    FROM sales
+    WHERE voided=0 AND date(created_at,'localtime')=date('now','localtime')
+    GROUP BY hour
+    ORDER BY hour
+  `).all();
+
+  res.json({ summary, byProduct, byPayment, byHour });
 });
 
 // --- CSV export (Excel-friendly, separatore ';', BOM UTF-8)

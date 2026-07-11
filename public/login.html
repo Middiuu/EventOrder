@@ -8,54 +8,97 @@
   <link rel="stylesheet" href="/app.css" />
 </head>
 <body class="page-login">
-  <div class="login-shell">
-    <section class="surface-card login-card">
-      <div class="brand-lockup">
-        <div class="brand-mark">E</div>
-        <div>
-          <div class="eyebrow">EventOrder</div>
-          <div class="brand-title">Accesso</div>
-        </div>
+  <div class="center-shell">
+    <section class="pin-card">
+      <div class="brand-mark" id="brandMark">E</div>
+      <h1>Inserisci il PIN</h1>
+      <div class="sub" id="pinSub">Accesso protetto</div>
+
+      <div class="pin-dots" id="pinDots" aria-hidden="true"></div>
+
+      <div class="pinpad" id="pinpad">
+        <button class="pin-key" type="button" data-k="1">1</button>
+        <button class="pin-key" type="button" data-k="2">2</button>
+        <button class="pin-key" type="button" data-k="3">3</button>
+        <button class="pin-key" type="button" data-k="4">4</button>
+        <button class="pin-key" type="button" data-k="5">5</button>
+        <button class="pin-key" type="button" data-k="6">6</button>
+        <button class="pin-key" type="button" data-k="7">7</button>
+        <button class="pin-key" type="button" data-k="8">8</button>
+        <button class="pin-key" type="button" data-k="9">9</button>
+        <button class="pin-key" type="button" data-k="clear">C</button>
+        <button class="pin-key" type="button" data-k="0">0</button>
+        <button class="pin-key" type="button" data-k="back">⌫</button>
       </div>
 
-      <form id="loginForm" class="product-form">
-        <label class="field">
-          <span class="field-label">PIN</span>
-          <input class="input" id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="••••" autofocus />
-        </label>
-        <div id="loginError" class="login-error" hidden></div>
-        <div class="actions">
-          <button class="btn btn-primary" type="submit">Entra</button>
-        </div>
-      </form>
+      <div class="login-error" id="loginError"></div>
+      <div class="actions" style="margin-top:14px">
+        <button class="btn btn-primary" id="enterBtn" type="button" style="flex:1">Entra</button>
+      </div>
     </section>
   </div>
 
   <script>
-    const form = document.querySelector("#loginForm");
-    const pinEl = document.querySelector("#pin");
-    const errEl = document.querySelector("#loginError");
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      errEl.hidden = true;
+    (async function () {
+      const dotsEl = document.querySelector("#pinDots");
+      const errEl = document.querySelector("#loginError");
+      const subEl = document.querySelector("#pinSub");
+      const brandMark = document.querySelector("#brandMark");
+      let pin = "";
+      const MAXLEN = 8;
+
       try {
-        const res = await fetch("/api/auth/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pin: pinEl.value })
-        });
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(data.error || "PIN errato");
-        }
-        window.location.href = "/";
-      } catch (err) {
-        errEl.textContent = err.message;
-        errEl.hidden = false;
-        pinEl.value = "";
-        pinEl.focus();
+        const cfg = await (await fetch("/api/config")).json();
+        if (cfg.appName) brandMark.textContent = (cfg.appName.trim()[0] || "E").toUpperCase();
+        if (cfg.businessName) subEl.textContent = "Accesso protetto · " + cfg.businessName;
+        document.title = (cfg.appName || "EventOrder") + " - Accesso";
+      } catch (e) {}
+
+      function renderDots() {
+        const n = Math.max(4, pin.length);
+        dotsEl.innerHTML = Array.from({ length: n }, (_, i) =>
+          `<span class="pin-dot ${i < pin.length ? "on" : ""}"></span>`
+        ).join("");
       }
-    });
+      renderDots();
+
+      document.querySelector("#pinpad").addEventListener("click", (e) => {
+        const k = e.target?.getAttribute?.("data-k");
+        if (!k) return;
+        errEl.textContent = "";
+        if (k === "clear") pin = "";
+        else if (k === "back") pin = pin.slice(0, -1);
+        else if (pin.length < MAXLEN) pin += k;
+        renderDots();
+      });
+
+      async function submit() {
+        errEl.textContent = "";
+        try {
+          const res = await fetch("/api/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pin }),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            throw new Error(data.error || "PIN errato");
+          }
+          window.location.href = "/";
+        } catch (err) {
+          errEl.textContent = err.message;
+          pin = "";
+          renderDots();
+        }
+      }
+
+      document.querySelector("#enterBtn").addEventListener("click", submit);
+      document.addEventListener("keydown", (e) => {
+        if (e.key >= "0" && e.key <= "9" && pin.length < MAXLEN) { pin += e.key; renderDots(); }
+        else if (e.key === "Backspace") { pin = pin.slice(0, -1); renderDots(); }
+        else if (e.key === "Enter") submit();
+      });
+    })();
   </script>
 </body>
 </html>

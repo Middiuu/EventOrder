@@ -1,7 +1,7 @@
 // Config caricata da /api/config all'avvio (branding, valuta, locale)
 let APP_CONFIG = {
-  appName: "POS",
-  businessName: "POS",
+  appName: "EventOrder",
+  businessName: "EventOrder",
   tagline: "Cassa locale",
   currencySymbol: "€",
   locale: "it-IT",
@@ -26,70 +26,119 @@ async function loadConfig() {
 }
 
 function applyBranding() {
-  const { appName, tagline } = APP_CONFIG;
-  const brandEyebrow = document.querySelector(".brand-lockup .eyebrow");
-  const brandMark = document.querySelector(".brand-mark");
-  if (brandEyebrow) brandEyebrow.textContent = appName;
-  if (brandMark) brandMark.textContent = (appName.trim()[0] || "P").toUpperCase();
-
-  // Titolo pagina: "<AppName> — <sezione>" mantenendo la sezione esistente
+  // Solo il titolo della pagina; il branding visibile è nella sidebar.
+  const appName = APP_CONFIG.appName || "EventOrder";
   const parts = document.title.split(/\s*[-–—]\s*/);
   const section = parts.length > 1 ? parts.slice(1).join(" - ") : "";
   document.title = section ? `${appName} - ${section}` : appName;
-
-  const taglineEl = document.querySelector("[data-app-tagline]");
-  if (taglineEl && tagline) taglineEl.textContent = tagline;
 }
 
-// Tema chiaro/scuro: rispetta le preferenze di sistema, con override salvato
+// Tema chiaro/scuro: default scuro, override salvato via toggle
 function effectiveTheme() {
-  const attr = document.documentElement.getAttribute("data-theme");
-  if (attr) return attr;
-  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
 }
 
-function initThemeToggle() {
-  const topbar = document.querySelector(".topbar");
-  if (!topbar || topbar.querySelector(".theme-toggle")) return;
-
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "btn btn-secondary btn-compact theme-toggle";
-
-  function sync() {
-    const isLight = effectiveTheme() === "light";
-    // mostra l'azione: se ora è chiaro offro il tema scuro, e viceversa
-    btn.textContent = isLight ? "🌙" : "☀️";
-    btn.setAttribute("aria-label", isLight ? "Passa al tema scuro" : "Passa al tema chiaro");
-    btn.title = btn.getAttribute("aria-label");
+function toggleTheme() {
+  const next = effectiveTheme() === "light" ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", next);
+  try { localStorage.setItem("eo-theme", next); } catch {}
+  syncThemeToggle();
+  // ridisegna i grafici del report con i colori del nuovo tema
+  if (document.querySelector("#reportBox") && typeof initReport === "function") {
+    initReport().catch(() => {});
   }
-
-  btn.addEventListener("click", () => {
-    const next = effectiveTheme() === "light" ? "dark" : "light";
-    document.documentElement.setAttribute("data-theme", next);
-    try { localStorage.setItem("eo-theme", next); } catch {}
-    sync();
-    // ridisegna i grafici del report con i colori del nuovo tema
-    if (document.querySelector("#reportBox") && typeof initReport === "function") {
-      initReport().catch(() => {});
-    }
-  });
-
-  sync();
-  const nav = topbar.querySelector(".nav-pills");
-  if (nav) nav.insertAdjacentElement("afterend", btn);
-  else topbar.appendChild(btn);
 }
 
-// Firma visiva: un festone di luminarie sotto la topbar
-function renderFestoon() {
-  const topbar = document.querySelector(".topbar");
-  if (!topbar || topbar.parentElement.querySelector(".festoon")) return;
-  const festoon = document.createElement("div");
-  festoon.className = "festoon";
-  festoon.setAttribute("aria-hidden", "true");
-  festoon.innerHTML = Array.from({ length: 22 }, () => "<i></i>").join("");
-  topbar.insertAdjacentElement("afterend", festoon);
+function syncThemeToggle() {
+  const btn = document.querySelector(".theme-toggle");
+  if (!btn) return;
+  const isLight = effectiveTheme() === "light";
+  btn.textContent = isLight ? "🌙" : "☀️";
+  const label = isLight ? "Passa al tema scuro" : "Passa al tema chiaro";
+  btn.setAttribute("aria-label", label);
+  btn.title = label;
+}
+
+const NAV_ITEMS = [
+  { page: "cassa", href: "/", label: "Cassa" },
+  { page: "prodotti", href: "/products.html", label: "Prodotti", count: "prodotti" },
+  { page: "vendite", href: "/sales.html", label: "Vendite", count: "vendite" },
+  { page: "report", href: "/reports.html", label: "Report" },
+];
+
+// Costruisce la sidebar (brand, nav, card turno, operatore, toggle tema)
+function renderSidebar(active) {
+  const app = document.querySelector("#app");
+  if (!app || app.querySelector(".sidebar")) return;
+  const appName = APP_CONFIG.appName || "EventOrder";
+  const title = APP_CONFIG.businessName || appName;
+  const mark = (appName.trim()[0] || "E").toUpperCase();
+
+  const nav = NAV_ITEMS.map(it => `
+    <a href="${it.href}" class="${it.page === active ? "is-active" : ""}">
+      <span>${escapeHtml(it.label)}</span>
+      ${it.count ? `<span class="count" data-count="${it.count}"></span>` : ""}
+    </a>`).join("");
+
+  const aside = document.createElement("aside");
+  aside.className = "sidebar";
+  aside.innerHTML = `
+    <div class="brand brand-lockup">
+      <div class="brand-mark">${escapeHtml(mark)}</div>
+      <div>
+        <div class="brand-title">${escapeHtml(title)}</div>
+        <div class="brand-sub">EventOrder</div>
+      </div>
+    </div>
+    <div class="side-label">Menu</div>
+    <nav class="side-nav" aria-label="Navigazione">${nav}</nav>
+    <div class="side-spacer"></div>
+    <div class="session-card" id="sessionCard" hidden>
+      <div class="s-title"><span class="dot"></span><span id="sessionCardTitle">Cassa chiusa</span></div>
+      <div class="s-label">Incasso del turno</div>
+      <div class="s-value" id="sessionCardValue">€ 0,00</div>
+    </div>
+    <div class="side-foot">
+      <div class="avatar" id="sideAvatar">E</div>
+      <div class="who"><span id="sideOperator">Operatore</span><small id="sideRole">EventOrder</small></div>
+      <button class="theme-toggle" type="button" id="themeToggle"></button>
+    </div>`;
+  app.insertBefore(aside, app.firstChild);
+
+  aside.querySelector("#themeToggle").addEventListener("click", toggleTheme);
+  syncThemeToggle();
+}
+
+// Aggiorna la card turno nella sidebar (chiamata da più pagine)
+function updateSessionCard(session) {
+  const card = document.querySelector("#sessionCard");
+  if (!card) return;
+  card.hidden = false;
+  const open = Boolean(session);
+  card.classList.toggle("is-open", open);
+  const title = card.querySelector("#sessionCardTitle");
+  const value = card.querySelector("#sessionCardValue");
+  if (title) title.textContent = open ? "Cassa aperta" : "Cassa chiusa";
+  if (value) value.textContent = money(session?.totals?.revenueCents || 0);
+  const op = document.querySelector("#sideOperator");
+  const avatar = document.querySelector("#sideAvatar");
+  if (op) op.textContent = session?.operator || "Operatore";
+  if (avatar) avatar.textContent = ((session?.operator || APP_CONFIG.appName || "E").trim()[0] || "E").toUpperCase();
+}
+
+// Carica dati per la shell (turno + conteggi nav), best-effort
+async function refreshShellData() {
+  try {
+    const data = await api("/api/sessions/current");
+    updateSessionCard(data.session || null);
+  } catch { updateSessionCard(null); }
+  try {
+    const setCount = (k, v) => { const el = document.querySelector(`[data-count="${k}"]`); if (el) el.textContent = v; };
+    const products = await api("/api/products/all");
+    setCount("prodotti", products.filter(p => p.active).length);
+    const sales = await api("/api/sales?limit=500");
+    setCount("vendite", sales.filter(s => !s.voided).length);
+  } catch {}
 }
 
 function escapeHtml(value) {
@@ -289,11 +338,12 @@ async function initCassa() {
   function renderSession() {
     if (sessionBar) sessionBar.hidden = false;
     const open = Boolean(session);
-    if (sessionDot) sessionDot.classList.toggle("is-open", open);
     if (sessionStatus) {
       sessionStatus.textContent = open
-        ? `Cassa aperta${session.operator ? " • " + session.operator : ""} • incasso ${money(session.totals?.revenueCents || 0)}`
-        : "Cassa chiusa — apri la cassa per iniziare a vendere";
+        ? `Cassa aperta${session.operator ? " · " + session.operator : ""}`
+        : "Cassa chiusa";
+      sessionStatus.classList.toggle("is-active", open);
+      sessionStatus.classList.toggle("is-inactive", !open);
     }
     if (openSessionBtn) openSessionBtn.hidden = open;
     if (closeSessionBtn) closeSessionBtn.hidden = !open;
@@ -302,6 +352,7 @@ async function initCassa() {
         ? "La stampa registra la vendita e genera il ticket della comanda corrente."
         : "Apri la cassa (con il fondo iniziale) per abilitare la vendita.";
     }
+    updateSessionCard(session);
   }
 
   async function refreshSession() {
@@ -886,76 +937,41 @@ function destroyReportCharts() {
   reportMixChart = null;
 }
 
-function renderReportCharts(byProduct) {
+function cssVar(name, fb) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fb;
+}
+
+// Grafico "incassi per ora" (area)
+function renderHourChart(byHour) {
   destroyReportCharts();
+  const canvas = document.querySelector("#reportHourChart");
+  if (!window.Chart || !canvas || !byHour || byHour.length === 0) return;
 
-  if (!window.Chart || byProduct.length === 0) return;
+  const minH = Math.min(...byHour.map(r => r.hour));
+  const maxH = Math.max(...byHour.map(r => r.hour));
+  const map = new Map(byHour.map(r => [r.hour, Number(r.revenue_cents) / 100]));
+  const labels = [], data = [];
+  for (let h = minH; h <= maxH; h++) { labels.push(String(h).padStart(2, "0")); data.push(map.get(h) || 0); }
 
-  const revenueCanvas = document.querySelector("#reportRevenueChart");
-  const mixCanvas = document.querySelector("#reportMixChart");
-  if (!revenueCanvas || !mixCanvas) return;
-
-  const labels = byProduct.map((item) => item.name);
-  const revenues = byProduct.map((item) => Number(item.revenue_cents) / 100);
-  const qty = byProduct.map((item) => Number(item.qty_sold));
-  // Palette "Festa serale": ambra, menta, corallo, blu, rosa luminaria
-  const palette = ["#FFC24B", "#57D6A6", "#FF6F61", "#6AA6FF", "#FF8FB1", "#C6A2FF"];
-  const cssVar = (n, fb) => (getComputedStyle(document.documentElement).getPropertyValue(n).trim() || fb);
-  const ink = cssVar("--ink", "#EDF0FA");
-  const muted = cssVar("--muted", "#94A0C6");
-  const grid = cssVar("--chart-grid", "rgba(255,255,255,0.08)");
-  const segBorder = cssVar("--surface", "#0E1730");
+  const accent = cssVar("--accent", "#7D6FFF");
+  const muted = cssVar("--muted", "#868C9B");
+  const grid = cssVar("--hair", "rgba(255,255,255,.06)");
   const sym = APP_CONFIG.currencySymbol || "€";
 
-  reportRevenueChart = new window.Chart(revenueCanvas, {
-    type: "bar",
-    data: {
-      labels,
-      datasets: [{
-        label: "Incasso",
-        data: revenues,
-        borderRadius: 10,
-        backgroundColor: palette,
-      }]
-    },
+  reportRevenueChart = new window.Chart(canvas, {
+    type: "line",
+    data: { labels, datasets: [{
+      data, borderColor: accent, backgroundColor: accent + "22",
+      fill: true, tension: 0.35, pointRadius: 3, pointBackgroundColor: accent, borderWidth: 2,
+    }] },
     options: {
-      responsive: true,
-      maintainAspectRatio: false,
+      responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
-        y: {
-          beginAtZero: true,
-          ticks: { color: muted, callback: (value) => `${sym} ${value}` },
-          grid: { color: grid }
-        },
-        x: {
-          ticks: { color: muted },
-          grid: { display: false }
-        }
-      }
-    }
-  });
-
-  reportMixChart = new window.Chart(mixCanvas, {
-    type: "doughnut",
-    data: {
-      labels,
-      datasets: [{
-        label: "Quantita'",
-        data: qty,
-        backgroundColor: palette,
-        borderColor: segBorder,
-        borderWidth: 2,
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { position: "bottom", labels: { color: ink, padding: 14 } }
+        y: { beginAtZero: true, ticks: { color: muted, callback: v => `${sym} ${v}` }, grid: { color: grid } },
+        x: { ticks: { color: muted }, grid: { display: false } },
       },
-      cutout: "62%"
-    }
+    },
   });
 }
 
@@ -965,74 +981,80 @@ async function initReport() {
 
   const data = await api("/api/reports/today");
   const s = data.summary;
-
-  const lines = data.byProduct.map(p => `
-    <div class="row">
-      <div>
-        <b>${escapeHtml(p.name)}</b>
-        <div class="small">${p.qty_sold} venduti</div>
-      </div>
-      <div>${euro(p.revenue_cents)}</div>
-    </div>
-  `).join("");
-
+  const count = s.sales_count || 0;
+  const avg = count > 0 ? Math.round(s.revenue_cents / count) : 0;
   const PAY_LABEL = { cash: "Contanti", card: "Carta", other: "Altro" };
-  const payLines = (data.byPayment || []).map(p => `
-    <div class="row">
-      <div><b>${escapeHtml(PAY_LABEL[p.payment_method] || p.payment_method)}</b>
+
+  const payTotal = (data.byPayment || []).reduce((a, b) => a + b.revenue_cents, 0) || 1;
+  const payBars = (data.byPayment || []).map(p => {
+    const pct = Math.round(p.revenue_cents / payTotal * 100);
+    return `
+      <div class="bar-row">
+        <div class="bar-head">
+          <b>${escapeHtml(PAY_LABEL[p.payment_method] || p.payment_method)}</b>
+          <span><span class="amt">${euro(p.revenue_cents)}</span> <span class="pct">${pct}%</span></span>
+        </div>
+        <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
         <div class="small">${p.count} vendite</div>
-      </div>
-      <div>${euro(p.revenue_cents)}</div>
-    </div>
-  `).join("");
+      </div>`;
+  }).join("") || "<div class='empty-state'>Nessun incasso oggi.</div>";
+
+  const prodMax = Math.max(1, ...data.byProduct.map(p => p.qty_sold));
+  const prodRows = data.byProduct.map(p => `
+    <div class="bar-row">
+      <div class="bar-head"><b>${escapeHtml(p.name)}</b><span class="amt">${euro(p.revenue_cents)}</span></div>
+      <div class="bar-track"><div class="bar-fill" style="width:${Math.round(p.qty_sold / prodMax * 100)}%"></div></div>
+      <div class="small">${p.qty_sold} venduti</div>
+    </div>`).join("") || "<div class='empty-state'>Nessuna vendita registrata oggi.</div>";
 
   box.innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi kpi-accent">
+        <div class="k-label">Incasso di oggi</div>
+        <div class="k-value">${euro(s.revenue_cents)}</div>
+        <div class="k-sub">turno in corso</div>
+      </div>
+      <div class="kpi">
+        <div class="k-label">Vendite</div>
+        <div class="k-value">${count}</div>
+        <div class="k-sub">ticket emessi</div>
+      </div>
+      <div class="kpi">
+        <div class="k-label">Scontrino medio</div>
+        <div class="k-value">${euro(avg)}</div>
+        <div class="k-sub">per comanda</div>
+      </div>
+      <div class="kpi">
+        <div class="k-label">Sconti e omaggi</div>
+        <div class="k-value">${euro(s.discount_cents || 0)}</div>
+        <div class="k-sub">erogati oggi</div>
+      </div>
+    </div>
+
     <div class="report-grid">
-      <section class="surface-card metric-card">
-        <div class="eyebrow">Oggi</div>
-        <h2>Incasso del giorno</h2>
-        <div class="small">${s.sales_count} vendite registrate</div>
-        <div class="metric-value">${euro(s.revenue_cents)}</div>
-        ${s.discount_cents > 0 ? `<div class="small metric-note">Sconti e omaggi erogati: <b>${euro(s.discount_cents)}</b></div>` : ""}
-        <div class="report-list report-list-tight">${payLines || ""}</div>
-      </section>
-      <section class="surface-card">
+      <section class="card chart-card">
         <div class="section-heading section-heading-tight">
-          <div>
-            <div class="eyebrow">Dettaglio</div>
-            <h2>Venduto per prodotto</h2>
-          </div>
+          <div><div class="eyebrow">Andamento</div><h2>Incassi per ora</h2></div>
         </div>
-        <div class="report-list">${lines || "<div class='empty-state'>Nessuna vendita registrata oggi.</div>"}</div>
+        <div class="chart-wrap"><canvas id="reportHourChart" aria-label="Grafico incassi per ora"></canvas></div>
+      </section>
+      <section class="card">
+        <div class="section-heading section-heading-tight">
+          <div><div class="eyebrow">Ripartizione</div><h2>Metodi di pagamento</h2></div>
+        </div>
+        <div class="bars">${payBars}</div>
       </section>
     </div>
-    <div class="chart-panel">
-      <section class="surface-card chart-card">
-        <div class="section-heading section-heading-tight">
-          <div>
-            <div class="eyebrow">Andamento</div>
-            <h2>Incasso per prodotto</h2>
-          </div>
-        </div>
-        <div class="chart-wrap">
-          <canvas id="reportRevenueChart" aria-label="Grafico incasso per prodotto"></canvas>
-        </div>
-      </section>
-      <section class="surface-card chart-card">
-        <div class="section-heading section-heading-tight">
-          <div>
-            <div class="eyebrow">Mix vendita</div>
-            <h2>Distribuzione quantita'</h2>
-          </div>
-        </div>
-        <div class="chart-wrap">
-          <canvas id="reportMixChart" aria-label="Grafico distribuzione quantita' vendute"></canvas>
-        </div>
-      </section>
-    </div>
+
+    <section class="card">
+      <div class="section-heading section-heading-tight">
+        <div><div class="eyebrow">Dettaglio</div><h2>Prodotti più venduti</h2></div>
+      </div>
+      <div class="bars">${prodRows}</div>
+    </section>
   `;
 
-  renderReportCharts(data.byProduct);
+  renderHourChart(data.byHour);
 }
 
 async function initReportExport() {
@@ -1151,13 +1173,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   try {
     await loadConfig();
     applyBranding();
-    renderFestoon();
-    initThemeToggle();
+    renderSidebar(document.body.dataset.page || "");
     await initCassa();
     await initProdotti();
     await initSales();
     await initReport();
     await initReportExport();
+    await refreshShellData();
   } catch (e) {
     console.error(e);
     alert(e.message || String(e));

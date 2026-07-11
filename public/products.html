@@ -7,146 +7,116 @@
   <script>(function(){try{var t=localStorage.getItem("eo-theme");if(t)document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
   <link rel="stylesheet" href="/app.css" />
 </head>
-<body class="page-prodotti">
-  <div class="page-shell">
-    <header class="topbar">
-      <div class="brand-lockup">
-        <div class="brand-mark">E</div>
-        <div>
-          <div class="eyebrow">EventOrder</div>
-          <div class="brand-title">Gestione catalogo</div>
-        </div>
+<body class="page-prodotti" data-page="prodotti">
+  <div class="app" id="app">
+    <main class="main">
+      <div class="page-head">
+        <div class="eyebrow">Prodotti</div>
+        <h1>Gestione catalogo</h1>
+        <div class="sub">Crea e ordina i prodotti che compaiono in cassa.</div>
       </div>
-      <nav class="nav-pills" aria-label="Navigazione principale">
-        <a href="/">Cassa</a>
-        <a class="is-active" href="/products.html">Prodotti</a>
-        <a href="/sales.html">Vendite</a>
-        <a href="/reports.html">Report</a>
-      </nav>
-    </header>
 
-    <main class="page-content stack">
-      <section class="surface-card">
-        <div class="section-heading">
-          <div>
-            <div class="eyebrow">Editor</div>
-            <h2>Nuovo prodotto</h2>
-          </div>
-          <div class="section-actions">
-            <p class="section-note">I prodotti non attivi restano nello storico ma non compaiono in cassa.</p>
-            <button class="btn btn-secondary" id="newProductBtn" type="button">Nuovo prodotto</button>
-          </div>
-        </div>
-
-        <form id="productForm" class="product-form">
-          <input type="hidden" name="sort_order" value="0" />
-
-          <div class="form-grid">
-            <label class="field">
-              <span class="field-label">Nome</span>
-              <input class="input" name="name" placeholder="Es. Panino rustico" required />
-            </label>
-
-            <label class="field">
-              <span class="field-label">Categoria</span>
-              <input class="input" name="category" placeholder="Es. Vino / Cibo / Extra" />
-            </label>
-
-            <label class="field">
-              <span class="field-label">Prezzo (€)</span>
-              <input class="input" name="price_eur" type="number" step="0.01" min="0" placeholder="0,00" required />
-            </label>
-          </div>
-
-          <div class="form-footer">
-            <label class="toggle">
-              <input type="checkbox" name="active" checked />
-              <span>Prodotto attivo in cassa</span>
-            </label>
-
-            <div class="actions">
-              <button class="btn btn-primary" type="submit" id="saveBtn">Salva prodotto</button>
-              <button class="btn btn-secondary" type="button" id="cancelEditBtn">Annulla</button>
+      <div class="stack">
+        <section class="card">
+          <div class="section-heading">
+            <div>
+              <div class="eyebrow">Editor</div>
+              <h2>Nuovo prodotto</h2>
+            </div>
+            <div class="section-actions">
+              <p class="section-note">I prodotti non attivi restano nello storico ma non compaiono in cassa.</p>
+              <button class="btn btn-secondary btn-compact" id="newProductBtn" type="button">Nuovo prodotto</button>
             </div>
           </div>
-        </form>
-      </section>
 
-      <section class="surface-card">
-        <div class="section-heading">
-          <div>
-            <div class="eyebrow">Archivio</div>
-            <h2>Elenco prodotti</h2>
-          </div>
-          <div class="table-tools">
-            <p class="section-note section-note-inline">Trascina le righe per cambiare rapidamente l’ordine in cassa. Il drag e' disponibile quando la ricerca e' vuota.</p>
-            <div class="field-wrap field-wrap-search">
-              <label class="sr-only" for="productsSearch">Cerca in elenco</label>
-              <input id="productsSearch" class="input" placeholder="Cerca in elenco" />
+          <form id="productForm" class="stack">
+            <input type="hidden" name="sort_order" value="0" />
+            <div class="grid" style="grid-template-columns:1.4fr 1fr .8fr">
+              <label class="field">
+                <span class="field-label">Nome</span>
+                <input class="input" name="name" placeholder="Es. Panino rustico" required />
+              </label>
+              <label class="field">
+                <span class="field-label">Categoria</span>
+                <input class="input" name="category" placeholder="Es. Cibo / Bevande" />
+              </label>
+              <label class="field">
+                <span class="field-label">Prezzo (€)</span>
+                <input class="input mono" name="price_eur" type="number" step="0.01" min="0" placeholder="0,00" required />
+              </label>
+            </div>
+            <div class="section-heading" style="margin:0; align-items:center">
+              <label class="toggle">
+                <input type="checkbox" name="active" checked />
+                <span>Prodotto attivo in cassa</span>
+              </label>
+              <div class="actions" style="margin:0">
+                <button class="btn btn-primary" type="submit" id="saveBtn">Salva prodotto</button>
+                <button class="btn btn-ghost" type="button" id="cancelEditBtn">Annulla</button>
+              </div>
+            </div>
+          </form>
+        </section>
+
+        <section class="card">
+          <div class="section-heading">
+            <div>
+              <div class="eyebrow">Archivio</div>
+              <h2>Elenco prodotti</h2>
+            </div>
+            <div class="table-tools">
+              <p class="section-note section-note-inline">Trascina le righe per riordinare l'elenco in cassa (con la ricerca vuota).</p>
+              <div class="field-wrap field-wrap-search">
+                <label class="sr-only" for="productsSearch">Cerca in elenco</label>
+                <input id="productsSearch" class="input" placeholder="Cerca in elenco" />
+              </div>
             </div>
           </div>
-        </div>
 
-        <div class="table-wrap">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th></th>
-                <th>Stato</th>
-                <th>Nome</th>
-                <th>Categoria</th>
-                <th>Prezzo</th>
-                <th>Azioni</th>
-              </tr>
-            </thead>
-            <tbody id="productsTable"></tbody>
-          </table>
-        </div>
-      </section>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr><th></th><th>Stato</th><th>Nome</th><th>Categoria</th><th>Prezzo</th><th>Azioni</th></tr>
+              </thead>
+              <tbody id="productsTable"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
 
       <div id="toast" class="toast"></div>
 
       <div id="editProductModal" class="modal-shell" hidden>
         <div class="modal-backdrop" data-close-modal="1"></div>
         <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="editProductTitle">
-          <div class="section-heading section-heading-tight">
-            <div>
-              <div class="eyebrow">Modifica</div>
-              <h2 id="editProductTitle">Modifica prodotto</h2>
-            </div>
-            <button class="btn btn-secondary btn-compact" id="closeEditModalBtn" type="button">Chiudi</button>
-          </div>
-
-          <form id="editProductForm" class="product-form">
+          <button class="modal-close" id="closeEditModalBtn" type="button" aria-label="Chiudi">✕</button>
+          <div class="eyebrow">Modifica</div>
+          <h2 id="editProductTitle">Modifica prodotto</h2>
+          <form id="editProductForm" class="stack" style="margin-top:16px">
             <input type="hidden" name="id" />
             <input type="hidden" name="sort_order" value="0" />
-
-            <div class="form-grid">
+            <div class="grid" style="grid-template-columns:1.4fr 1fr .8fr">
               <label class="field">
                 <span class="field-label">Nome</span>
                 <input class="input" name="name" placeholder="Es. Panino rustico" required />
               </label>
-
               <label class="field">
                 <span class="field-label">Categoria</span>
-                <input class="input" name="category" placeholder="Es. Vino / Cibo / Extra" />
+                <input class="input" name="category" placeholder="Es. Cibo / Bevande" />
               </label>
-
               <label class="field">
                 <span class="field-label">Prezzo (€)</span>
-                <input class="input" name="price_eur" type="number" step="0.01" min="0" placeholder="0,00" required />
+                <input class="input mono" name="price_eur" type="number" step="0.01" min="0" placeholder="0,00" required />
               </label>
             </div>
-
-            <div class="form-footer">
+            <div class="section-heading" style="margin:0; align-items:center">
               <label class="toggle">
                 <input type="checkbox" name="active" checked />
                 <span>Prodotto attivo in cassa</span>
               </label>
-
-              <div class="actions">
+              <div class="actions" style="margin:0">
                 <button class="btn btn-primary" type="submit" id="saveEditBtn">Salva modifiche</button>
-                <button class="btn btn-secondary" type="button" id="cancelEditModalBtn">Annulla</button>
+                <button class="btn btn-ghost" type="button" id="cancelEditModalBtn">Annulla</button>
               </div>
             </div>
           </form>

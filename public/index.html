@@ -7,75 +7,55 @@
   <script>(function(){try{var t=localStorage.getItem("eo-theme");if(t)document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
   <link rel="stylesheet" href="/app.css" />
 </head>
-<body class="page-cassa">
-  <div class="page-shell">
-    <header class="topbar">
-      <div class="brand-lockup">
-        <div class="brand-mark">E</div>
-        <div>
-          <div class="eyebrow">EventOrder</div>
-          <div class="brand-title">Cassa evento locale</div>
-        </div>
+<body class="page-cassa" data-page="cassa">
+  <div class="app" id="app">
+    <main class="main">
+      <div class="page-head">
+        <div class="eyebrow">Cassa</div>
+        <h1>Vendita al banco</h1>
+        <div class="sub">Tocca i prodotti per aggiungerli alla comanda.</div>
       </div>
-      <nav class="nav-pills" aria-label="Navigazione principale">
-        <a class="is-active" href="/">Cassa</a>
-        <a href="/products.html">Prodotti</a>
-        <a href="/sales.html">Vendite</a>
-        <a href="/reports.html">Report</a>
-      </nav>
-    </header>
 
-    <main class="page-content">
-      <section class="session-bar" id="sessionBar" hidden>
-        <div class="session-info">
-          <span class="session-dot" id="sessionDot"></span>
-          <span id="sessionStatus">Cassa chiusa</span>
-        </div>
-        <div class="session-actions">
+      <div class="cassa-status section-heading" id="sessionBar" hidden>
+        <span class="status-pill is-active" id="sessionStatus">Cassa aperta</span>
+        <div class="actions" style="margin:0">
           <button class="btn btn-primary btn-compact" id="openSessionBtn" type="button" hidden>Apri cassa</button>
           <button class="btn btn-secondary btn-compact" id="closeSessionBtn" type="button" hidden>Chiudi cassa</button>
         </div>
-      </section>
+      </div>
 
       <section class="dashboard-layout">
-        <div class="stack">
-          <section class="surface-card">
-            <div class="section-heading">
-              <div>
-                <div class="eyebrow">Catalogo</div>
-                <h2>Prodotti disponibili</h2>
-              </div>
-              <div class="field-wrap field-wrap-search">
-                <label class="sr-only" for="search">Cerca prodotto</label>
-                <input id="search" class="input" placeholder="Cerca prodotto o categoria" />
-              </div>
+        <section class="card">
+          <div class="section-heading">
+            <div>
+              <div class="eyebrow">Catalogo</div>
+              <h2>Prodotti disponibili</h2>
             </div>
+            <div class="field-wrap field-wrap-search">
+              <label class="sr-only" for="search">Cerca prodotto</label>
+              <input id="search" class="input" placeholder="Cerca prodotto o categoria" />
+            </div>
+          </div>
+          <div class="grid products-grid" id="productsGrid"></div>
+        </section>
 
-            <div class="grid products-grid" id="productsGrid"></div>
-          </section>
-        </div>
-
-        <aside class="stack sidebar-stack">
-          <section class="surface-card cart-card" id="cartCard">
+        <aside class="sidebar-stack">
+          <section class="card cart-card" id="cartCard">
             <div class="section-heading section-heading-tight">
               <div>
                 <div class="eyebrow">Ticket corrente</div>
-                <h2>Carrello</h2>
+                <h2>Comanda</h2>
               </div>
             </div>
-
             <div id="cart" class="cart-list"></div>
-
             <div class="cart-total">
               <span>Totale</span>
               <strong id="total" class="totalBig">€ 0,00</strong>
             </div>
-
             <div class="actions actions-vertical">
               <button class="btn btn-primary" id="printBtn" disabled type="button">Incassa e stampa</button>
-              <button class="btn btn-secondary" id="clearBtn" type="button">Svuota carrello</button>
+              <button class="btn btn-ghost" id="clearBtn" type="button">Svuota comanda</button>
             </div>
-
             <p class="helper-text" id="cartHelper">La stampa registra la vendita e genera il ticket della comanda corrente.</p>
           </section>
         </aside>
@@ -87,14 +67,10 @@
       <div id="openSessionModal" class="modal-shell" hidden>
         <div class="modal-backdrop" data-close-modal="1"></div>
         <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="openSessionTitle">
-          <div class="section-heading section-heading-tight">
-            <div>
-              <div class="eyebrow">Turno</div>
-              <h2 id="openSessionTitle">Apri cassa</h2>
-            </div>
-          </div>
-          <form id="openSessionForm" class="product-form">
-            <div class="form-grid">
+          <div class="eyebrow">Turno</div>
+          <h2 id="openSessionTitle">Apri cassa</h2>
+          <form id="openSessionForm" style="margin-top:16px">
+            <div class="stack">
               <label class="field" id="operatorField" hidden>
                 <span class="field-label">Operatore</span>
                 <select class="input" name="operator"></select>
@@ -116,12 +92,9 @@
       <div id="paymentModal" class="modal-shell" hidden>
         <div class="modal-backdrop" data-close-modal="1"></div>
         <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="paymentTitle">
-          <div class="section-heading section-heading-tight">
-            <div>
-              <div class="eyebrow">Incasso</div>
-              <h2 id="paymentTitle">Pagamento</h2>
-            </div>
-          </div>
+          <button class="modal-close" type="button" data-close-modal="1" aria-label="Chiudi">✕</button>
+          <div class="eyebrow">Incasso</div>
+          <h2 id="paymentTitle">Pagamento</h2>
 
           <div class="pay-total">
             <span>Totale da incassare</span>
@@ -155,7 +128,7 @@
           <div id="cashPanel" class="cash-panel">
             <label class="field">
               <span class="field-label">Contanti ricevuti (€)</span>
-              <input class="input" id="cashReceived" type="number" step="0.01" min="0" inputmode="decimal" placeholder="0,00" />
+              <input class="input mono" id="cashReceived" type="number" step="0.01" min="0" inputmode="decimal" placeholder="0,00" />
             </label>
             <div class="quick-cash" id="quickCash"></div>
             <div class="pay-change">
@@ -166,7 +139,6 @@
 
           <div class="actions">
             <button class="btn btn-primary" id="confirmPayBtn" type="button">Conferma e stampa</button>
-            <button class="btn btn-secondary" type="button" data-close-modal="1">Annulla</button>
           </div>
         </div>
       </div>
@@ -175,19 +147,14 @@
       <div id="closeSessionModal" class="modal-shell" hidden>
         <div class="modal-backdrop" data-close-modal="1"></div>
         <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="closeSessionTitle">
-          <div class="section-heading section-heading-tight">
-            <div>
-              <div class="eyebrow">Chiusura</div>
-              <h2 id="closeSessionTitle">Chiudi cassa</h2>
-            </div>
-          </div>
-
-          <div class="report-list" id="closeSummary"></div>
-
-          <form id="closeSessionForm" class="product-form">
+          <button class="modal-close" type="button" data-close-modal="1" aria-label="Chiudi">✕</button>
+          <div class="eyebrow">Chiusura</div>
+          <h2 id="closeSessionTitle">Chiudi cassa</h2>
+          <div class="report-list" id="closeSummary" style="margin-top:14px"></div>
+          <form id="closeSessionForm" style="margin-top:6px">
             <label class="field">
               <span class="field-label">Contanti contati in cassa (€)</span>
-              <input class="input" name="counted_eur" type="number" step="0.01" min="0" placeholder="0,00" />
+              <input class="input mono" name="counted_eur" type="number" step="0.01" min="0" placeholder="0,00" />
             </label>
             <div class="pay-change">
               <span>Differenza</span>
