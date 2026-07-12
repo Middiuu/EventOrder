@@ -16,7 +16,7 @@ apri la cassa, tocca i prodotti, incassi e stampi il ticket. Fine.
 
 <br>
 
-<img src="docs/screenshots/cassa.png" alt="EventOrder — la schermata cassa" width="860">
+<img src="docs/screenshots/welcome.png" alt="EventOrder — schermata di benvenuto" width="860">
 
 </div>
 
@@ -37,6 +37,16 @@ nessun canone, nessun dato che esce dalla macchina**.
 <br>
 
 ## Cosa puoi fare
+
+### 🛒 La cassa, in due tap
+
+Tocca i prodotti dal catalogo, la **comanda** si compone a lato con il totale
+sempre in vista. Layout pensato per il banco: bottoni grandi, numeri leggibili
+in monospazio, tema scuro o chiaro.
+
+<div align="center">
+<img src="docs/screenshots/cassa.png" alt="EventOrder — la schermata cassa" width="860">
+</div>
 
 ### 💶 Incassi in un lampo — con resto, sconti e omaggi
 
@@ -122,6 +132,12 @@ OPERATORS=Anna,Luca,Marco
 | `APP_PIN` | PIN d'accesso (vuoto = nessuna protezione) |
 | `POS_SEED_DEMO` | Prodotti demo al primo avvio (`0` per disattivare) |
 | `BACKUP_KEEP` | Quanti backup conservare |
+
+Con `APP_PIN` impostato, l'accesso è protetto da un **PIN-pad** touch:
+
+<div align="center">
+<img src="docs/screenshots/login.png" alt="EventOrder — accesso con PIN" width="360">
+</div>
 
 <br>
 
