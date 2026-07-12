@@ -60,7 +60,7 @@ function syncThemeToggle() {
 }
 
 const NAV_ITEMS = [
-  { page: "cassa", href: "/", label: "Cassa" },
+  { page: "cassa", href: "/cassa.html", label: "Cassa" },
   { page: "prodotti", href: "/products.html", label: "Prodotti", count: "prodotti" },
   { page: "vendite", href: "/sales.html", label: "Vendite", count: "vendite" },
   { page: "report", href: "/reports.html", label: "Report" },

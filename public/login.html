@@ -84,7 +84,7 @@
             const data = await res.json().catch(() => ({}));
             throw new Error(data.error || "PIN errato");
           }
-          window.location.href = "/";
+          window.location.href = "/cassa.html";
         } catch (err) {
           errEl.textContent = err.message;
           pin = "";

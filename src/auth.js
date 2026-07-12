@@ -4,7 +4,8 @@ const { config } = require("./config");
 const COOKIE_NAME = "pos_auth";
 
 // Percorsi sempre accessibili anche senza login (per mostrare la pagina di accesso).
-const PUBLIC_PATHS = new Set(["/api/config", "/api/auth/login", "/login.html", "/app.css"]);
+// La welcome ("/"), il login e gli asset base restano accessibili senza PIN.
+const PUBLIC_PATHS = new Set(["/", "/index.html", "/api/config", "/api/auth/login", "/login.html", "/app.css"]);
 
 function expectedToken() {
   return crypto.createHmac("sha256", config.APP_PIN).update("pos-auth-v1").digest("hex");

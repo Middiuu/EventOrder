@@ -93,8 +93,9 @@ cp .env.example .env      # opzionale: personalizza nome, valuta, operatori
 npm run dev
 ```
 
-Apri **http://localhost:3000** e sei in cassa. Al primo avvio trovi qualche
-prodotto demo (disattivabile): entra nella pagina **Prodotti** e crea i tuoi.
+Apri **http://localhost:3000**: parti dalla schermata di benvenuto, premi
+**Inizia il servizio** e sei in cassa. Al primo avvio trovi qualche prodotto demo
+(disattivabile): entra nella pagina **Prodotti** e crea i tuoi.
 
 > Serve **Node.js 20** (vedi `.nvmrc`). Con `nvm`: `nvm use`.
 
@@ -128,7 +129,8 @@ OPERATORS=Anna,Luca,Marco
 
 | | |
 |---|---|
-| **Cassa** | Vendita: catalogo, carrello, incasso |
+| **Benvenuto** (`/`) | Schermata iniziale, si entra col pulsante "Inizia il servizio" |
+| **Cassa** (`/cassa.html`) | Vendita: catalogo, comanda, incasso |
 | **Prodotti** | Catalogo con riordino drag-and-drop |
 | **Vendite** | Storico e storni |
 | **Report** | Numeri del giorno, export CSV, backup |

@@ -3,173 +3,39 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <title>EventOrder - Cassa</title>
+  <title>EventOrder - Benvenuto</title>
   <script>(function(){try{var t=localStorage.getItem("eo-theme");if(t)document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
   <link rel="stylesheet" href="/app.css" />
 </head>
-<body class="page-cassa" data-page="cassa">
-  <div class="app" id="app">
-    <main class="main">
-      <div class="page-head">
-        <div class="eyebrow">Cassa</div>
-        <h1>Vendita al banco</h1>
-        <div class="sub">Tocca i prodotti per aggiungerli alla comanda.</div>
+<body class="page-welcome">
+  <div class="center-shell">
+    <section class="welcome">
+      <div class="brand-mark" id="brandMark">E</div>
+      <div class="eyebrow" id="brandEyebrow">EventOrder · Cassa locale</div>
+      <h1 id="welcomeTitle">Benvenuto</h1>
+      <p>Apri la cassa, tocca i prodotti, incassi e stampi il ticket.<br>Tutto in locale, in meno di un minuto.</p>
+      <div class="welcome-chips">
+        <span class="welcome-chip">Veloce al banco</span>
+        <span class="welcome-chip">100% in locale</span>
+        <span class="welcome-chip">Zero burocrazia</span>
       </div>
-
-      <div class="cassa-status section-heading" id="sessionBar" hidden>
-        <span class="status-pill is-active" id="sessionStatus">Cassa aperta</span>
-        <div class="actions" style="margin:0">
-          <button class="btn btn-primary btn-compact" id="openSessionBtn" type="button" hidden>Apri cassa</button>
-          <button class="btn btn-secondary btn-compact" id="closeSessionBtn" type="button" hidden>Chiudi cassa</button>
-        </div>
+      <div class="actions" style="justify-content:center">
+        <a class="btn btn-primary" href="/cassa.html">Inizia il servizio →</a>
       </div>
-
-      <section class="dashboard-layout">
-        <section class="card">
-          <div class="section-heading">
-            <div>
-              <div class="eyebrow">Catalogo</div>
-              <h2>Prodotti disponibili</h2>
-            </div>
-            <div class="field-wrap field-wrap-search">
-              <label class="sr-only" for="search">Cerca prodotto</label>
-              <input id="search" class="input" placeholder="Cerca prodotto o categoria" />
-            </div>
-          </div>
-          <div class="grid products-grid" id="productsGrid"></div>
-        </section>
-
-        <aside class="sidebar-stack">
-          <section class="card cart-card" id="cartCard">
-            <div class="section-heading section-heading-tight">
-              <div>
-                <div class="eyebrow">Ticket corrente</div>
-                <h2>Comanda</h2>
-              </div>
-            </div>
-            <div id="cart" class="cart-list"></div>
-            <div class="cart-total">
-              <span>Totale</span>
-              <strong id="total" class="totalBig">€ 0,00</strong>
-            </div>
-            <div class="actions actions-vertical">
-              <button class="btn btn-primary" id="printBtn" disabled type="button">Incassa e stampa</button>
-              <button class="btn btn-ghost" id="clearBtn" type="button">Svuota comanda</button>
-            </div>
-            <p class="helper-text" id="cartHelper">La stampa registra la vendita e genera il ticket della comanda corrente.</p>
-          </section>
-        </aside>
-      </section>
-
-      <div id="toast" class="toast"></div>
-
-      <!-- Modale apertura cassa -->
-      <div id="openSessionModal" class="modal-shell" hidden>
-        <div class="modal-backdrop" data-close-modal="1"></div>
-        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="openSessionTitle">
-          <div class="eyebrow">Turno</div>
-          <h2 id="openSessionTitle">Apri cassa</h2>
-          <form id="openSessionForm" style="margin-top:16px">
-            <div class="stack">
-              <label class="field" id="operatorField" hidden>
-                <span class="field-label">Operatore</span>
-                <select class="input" name="operator"></select>
-              </label>
-              <label class="field">
-                <span class="field-label">Fondo cassa (€)</span>
-                <input class="input" name="float_eur" type="number" step="0.01" min="0" placeholder="0,00" value="0" />
-              </label>
-            </div>
-            <div class="actions">
-              <button class="btn btn-primary" type="submit">Apri cassa</button>
-              <button class="btn btn-secondary" type="button" data-close-modal="1">Annulla</button>
-            </div>
-          </form>
-        </div>
-      </div>
-
-      <!-- Modale pagamento -->
-      <div id="paymentModal" class="modal-shell" hidden>
-        <div class="modal-backdrop" data-close-modal="1"></div>
-        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="paymentTitle">
-          <button class="modal-close" type="button" data-close-modal="1" aria-label="Chiudi">✕</button>
-          <div class="eyebrow">Incasso</div>
-          <h2 id="paymentTitle">Pagamento</h2>
-
-          <div class="pay-total">
-            <span>Totale da incassare</span>
-            <strong id="payTotal" class="totalBig">€ 0,00</strong>
-          </div>
-
-          <div class="disc-block">
-            <span class="field-label">Sconto / omaggio</span>
-            <div class="disc-options" role="group" aria-label="Sconto o omaggio">
-              <button class="btn btn-secondary btn-compact disc-opt is-active" data-disc="none" type="button">Nessuno</button>
-              <button class="btn btn-secondary btn-compact disc-opt" data-disc="percent" type="button">Sconto %</button>
-              <button class="btn btn-secondary btn-compact disc-opt" data-disc="amount" type="button">Sconto €</button>
-              <button class="btn btn-secondary btn-compact disc-opt" data-disc="gift" type="button">Omaggio</button>
-            </div>
-            <label class="field" id="discValueField" hidden>
-              <span class="field-label" id="discValueLabel">Valore</span>
-              <input class="input" id="discValue" type="number" step="0.01" min="0" inputmode="decimal" placeholder="0" />
-            </label>
-            <div class="disc-line" id="discLine" hidden>
-              <span id="discLineLabel">Sconto</span>
-              <strong id="discLineAmount">− € 0,00</strong>
-            </div>
-          </div>
-
-          <div class="pay-methods" role="group" aria-label="Metodo di pagamento">
-            <button class="btn btn-secondary pay-method is-active" data-method="cash" type="button">Contanti</button>
-            <button class="btn btn-secondary pay-method" data-method="card" type="button">Carta</button>
-            <button class="btn btn-secondary pay-method" data-method="other" type="button">Altro</button>
-          </div>
-
-          <div id="cashPanel" class="cash-panel">
-            <label class="field">
-              <span class="field-label">Contanti ricevuti (€)</span>
-              <input class="input mono" id="cashReceived" type="number" step="0.01" min="0" inputmode="decimal" placeholder="0,00" />
-            </label>
-            <div class="quick-cash" id="quickCash"></div>
-            <div class="pay-change">
-              <span>Resto</span>
-              <strong id="payChange">€ 0,00</strong>
-            </div>
-          </div>
-
-          <div class="actions">
-            <button class="btn btn-primary" id="confirmPayBtn" type="button">Conferma e stampa</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Modale chiusura cassa -->
-      <div id="closeSessionModal" class="modal-shell" hidden>
-        <div class="modal-backdrop" data-close-modal="1"></div>
-        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="closeSessionTitle">
-          <button class="modal-close" type="button" data-close-modal="1" aria-label="Chiudi">✕</button>
-          <div class="eyebrow">Chiusura</div>
-          <h2 id="closeSessionTitle">Chiudi cassa</h2>
-          <div class="report-list" id="closeSummary" style="margin-top:14px"></div>
-          <form id="closeSessionForm" style="margin-top:6px">
-            <label class="field">
-              <span class="field-label">Contanti contati in cassa (€)</span>
-              <input class="input mono" name="counted_eur" type="number" step="0.01" min="0" placeholder="0,00" />
-            </label>
-            <div class="pay-change">
-              <span>Differenza</span>
-              <strong id="closeDifference">€ 0,00</strong>
-            </div>
-            <div class="actions">
-              <button class="btn btn-primary" type="submit">Chiudi cassa</button>
-              <button class="btn btn-secondary" type="button" data-close-modal="1">Annulla</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    </main>
+      <div class="welcome-foot">Documento non fiscale · Nessun account · Licenza MIT</div>
+    </section>
   </div>
 
-  <script src="/app.js"></script>
+  <script>
+    (async function () {
+      try {
+        const cfg = await (await fetch("/api/config")).json();
+        const name = cfg.businessName || cfg.appName || "EventOrder";
+        document.querySelector("#welcomeTitle").textContent = "Benvenuto in " + name;
+        document.querySelector("#brandMark").textContent = (cfg.appName?.trim()[0] || "E").toUpperCase();
+        document.querySelector("#brandEyebrow").textContent = (cfg.appName || "EventOrder") + " · " + (cfg.tagline || "Cassa locale");
+      } catch (e) {}
+    })();
+  </script>
 </body>
 </html>
