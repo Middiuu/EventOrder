@@ -381,6 +381,13 @@ async function initCassa(signal) {
   const closeSummary = document.querySelector("#closeSummary");
   const closeDifferenceEl = document.querySelector("#closeDifference");
 
+  // Modale movimento di cassa
+  const movementBtn = document.querySelector("#movementBtn");
+  const movementModal = document.querySelector("#movementModal");
+  const movementForm = document.querySelector("#movementForm");
+  const movementExpectedEl = document.querySelector("#movementExpected");
+  const movDirBtns = Array.from(document.querySelectorAll(".mov-dir"));
+
   // Modale pagamento
   const paymentModal = document.querySelector("#paymentModal");
   const payTotalEl = document.querySelector("#payTotal");
@@ -408,6 +415,7 @@ async function initCassa(signal) {
   let session = null;
   let payMethod = "cash";
   let discType = "none"; // none | percent | amount | gift
+  let movDirection = "out"; // out = prelievo | in = versamento
 
   function showToast(msg) {
     if (!toastEl) return;
@@ -435,6 +443,7 @@ async function initCassa(signal) {
     }
     if (openSessionBtn) openSessionBtn.hidden = open;
     if (closeSessionBtn) closeSessionBtn.hidden = !open;
+    if (movementBtn) movementBtn.hidden = !open;
     if (cartHelper) {
       cartHelper.textContent = open
         ? "La stampa registra la vendita e genera il ticket della comanda corrente."
@@ -497,10 +506,14 @@ async function initCassa(signal) {
   function renderCloseSummary() {
     const t = session?.totals || {};
     const expected = t.expectedCashCents || 0;
+    const movIn = t.movementsInCents || 0;
+    const movOut = t.movementsOutCents || 0;
     if (closeSummary) {
       closeSummary.innerHTML = `
         <div class="row"><div>Fondo cassa iniziale</div><div>${money(session?.opening_float_cents || 0)}</div></div>
         <div class="row"><div>Incasso contanti</div><div>${money((t.byMethod?.cash) || 0)}</div></div>
+        ${movIn > 0 ? `<div class="row"><div>Versamenti</div><div>+ ${money(movIn)}</div></div>` : ""}
+        ${movOut > 0 ? `<div class="row"><div>Prelievi</div><div>− ${money(movOut)}</div></div>` : ""}
         <div class="row"><div><b>Contanti attesi in cassa</b></div><div><b>${money(expected)}</b></div></div>
       `;
     }
@@ -535,6 +548,50 @@ async function initCassa(signal) {
       const diff = data.session.difference_cents;
       closeModal(closeSessionModal);
       showToast(`Cassa chiusa • differenza ${diff >= 0 ? "+" : "−"} ${money(Math.abs(diff))}`);
+      await refreshSession();
+    } catch (err) {
+      alert(err.message);
+    }
+  });
+
+  // ---- Movimenti di cassa (prelievi / versamenti a turno aperto)
+  function setMovementDirection(dir) {
+    movDirection = dir;
+    movDirBtns.forEach(b => b.classList.toggle("is-active", b.getAttribute("data-dir") === dir));
+    updateMovementExpected();
+  }
+
+  function updateMovementExpected() {
+    if (!movementExpectedEl) return;
+    const expected = session?.totals?.expectedCashCents || 0;
+    const amount = eurToCents(movementForm?.amount_eur.value);
+    const next = !amount ? expected : (movDirection === "out" ? expected - amount : expected + amount);
+    movementExpectedEl.textContent = money(next);
+    movementExpectedEl.className = next < 0 ? "diff-minus" : "";
+  }
+
+  movementBtn?.addEventListener("click", () => {
+    if (!session) return;
+    movementForm?.reset();
+    setMovementDirection("out");
+    openModal(movementModal);
+    setTimeout(() => movementForm?.amount_eur.focus(), 0);
+  });
+  movDirBtns.forEach(b => b.addEventListener("click", () => setMovementDirection(b.getAttribute("data-dir"))));
+  movementForm?.addEventListener("input", updateMovementExpected);
+  movementForm?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const amount = eurToCents(movementForm.amount_eur.value);
+    if (!amount) return alert("Inserisci un importo maggiore di zero.");
+    const reason = String(movementForm.reason.value || "").trim();
+    if (!reason) return alert("Indica il motivo del movimento.");
+    try {
+      await api("/api/sessions/movements", {
+        method: "POST",
+        body: JSON.stringify({ direction: movDirection, amount_cents: amount, reason }),
+      });
+      closeModal(movementModal);
+      showToast(`${movDirection === "out" ? "Prelievo" : "Versamento"} registrato • ${money(amount)}`);
       await refreshSession();
     } catch (err) {
       alert(err.message);
@@ -782,14 +839,14 @@ async function initCassa(signal) {
   });
 
   // chiusura generica delle modali (backdrop, pulsanti "Annulla", Esc)
-  for (const modal of [openSessionModal, paymentModal, closeSessionModal]) {
+  for (const modal of [openSessionModal, paymentModal, closeSessionModal, movementModal]) {
     modal?.addEventListener("click", (e) => {
       if (e.target?.getAttribute?.("data-close-modal") === "1") closeModal(modal);
     });
   }
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
-    [openSessionModal, paymentModal, closeSessionModal].forEach(m => { if (m && !m.hidden) closeModal(m); });
+    [openSessionModal, paymentModal, closeSessionModal, movementModal].forEach(m => { if (m && !m.hidden) closeModal(m); });
   }, { signal });
 
   clearBtn?.addEventListener("click", async () => {

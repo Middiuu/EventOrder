@@ -307,8 +307,8 @@ select.input { appearance:none; -webkit-appearance:none; }
 .disc-block { display:grid; gap:8px; margin:14px 0 4px; }
 .disc-options, .pay-methods { display:flex; gap:8px; flex-wrap:wrap; }
 .pay-methods { margin:14px 0 4px; }
-.disc-opt, .pay-method { flex:1 1 auto; min-height:46px; }
-.disc-opt.is-active, .pay-method.is-active {
+.disc-opt, .pay-method, .mov-dir { flex:1 1 auto; min-height:46px; }
+.disc-opt.is-active, .pay-method.is-active, .mov-dir.is-active {
   background:var(--accent-soft); color:var(--accent-ink);
   border-color:var(--accent); font-weight:700;
 }

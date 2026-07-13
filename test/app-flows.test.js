@@ -713,3 +713,83 @@ test("lo sconto percentuale decimale resta coerente tra calcolo, storico e stamp
     harness.cleanup();
   }
 });
+
+test("movimenti di cassa: prelievi e versamenti entrano nei contanti attesi", async () => {
+  const harness = createHarness({ printTicket: async () => {} });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const product = (await request({ url: "/api/products" })).json()[0];
+
+      const postMovement = (body) => request({
+        method: "POST",
+        url: "/api/sessions/movements",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      // senza turno aperto -> 409
+      const noSession = await postMovement({ direction: "in", amount_cents: 100, reason: "Monete" });
+      assert.equal(noSession.status, 409);
+
+      await request({
+        method: "POST",
+        url: "/api/sessions/open",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opening_float_cents: 10000, operator: "Anna" }),
+      });
+
+      // input non validi -> 400
+      assert.equal((await postMovement({ direction: "sideways", amount_cents: 100, reason: "x" })).status, 400);
+      assert.equal((await postMovement({ direction: "in", amount_cents: 0, reason: "x" })).status, 400);
+      assert.equal((await postMovement({ direction: "in", amount_cents: 1.5, reason: "x" })).status, 400);
+      assert.equal((await postMovement({ direction: "in", amount_cents: 100 })).status, 400);
+      assert.equal((await postMovement({ direction: "in", amount_cents: 100, reason: "   " })).status, 400);
+
+      // vendita in contanti + versamento + prelievo
+      await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: [{ product_id: product.id, qty: 1 }] }),
+      });
+
+      const deposit = await postMovement({ direction: "in", amount_cents: 500, reason: "Aggiunta monete per resto" });
+      assert.equal(deposit.status, 200);
+
+      const withdrawal = await postMovement({ direction: "out", amount_cents: 2000, reason: "Prelievo di sicurezza" });
+      assert.equal(withdrawal.status, 200);
+
+      const expected = 10000 + product.price_cents + 500 - 2000;
+      const current = (await request({ url: "/api/sessions/current" })).json().session;
+      assert.equal(current.totals.expectedCashCents, expected);
+      assert.equal(current.totals.movementsInCents, 500);
+      assert.equal(current.totals.movementsOutCents, 2000);
+      assert.equal(current.movements.length, 2);
+      assert.equal(current.movements[1].direction, "out");
+      assert.equal(current.movements[1].operator, "Anna");
+      assert.equal(current.movements[1].reason, "Prelievo di sicurezza");
+
+      // prelievo oltre i contanti attesi -> 409
+      const tooMuch = await postMovement({ direction: "out", amount_cents: expected + 1, reason: "Troppo" });
+      assert.equal(tooMuch.status, 409);
+
+      // la chiusura usa l'atteso comprensivo dei movimenti
+      const closeRes = await request({
+        method: "POST",
+        url: "/api/sessions/close",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ counted_cash_cents: expected }),
+      });
+      const closed = closeRes.json().session;
+      assert.equal(closed.expected_cash_cents, expected);
+      assert.equal(closed.difference_cents, 0);
+
+      // a turno chiuso i movimenti non sono piu' ammessi
+      const afterClose = await postMovement({ direction: "in", amount_cents: 100, reason: "Tardi" });
+      assert.equal(afterClose.status, 409);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});

@@ -22,6 +22,7 @@
         <span class="status-pill is-active" id="sessionStatus">Cassa aperta</span>
         <div class="actions" style="margin:0">
           <button class="btn btn-primary btn-compact" id="openSessionBtn" type="button" hidden>Apri cassa</button>
+          <button class="btn btn-secondary btn-compact" id="movementBtn" type="button" hidden>Movimento di cassa</button>
           <button class="btn btn-secondary btn-compact" id="closeSessionBtn" type="button" hidden>Chiudi cassa</button>
         </div>
       </div>
@@ -143,6 +144,40 @@
           <div class="actions">
             <button class="btn btn-primary" id="confirmPayBtn" type="button">Conferma e stampa</button>
           </div>
+        </div>
+      </div>
+
+      <!-- Modale movimento di cassa -->
+      <div id="movementModal" class="modal-shell" hidden>
+        <div class="modal-backdrop" data-close-modal="1"></div>
+        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="movementTitle">
+          <button class="modal-close" type="button" data-close-modal="1" aria-label="Chiudi">✕</button>
+          <div class="eyebrow">Turno</div>
+          <h2 id="movementTitle">Movimento di cassa</h2>
+          <form id="movementForm" style="margin-top:16px">
+            <div class="stack">
+              <div class="disc-options" role="group" aria-label="Tipo di movimento">
+                <button class="btn btn-secondary btn-compact mov-dir is-active" data-dir="out" type="button">Prelievo</button>
+                <button class="btn btn-secondary btn-compact mov-dir" data-dir="in" type="button">Versamento</button>
+              </div>
+              <label class="field">
+                <span class="field-label">Importo (€)</span>
+                <input class="input mono" name="amount_eur" type="number" step="0.01" min="0" placeholder="0,00" />
+              </label>
+              <label class="field">
+                <span class="field-label">Motivo</span>
+                <input class="input" name="reason" maxlength="240" placeholder="Es. prelievo di sicurezza" />
+              </label>
+              <div class="pay-change">
+                <span>Contanti attesi dopo il movimento</span>
+                <strong id="movementExpected">€ 0,00</strong>
+              </div>
+            </div>
+            <div class="actions">
+              <button class="btn btn-primary" type="submit">Registra movimento</button>
+              <button class="btn btn-secondary" type="button" data-close-modal="1">Annulla</button>
+            </div>
+          </form>
         </div>
       </div>
 

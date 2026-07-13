@@ -5,7 +5,7 @@ const { MAX_MONEY_CENTS, cleanText, isValidCents } = require("../validation");
 
 const router = express.Router();
 
-// Totali di un turno: incasso per metodo, contanti attesi in cassa.
+// Totali di un turno: incasso per metodo, movimenti, contanti attesi in cassa.
 function sessionTotals(sessionId, openingFloatCents) {
   const byMethod = db.prepare(`
     SELECT payment_method, COUNT(*) AS count, COALESCE(SUM(total_cents), 0) AS revenue_cents
@@ -24,14 +24,46 @@ function sessionTotals(sessionId, openingFloatCents) {
     revenueCents += row.revenue_cents;
   }
 
-  const expectedCashCents = Number(openingFloatCents || 0) + totals.cash;
+  const movements = { in: 0, out: 0 };
+  const byDirection = db.prepare(`
+    SELECT direction, COALESCE(SUM(amount_cents), 0) AS total_cents
+    FROM cash_movements
+    WHERE session_id = ?
+    GROUP BY direction
+  `).all(sessionId);
+  for (const row of byDirection) {
+    movements[row.direction] = row.total_cents;
+  }
 
-  return { byMethod: totals, salesCount, revenueCents, expectedCashCents };
+  const expectedCashCents =
+    Number(openingFloatCents || 0) + totals.cash + movements.in - movements.out;
+
+  return {
+    byMethod: totals,
+    salesCount,
+    revenueCents,
+    movementsInCents: movements.in,
+    movementsOutCents: movements.out,
+    expectedCashCents,
+  };
+}
+
+function sessionMovements(sessionId) {
+  return db.prepare(`
+    SELECT id, direction, amount_cents, reason, operator, created_at
+    FROM cash_movements
+    WHERE session_id = ?
+    ORDER BY id ASC
+  `).all(sessionId);
 }
 
 function withTotals(session) {
   if (!session) return null;
-  return { ...session, totals: sessionTotals(session.id, session.opening_float_cents) };
+  return {
+    ...session,
+    movements: sessionMovements(session.id),
+    totals: sessionTotals(session.id, session.opening_float_cents),
+  };
 }
 
 // Turno attualmente aperto (con totali live) o null
@@ -79,6 +111,49 @@ router.post("/open", (req, res) => {
   `).run(floatCents, operator);
 
   const session = db.prepare("SELECT * FROM cash_sessions WHERE id = ?").get(info.lastInsertRowid);
+  res.json({ session: withTotals(session) });
+});
+
+// Movimento di cassa sul turno aperto: prelievo ('out') o versamento ('in').
+// Un errore si corregge registrando il movimento opposto, non cancellando.
+router.post("/movements", (req, res) => {
+  const open = getOpenSession();
+  if (!open) {
+    return res.status(409).json({ error: "Nessun turno di cassa aperto" });
+  }
+
+  const direction = req.body?.direction;
+  if (direction !== "in" && direction !== "out") {
+    return res.status(400).json({ error: "Tipo movimento non valido: usa 'in' o 'out'" });
+  }
+
+  const amountCents = req.body?.amount_cents;
+  if (!isValidCents(amountCents, MAX_MONEY_CENTS) || amountCents === 0) {
+    return res.status(400).json({ error: "Importo non valido: usa centesimi interi maggiori di zero" });
+  }
+
+  if (typeof req.body?.reason !== "string") {
+    return res.status(400).json({ error: "Il motivo del movimento e' obbligatorio" });
+  }
+  const reason = cleanText(req.body.reason, 240);
+  if (!reason) {
+    return res.status(400).json({ error: "Motivo non valido (massimo 240 caratteri)" });
+  }
+
+  // Un prelievo non puo' superare i contanti attesi in cassa in quel momento.
+  if (direction === "out") {
+    const { expectedCashCents } = sessionTotals(open.id, open.opening_float_cents);
+    if (amountCents > expectedCashCents) {
+      return res.status(409).json({ error: "Prelievo superiore ai contanti attesi in cassa" });
+    }
+  }
+
+  db.prepare(`
+    INSERT INTO cash_movements (session_id, direction, amount_cents, reason, operator)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(open.id, direction, amountCents, reason, open.operator);
+
+  const session = db.prepare("SELECT * FROM cash_sessions WHERE id = ?").get(open.id);
   res.json({ session: withTotals(session) });
 });
 

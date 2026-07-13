@@ -61,7 +61,21 @@ CREATE TABLE IF NOT EXISTS sale_items (
   FOREIGN KEY (product_id) REFERENCES products(id)
 );
 
+-- Movimenti di cassa a turno aperto (prelievi di sicurezza, aggiunta monete):
+-- entrano nel calcolo dei contanti attesi alla chiusura.
+CREATE TABLE IF NOT EXISTS cash_movements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL,
+  direction TEXT NOT NULL CHECK(direction IN ('in', 'out')),
+  amount_cents INTEGER NOT NULL CHECK(typeof(amount_cents) = 'integer' AND amount_cents > 0),
+  reason TEXT NOT NULL,
+  operator TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (session_id) REFERENCES cash_sessions(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_products_active ON products(active, sort_order);
+CREATE INDEX IF NOT EXISTS idx_cash_movements_session ON cash_movements(session_id);
 CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);
 CREATE INDEX IF NOT EXISTS idx_sales_session ON sales(session_id);
 CREATE INDEX IF NOT EXISTS idx_sales_voided ON sales(voided, created_at);

@@ -64,6 +64,10 @@ Apri il turno con il **fondo cassa** iniziale, vendi, e a fine serata **chiudi l
 cassa**: EventOrder ti dice quanti contanti dovrebbero esserci, tu li conti e vedi
 subito l'eventuale **scostamento**. Come un vero registratore (ma non fiscale).
 
+A turno aperto registri anche i **movimenti di cassa** — prelievi di sicurezza o
+aggiunta di monete per il resto — con importo e motivo: entrano nel calcolo dei
+contanti attesi, così la quadratura torna anche quando la cassa non resta intatta.
+
 ### 📜 Storico vendite e storni
 
 Ogni vendita finisce nel registro. Hai sbagliato una comanda? **Annullala** con un
