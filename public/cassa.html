@@ -75,7 +75,8 @@
             <div class="stack">
               <label class="field" id="operatorField" hidden>
                 <span class="field-label">Operatore</span>
-                <select class="input" name="operator"></select>
+                <input class="input" name="operator" list="operatorOptions" maxlength="80" placeholder="Nome operatore" />
+                <datalist id="operatorOptions"></datalist>
               </label>
               <label class="field">
                 <span class="field-label">Fondo cassa (€)</span>
@@ -113,7 +114,7 @@
             </div>
             <label class="field" id="discValueField" hidden>
               <span class="field-label" id="discValueLabel">Valore</span>
-              <input class="input" id="discValue" type="number" step="0.01" min="0" inputmode="decimal" placeholder="0" />
+              <input class="input" id="discValue" type="number" step="0.01" min="0" max="100" inputmode="decimal" placeholder="0" />
             </label>
             <div class="disc-line" id="discLine" hidden>
               <span id="discLineLabel">Sconto</span>

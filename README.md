@@ -67,7 +67,8 @@ subito l'eventuale **scostamento**. Come un vero registratore (ma non fiscale).
 ### 📜 Storico vendite e storni
 
 Ogni vendita finisce nel registro. Hai sbagliato una comanda? **Annullala** con un
-motivo: resta nello storico ma esce dai conti.
+motivo finché il turno è aperto: resta nello storico ma esce dai conti. Dopo la
+chiusura il turno è immutabile, così quadratura e storico restano coerenti.
 
 <div align="center">
 <img src="docs/screenshots/vendite.png" alt="Storico delle vendite con storno" width="820">
@@ -121,7 +122,7 @@ APP_NAME=Sagra del Paese
 BUSINESS_NAME=Pro Loco 2026
 CURRENCY_SYMBOL=€
 OPERATORS=Anna,Luca,Marco
-# APP_PIN=1234        # opzionale: protegge l'accesso con un PIN
+# APP_PIN=1234        # opzionale: PIN numerico di massimo 8 cifre
 ```
 
 | Variabile | Cosa fa |
@@ -130,6 +131,7 @@ OPERATORS=Anna,Luca,Marco
 | `CURRENCY_SYMBOL` / `LOCALE` | Valuta e formato di date e numeri |
 | `OPERATORS` | Operatori selezionabili all'apertura del turno |
 | `APP_PIN` | PIN d'accesso (vuoto = nessuna protezione) |
+| `HOST` | Interfaccia di rete (`127.0.0.1` di default; `0.0.0.0` per la LAN) |
 | `POS_SEED_DEMO` | Prodotti demo al primo avvio (`0` per disattivare) |
 | `BACKUP_KEEP` | Quanti backup conservare |
 
@@ -138,6 +140,9 @@ Con `APP_PIN` impostato, l'accesso è protetto da un **PIN-pad** touch:
 <div align="center">
 <img src="docs/screenshots/login.png" alt="EventOrder — accesso con PIN" width="360">
 </div>
+
+> **Accesso da tablet in LAN:** imposta `HOST=0.0.0.0` e configura sempre
+> `APP_PIN`. Il server usa HTTP: su reti non fidate va pubblicato dietro HTTPS.
 
 <br>
 
@@ -160,6 +165,7 @@ Con `APP_PIN` impostato, l'accesso è protetto da un **PIN-pad** touch:
 
 - **Node.js 20 + Express 5**, **SQLite** (`better-sqlite3`), frontend **vanilla JS** (nessun build step).
 - Importi gestiti in **centesimi interi** (niente errori di arrotondamento).
+- Nome e categoria dei prodotti salvati nella vendita: le rinomine future non alterano lo storico.
 - Report e chiusura usano l'**ora locale** per attribuire correttamente le vendite a cavallo della mezzanotte.
 - Backup con la copia **online consistente** di SQLite e rotazione automatica.
 - Branding/valuta esposti al frontend via `GET /api/config`.

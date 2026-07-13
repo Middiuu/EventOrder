@@ -14,10 +14,19 @@ function discountLabel(discountType, discountValue) {
   return "Sconto";
 }
 
+function parseSqliteUtc(value) {
+  if (value instanceof Date) return value;
+  const text = String(value || "");
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text)) {
+    return new Date(text.replace(" ", "T") + "Z");
+  }
+  return new Date(text);
+}
+
 function buildTicketText({ saleNumber, createdAt, items, subtotalCents, discountCents, discountType, discountValue, totalCents, paymentMethod, cashReceivedCents, changeCents, operator }) {
   const lines = [];
   lines.push(config.BUSINESS_NAME.toUpperCase());
-  lines.push(new Date(createdAt).toLocaleString(config.LOCALE));
+  lines.push(parseSqliteUtc(createdAt).toLocaleString(config.LOCALE));
   lines.push(`TICKET #${String(saleNumber).padStart(4, "0")}`);
   if (operator) lines.push(`Operatore: ${operator}`);
   lines.push("--------------------------");
@@ -55,4 +64,4 @@ async function printTicket(payload) {
   console.log("\n=== PRINT TICKET (STUB) ===\n" + text + "\n==========================\n");
 }
 
-module.exports = { printTicket };
+module.exports = { buildTicketText, printTicket };

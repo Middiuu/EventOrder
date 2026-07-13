@@ -164,10 +164,15 @@ function ensureScript(src) {
   });
 }
 
+let pageInitController = null;
+
 async function runPageInits() {
+  pageInitController?.abort();
+  pageInitController = new AbortController();
+  const { signal } = pageInitController;
   try {
-    await initCassa();
-    await initProdotti();
+    await initCassa(signal);
+    await initProdotti(signal);
     await initSales();
     await initReport();
     await initReportExport();
@@ -260,7 +265,9 @@ let reportMixChart = null;
 // --------------------
 // Helpers valuta / modali (condivisi)
 function eurToCents(value) {
-  const n = Number(String(value ?? "").replace(",", "."));
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const n = Number(raw.replace(",", "."));
   if (!Number.isFinite(n) || n < 0) return null;
   return Math.round(n * 100);
 }
@@ -347,7 +354,7 @@ const uiPrompt = (title, label, value = "") => openDialog({ title, input: { labe
 
 // --------------------
 // CASSA
-async function initCassa() {
+async function initCassa(signal) {
   const grid = document.querySelector("#productsGrid");
   const cartEl = document.querySelector("#cart");
   const totalEl = document.querySelector("#total");
@@ -367,7 +374,8 @@ async function initCassa() {
   const openSessionModal = document.querySelector("#openSessionModal");
   const openSessionForm = document.querySelector("#openSessionForm");
   const operatorField = document.querySelector("#operatorField");
-  const operatorSelect = operatorField?.querySelector('select[name="operator"]');
+  const operatorInput = operatorField?.querySelector('[name="operator"]');
+  const operatorOptions = operatorField?.querySelector("#operatorOptions");
   const closeSessionModal = document.querySelector("#closeSessionModal");
   const closeSessionForm = document.querySelector("#closeSessionForm");
   const closeSummary = document.querySelector("#closeSummary");
@@ -448,10 +456,17 @@ async function initCassa() {
 
   function populateOperators() {
     const ops = (APP_CONFIG.operators || []);
-    if (!operatorField || !operatorSelect) return;
-    if (ops.length === 0) { operatorField.hidden = true; return; }
+    if (!operatorField || !operatorInput) return;
     operatorField.hidden = false;
-    operatorSelect.innerHTML = ops.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join("");
+    if (operatorOptions) {
+      operatorOptions.innerHTML = ops.map(o => `<option value="${escapeHtml(o)}"></option>`).join("");
+    }
+    if (ops.length > 0) {
+      operatorInput.setAttribute("list", "operatorOptions");
+      if (!ops.includes(operatorInput.value)) operatorInput.value = ops[0];
+    } else {
+      operatorInput.removeAttribute("list");
+    }
   }
 
   openSessionBtn?.addEventListener("click", () => {
@@ -463,7 +478,9 @@ async function initCassa() {
     e.preventDefault();
     const floatCents = eurToCents(openSessionForm.float_eur.value || "0");
     if (floatCents === null) return alert("Fondo cassa non valido.");
-    const operator = operatorSelect && !operatorField.hidden ? operatorSelect.value : undefined;
+    const operator = operatorInput && !operatorField.hidden
+      ? String(operatorInput.value || "").trim() || undefined
+      : undefined;
     try {
       await api("/api/sessions/open", {
         method: "POST",
@@ -501,8 +518,8 @@ async function initCassa() {
   }
 
   closeSessionBtn?.addEventListener("click", () => {
-    renderCloseSummary();
     if (closeSessionForm) closeSessionForm.counted_eur.value = "";
+    renderCloseSummary();
     openModal(closeSessionModal);
   });
   closeSessionForm?.addEventListener("input", updateCloseDifference);
@@ -755,6 +772,7 @@ async function initCassa() {
       const restoMsg = out.change_cents != null && out.change_cents > 0 ? ` • resto ${money(out.change_cents)}` : "";
       showToast(`Ticket #${String(out.sale_number).padStart(4, "0")} • ${money(out.total_cents)}${restoMsg}`);
       await refreshSession();
+      await refreshShellData();
     } catch (err) {
       alert(err.message);
     } finally {
@@ -772,7 +790,7 @@ async function initCassa() {
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     [openSessionModal, paymentModal, closeSessionModal].forEach(m => { if (m && !m.hidden) closeModal(m); });
-  });
+  }, { signal });
 
   clearBtn?.addEventListener("click", async () => {
     if (cart.size === 0) return;
@@ -790,7 +808,7 @@ async function initCassa() {
 
 // --------------------
 // Prodotti / Report / Export
-async function initProdotti() {
+async function initProdotti(signal) {
   const table = document.querySelector("#productsTable");
   const form = document.querySelector("#productForm");
   const newBtn = document.querySelector("#newProductBtn");
@@ -973,7 +991,7 @@ async function initProdotti() {
     if (e.key === "Escape" && modalEl && !modalEl.hidden) {
       closeEditModal();
     }
-  });
+  }, { signal });
 
   form.onsubmit = async (e) => {
     e.preventDefault();
@@ -1103,7 +1121,7 @@ async function initReport() {
     <div class="bar-row">
       <div class="bar-head"><b>${escapeHtml(p.name)}</b><span class="amt">${euro(p.revenue_cents)}</span></div>
       <div class="bar-track"><div class="bar-fill" style="width:${Math.round(p.qty_sold / prodMax * 100)}%"></div></div>
-      <div class="small">${p.qty_sold} venduti</div>
+      <div class="small">${p.qty_sold} venduti · importo lordo prima degli sconti</div>
     </div>`).join("") || "<div class='empty-state'>Nessuna vendita registrata oggi.</div>";
 
   box.innerHTML = `
@@ -1233,7 +1251,7 @@ async function initSales() {
         </div>
         <div class="sale-side">
           <div class="line-total">${euro(sale.total_cents)}</div>
-          ${sale.voided ? "" : `<button class="btn btn-secondary btn-compact" data-void="${sale.id}" type="button">Annulla</button>`}
+          ${sale.can_void ? `<button class="btn btn-secondary btn-compact" data-void="${sale.id}" type="button">Annulla</button>` : ""}
         </div>
       </div>
     `;

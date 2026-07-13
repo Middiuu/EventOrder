@@ -1,6 +1,7 @@
 const express = require("express");
 const { db, getOpenSession } = require("../db");
 const { config } = require("../config");
+const { MAX_MONEY_CENTS, cleanText, isValidCents } = require("../validation");
 
 const router = express.Router();
 
@@ -41,6 +42,9 @@ router.get("/current", (req, res) => {
 // Dettaglio/report di un turno specifico
 router.get("/:id", (req, res) => {
   const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    return res.status(400).json({ error: "Id turno non valido" });
+  }
   const session = db.prepare("SELECT * FROM cash_sessions WHERE id = ?").get(id);
   if (!session) return res.status(404).json({ error: "Turno non trovato" });
   res.json({ session: withTotals(session) });
@@ -52,12 +56,19 @@ router.post("/open", (req, res) => {
     return res.status(409).json({ error: "Esiste gia' un turno di cassa aperto" });
   }
 
-  const floatCents = Number(req.body?.opening_float_cents);
-  if (!Number.isInteger(floatCents) || floatCents < 0) {
+  const floatCents = req.body?.opening_float_cents;
+  if (!isValidCents(floatCents, MAX_MONEY_CENTS)) {
     return res.status(400).json({ error: "Fondo cassa non valido" });
   }
 
-  const operator = String(req.body?.operator || "").trim() || null;
+  if (req.body?.operator != null && typeof req.body.operator !== "string") {
+    return res.status(400).json({ error: "Nome operatore non valido" });
+  }
+  const rawOperator = String(req.body?.operator || "").trim();
+  const operator = rawOperator ? cleanText(rawOperator, 80) : null;
+  if (rawOperator && !operator) {
+    return res.status(400).json({ error: "Nome operatore non valido" });
+  }
   if (config.OPERATORS.length > 0 && operator && !config.OPERATORS.includes(operator)) {
     return res.status(400).json({ error: "Operatore non riconosciuto" });
   }
@@ -76,14 +87,19 @@ router.post("/close", (req, res) => {
   const open = getOpenSession();
   if (!open) return res.status(404).json({ error: "Nessun turno di cassa aperto" });
 
-  const countedCents = Number(req.body?.counted_cash_cents);
-  if (!Number.isInteger(countedCents) || countedCents < 0) {
+  const countedCents = req.body?.counted_cash_cents;
+  if (!isValidCents(countedCents, MAX_MONEY_CENTS)) {
     return res.status(400).json({ error: "Conteggio contanti non valido" });
   }
 
   const { expectedCashCents } = sessionTotals(open.id, open.opening_float_cents);
   const differenceCents = countedCents - expectedCashCents;
-  const note = String(req.body?.note || "").trim() || null;
+  if (req.body?.note != null && typeof req.body.note !== "string") {
+    return res.status(400).json({ error: "Nota non valida" });
+  }
+  const rawNote = String(req.body?.note || "").trim();
+  const note = rawNote ? cleanText(rawNote, 500) : null;
+  if (rawNote && !note) return res.status(400).json({ error: "Nota troppo lunga" });
 
   db.prepare(`
     UPDATE cash_sessions

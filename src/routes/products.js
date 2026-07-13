@@ -1,11 +1,19 @@
 const express = require("express");
 const { db } = require("../db");
+const {
+  MAX_PRODUCT_PRICE_CENTS,
+  MAX_SORT_ORDER,
+  cleanText,
+  isSafeIntegerInRange,
+  isValidCents,
+  normalizeActive,
+} = require("../validation");
 
 const router = express.Router();
 
 // --- Helpers
 function cleanName(name) {
-  return String(name || "").trim();
+  return cleanText(name, 120);
 }
 
 // --- Read (solo attivi per Cassa)
@@ -65,8 +73,18 @@ router.post("/", (req, res) => {
   const { name, price_cents, category = "Generale", sort_order = 0, active = 1 } = req.body || {};
 
   const n = cleanName(name);
-  if (!n || typeof price_cents !== "number" || price_cents < 0) {
-    return res.status(400).json({ error: "name e price_cents sono obbligatori" });
+  const nextCategory = cleanText(category || "Generale", 80);
+  const nextActive = normalizeActive(active, true);
+  if (!n) return res.status(400).json({ error: "Nome prodotto non valido (massimo 120 caratteri)" });
+  if (!isValidCents(price_cents, MAX_PRODUCT_PRICE_CENTS)) {
+    return res.status(400).json({ error: "Prezzo non valido: usa un numero intero di centesimi" });
+  }
+  if (!nextCategory) return res.status(400).json({ error: "Categoria non valida (massimo 80 caratteri)" });
+  if (!isSafeIntegerInRange(sort_order, -MAX_SORT_ORDER, MAX_SORT_ORDER)) {
+    return res.status(400).json({ error: "Ordine non valido" });
+  }
+  if (nextActive === null) {
+    return res.status(400).json({ error: "Stato attivo non valido" });
   }
 
   // Unicità nome: case-insensitive + trim
@@ -86,10 +104,10 @@ router.post("/", (req, res) => {
     VALUES (?, ?, ?, ?, ?)
   `).run(
     n,
-    Number(price_cents),
-    String(category || "Generale"),
-    Number(sort_order) || 0,
-    active ? 1 : 0
+    price_cents,
+    nextCategory,
+    sort_order,
+    nextActive
   );
 
   res.json({ id: info.lastInsertRowid });
@@ -98,19 +116,27 @@ router.post("/", (req, res) => {
 // --- Update
 router.patch("/:id", (req, res) => {
   const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    return res.status(400).json({ error: "Id non valido" });
+  }
   const cur = db.prepare("SELECT * FROM products WHERE id=?").get(id);
   if (!cur) return res.status(404).json({ error: "Prodotto non trovato" });
 
   const nextName = req.body?.name !== undefined ? cleanName(req.body.name) : cur.name;
   const nextPrice = req.body?.price_cents ?? cur.price_cents;
-  const nextCategory = req.body?.category ?? cur.category;
+  const nextCategory = cleanText(req.body?.category ?? cur.category, 80);
   const nextSort = req.body?.sort_order ?? cur.sort_order;
-  const nextActive = (req.body?.active ?? cur.active) ? 1 : 0;
+  const nextActive = normalizeActive(req.body?.active, cur.active);
 
-  if (!nextName) return res.status(400).json({ error: "Nome non valido" });
-  if (typeof nextPrice !== "number" || nextPrice < 0) {
-    return res.status(400).json({ error: "Prezzo non valido" });
+  if (!nextName) return res.status(400).json({ error: "Nome non valido (massimo 120 caratteri)" });
+  if (!isValidCents(nextPrice, MAX_PRODUCT_PRICE_CENTS)) {
+    return res.status(400).json({ error: "Prezzo non valido: usa un numero intero di centesimi" });
   }
+  if (!nextCategory) return res.status(400).json({ error: "Categoria non valida (massimo 80 caratteri)" });
+  if (!isSafeIntegerInRange(nextSort, -MAX_SORT_ORDER, MAX_SORT_ORDER)) {
+    return res.status(400).json({ error: "Ordine non valido" });
+  }
+  if (nextActive === null) return res.status(400).json({ error: "Stato attivo non valido" });
 
   // Unicità nome: case-insensitive + trim, escludendo questo id
   const clash = db.prepare(`
@@ -131,9 +157,9 @@ router.patch("/:id", (req, res) => {
     WHERE id=?
   `).run(
     nextName,
-    Number(nextPrice),
-    String(nextCategory || "Generale"),
-    Number(nextSort) || 0,
+    nextPrice,
+    nextCategory,
+    nextSort,
     nextActive,
     id
   );
@@ -144,7 +170,7 @@ router.patch("/:id", (req, res) => {
 // --- Delete (solo prodotti mai venduti: lo storico vendite resta integro)
 router.delete("/:id", (req, res) => {
   const id = Number(req.params.id);
-  if (!Number.isInteger(id)) return res.status(400).json({ error: "Id non valido" });
+  if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: "Id non valido" });
 
   const cur = db.prepare("SELECT id FROM products WHERE id=?").get(id);
   if (!cur) return res.status(404).json({ error: "Prodotto non trovato" });

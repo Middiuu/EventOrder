@@ -1,5 +1,6 @@
 const express = require("express");
 const { db, getNextSaleNumber, getOpenSession } = require("../db");
+const { MAX_MONEY_CENTS, MAX_QTY, cleanText, isValidCents } = require("../validation");
 
 const PAYMENT_METHODS = new Set(["cash", "card", "other"]);
 
@@ -7,9 +8,10 @@ function loadItems(saleIds) {
   if (saleIds.length === 0) return new Map();
   const placeholders = saleIds.map(() => "?").join(",");
   const rows = db.prepare(`
-    SELECT si.sale_id, si.product_id, si.qty, si.unit_price_cents, si.line_total_cents, p.name
+    SELECT si.sale_id, si.product_id, si.qty, si.unit_price_cents,
+           si.line_total_cents, si.product_name AS name,
+           si.product_category AS category
     FROM sale_items si
-    JOIN products p ON p.id = si.product_id
     WHERE si.sale_id IN (${placeholders})
     ORDER BY si.id ASC
   `).all(...saleIds);
@@ -39,16 +41,23 @@ function createSalesRouter({ printTicket }) {
       return res.status(400).json({ error: "Metodo di pagamento non valido" });
     }
 
-    const normalized = items
-      .map(it => ({ product_id: Number(it.product_id), qty: Number(it.qty) }))
-      .filter(it => Number.isInteger(it.product_id) && Number.isInteger(it.qty) && it.qty > 0);
-
-    if (normalized.length === 0) return res.status(400).json({ error: "Items non validi" });
+    if (items.length > 100) return res.status(400).json({ error: "Troppi articoli nel carrello" });
+    const normalized = items.map(it => ({ product_id: it?.product_id, qty: it?.qty }));
+    const invalidItem = normalized.some(it =>
+      !Number.isSafeInteger(it.product_id) || it.product_id <= 0
+      || !Number.isSafeInteger(it.qty) || it.qty <= 0 || it.qty > MAX_QTY
+    );
+    if (invalidItem) {
+      return res.status(400).json({ error: `Ogni articolo deve avere id valido e quantita' tra 1 e ${MAX_QTY}` });
+    }
 
     const ids = normalized.map(i => i.product_id);
+    if (new Set(ids).size !== ids.length) {
+      return res.status(400).json({ error: "Lo stesso prodotto compare piu' volte nel carrello" });
+    }
     const placeholders = ids.map(() => "?").join(",");
     const products = db.prepare(`
-      SELECT id, name, price_cents
+      SELECT id, name, category, price_cents
       FROM products
       WHERE active=1 AND id IN (${placeholders})
     `).all(...ids);
@@ -64,10 +73,20 @@ function createSalesRouter({ printTicket }) {
       const p = map.get(it.product_id);
       const unit = p.price_cents;
       const line = unit * it.qty;
-      return { product_id: p.id, name: p.name, qty: it.qty, unit_price_cents: unit, line_total_cents: line };
+      return {
+        product_id: p.id,
+        name: p.name,
+        category: p.category,
+        qty: it.qty,
+        unit_price_cents: unit,
+        line_total_cents: line,
+      };
     });
 
     const subtotalCents = computedItems.reduce((a, b) => a + b.line_total_cents, 0);
+    if (!isValidCents(subtotalCents, MAX_MONEY_CENTS)) {
+      return res.status(400).json({ error: "Totale carrello fuori limite" });
+    }
 
     // Sconto / omaggio (opzionale): { type: 'percent'|'amount'|'gift', value }
     let discountType = null;
@@ -80,16 +99,16 @@ function createSalesRouter({ printTicket }) {
         discountType = "gift";
         discountCents = subtotalCents;
       } else if (type === "percent") {
-        const pct = Number(discount.value);
+        const pct = discount.value;
         if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
           return res.status(400).json({ error: "Percentuale sconto non valida (0-100)" });
         }
         discountType = "percent";
-        discountValue = Math.round(pct);
-        discountCents = Math.round(subtotalCents * pct / 100);
+        discountValue = Math.round(pct * 100) / 100;
+        discountCents = Math.round(subtotalCents * discountValue / 100);
       } else if (type === "amount") {
-        const amt = Number(discount.value);
-        if (!Number.isInteger(amt) || amt < 0) {
+        const amt = discount.value;
+        if (!isValidCents(amt, MAX_MONEY_CENTS)) {
           return res.status(400).json({ error: "Importo sconto non valido" });
         }
         discountType = "amount";
@@ -108,8 +127,8 @@ function createSalesRouter({ printTicket }) {
     if (paymentMethod === "cash") {
       const received = req.body?.cash_received_cents;
       // se non specificato assumiamo importo esatto
-      cashReceivedCents = received === undefined || received === null ? totalCents : Number(received);
-      if (!Number.isInteger(cashReceivedCents) || cashReceivedCents < totalCents) {
+      cashReceivedCents = received === undefined || received === null ? totalCents : received;
+      if (!isValidCents(cashReceivedCents, MAX_MONEY_CENTS) || cashReceivedCents < totalCents) {
         return res.status(400).json({ error: "Contanti ricevuti insufficienti" });
       }
       changeCents = cashReceivedCents - totalCents;
@@ -129,12 +148,17 @@ function createSalesRouter({ printTicket }) {
       const saleId = saleInfo.lastInsertRowid;
 
       const insItem = db.prepare(`
-        INSERT INTO sale_items (sale_id, product_id, qty, unit_price_cents, line_total_cents)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO sale_items
+          (sale_id, product_id, qty, unit_price_cents, line_total_cents,
+           product_name, product_category)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const it of computedItems) {
-        insItem.run(saleId, it.product_id, it.qty, it.unit_price_cents, it.line_total_cents);
+        insItem.run(
+          saleId, it.product_id, it.qty, it.unit_price_cents, it.line_total_cents,
+          it.name, it.category
+        );
       }
 
       const sale = db.prepare("SELECT id, sale_number, total_cents, created_at FROM sales WHERE id=?").get(saleId);
@@ -159,11 +183,14 @@ function createSalesRouter({ printTicket }) {
         operator: session.operator,
       });
     } catch (err) {
-      db.prepare("UPDATE sales SET voided=1, void_reason=? WHERE id=?")
-        .run("Stampa non riuscita", result.saleId);
+      console.error(`Stampa vendita #${result.saleNumber} non riuscita: ${err?.message || String(err)}`);
+      db.prepare(`
+        UPDATE sales
+        SET voided=1, void_reason=?, voided_at=datetime('now'), void_operator=?
+        WHERE id=?
+      `).run("Stampa non riuscita", session.operator, result.saleId);
       return res.status(502).json({
         error: `Stampa non riuscita. Vendita #${String(result.saleNumber).padStart(4, "0")} annullata automaticamente.`,
-        details: err?.message || String(err),
       });
     }
 
@@ -180,8 +207,15 @@ function createSalesRouter({ printTicket }) {
 
   // Elenco vendite recenti (opzionalmente filtrate per turno)
   router.get("/", (req, res) => {
-    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 50));
-    const sessionId = req.query.session ? Number(req.query.session) : null;
+    const requestedLimit = req.query.limit === undefined ? 50 : Number(req.query.limit);
+    if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1) {
+      return res.status(400).json({ error: "Limite non valido" });
+    }
+    const limit = Math.min(500, requestedLimit);
+    const sessionId = req.query.session === undefined ? null : Number(req.query.session);
+    if (sessionId !== null && (!Number.isSafeInteger(sessionId) || sessionId <= 0)) {
+      return res.status(400).json({ error: "Turno non valido" });
+    }
 
     const rows = sessionId
       ? db.prepare(`
@@ -192,44 +226,68 @@ function createSalesRouter({ printTicket }) {
         `).all(limit);
 
     const itemsBySale = loadItems(rows.map(r => r.id));
-    res.json(rows.map(r => ({ ...r, items: itemsBySale.get(r.id) || [] })));
+    const openSession = getOpenSession();
+    res.json(rows.map(r => ({
+      ...r,
+      can_void: !r.voided && r.session_id === openSession?.id,
+      items: itemsBySale.get(r.id) || [],
+    })));
   });
 
   // Dettaglio singola vendita
   router.get("/:id", (req, res) => {
     const id = Number(req.params.id);
-    if (!Number.isInteger(id)) return res.status(400).json({ error: "Id non valido" });
+    if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: "Id non valido" });
     const sale = db.prepare("SELECT * FROM sales WHERE id = ?").get(id);
     if (!sale) return res.status(404).json({ error: "Vendita non trovata" });
     const items = loadItems([id]).get(id) || [];
-    res.json({ ...sale, items });
+    const openSession = getOpenSession();
+    res.json({ ...sale, can_void: !sale.voided && sale.session_id === openSession?.id, items });
   });
 
   // Storno di una vendita specifica con motivo
   router.post("/:id/void", (req, res) => {
     const id = Number(req.params.id);
-    if (!Number.isInteger(id)) return res.status(400).json({ error: "Id non valido" });
-    const sale = db.prepare("SELECT id, sale_number, voided FROM sales WHERE id = ?").get(id);
+    if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: "Id non valido" });
+    const sale = db.prepare("SELECT id, sale_number, session_id, voided FROM sales WHERE id = ?").get(id);
     if (!sale) return res.status(404).json({ error: "Vendita non trovata" });
     if (sale.voided) return res.status(400).json({ error: "Vendita gia' annullata" });
 
-    const reason = String(req.body?.reason || "").trim() || "Storno manuale";
-    db.prepare("UPDATE sales SET voided=1, void_reason=? WHERE id=?").run(reason, id);
+    const openSession = getOpenSession();
+    if (!openSession || sale.session_id !== openSession.id) {
+      return res.status(409).json({ error: "Non puoi annullare una vendita di un turno chiuso" });
+    }
+
+    const reason = cleanText(req.body?.reason || "Storno manuale", 240);
+    if (!reason) return res.status(400).json({ error: "Motivo storno non valido" });
+    db.prepare(`
+      UPDATE sales
+      SET voided=1, void_reason=?, voided_at=datetime('now'), void_operator=?
+      WHERE id=?
+    `).run(reason, openSession.operator, id);
     res.json({ ok: true, sale_number: sale.sale_number });
   });
 
   // Annulla l'ultima vendita non annullata (retro-compatibile)
   router.post("/void-last", (req, res) => {
+    const openSession = getOpenSession();
+    if (!openSession) {
+      return res.status(409).json({ error: "Nessun turno aperto: non puoi annullare vendite gia' chiuse" });
+    }
     const last = db.prepare(`
       SELECT id, sale_number FROM sales
-      WHERE voided=0
+      WHERE voided=0 AND session_id=?
       ORDER BY id DESC
       LIMIT 1
-    `).get();
+    `).get(openSession.id);
 
     if (!last) return res.status(404).json({ error: "Nessuna vendita da annullare" });
 
-    db.prepare("UPDATE sales SET voided=1, void_reason=? WHERE id=?").run("Annullo ultima vendita", last.id);
+    db.prepare(`
+      UPDATE sales
+      SET voided=1, void_reason=?, voided_at=datetime('now'), void_operator=?
+      WHERE id=?
+    `).run("Annullo ultima vendita", openSession.operator, last.id);
     res.json({ ok: true, sale_number: last.sale_number });
   });
 

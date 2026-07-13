@@ -7,8 +7,8 @@ const PORT = process.env.PORT || 3000;
 const app = createApp();
 
 if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`${config.APP_NAME} avviato su http://localhost:${PORT}`);
+  app.listen(PORT, config.HOST, () => {
+    console.log(`${config.APP_NAME} avviato su http://${config.HOST}:${PORT}`);
   });
 }
 

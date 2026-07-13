@@ -38,6 +38,13 @@ const OPERATORS = String(process.env.OPERATORS || "")
 
 // PIN unico opzionale per proteggere l'accesso. Vuoto = nessuna protezione.
 const APP_PIN = String(process.env.APP_PIN || "").trim();
+if (APP_PIN && !/^\d{1,8}$/.test(APP_PIN)) {
+  throw new Error("APP_PIN deve contenere da 1 a 8 cifre");
+}
+
+// Per sicurezza l'app ascolta solo sulla macchina locale. Per l'uso da tablet
+// sulla LAN va impostato esplicitamente HOST=0.0.0.0 (e configurato APP_PIN).
+const HOST = String(process.env.HOST || "127.0.0.1").trim() || "127.0.0.1";
 
 const config = {
   APP_NAME,
@@ -49,6 +56,7 @@ const config = {
   BACKUP_KEEP,
   OPERATORS,
   APP_PIN,
+  HOST,
   SLUG: slugify(APP_NAME),
 };
 

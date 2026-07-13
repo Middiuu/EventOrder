@@ -22,7 +22,12 @@ function parseCookies(header) {
   for (const part of header.split(";")) {
     const idx = part.indexOf("=");
     if (idx <= 0) continue;
-    out[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim());
+    try {
+      out[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim());
+    } catch {
+      // Un cookie malformato equivale a un cookie non valido, non a un errore server.
+      return {};
+    }
   }
   return out;
 }

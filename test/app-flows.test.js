@@ -543,3 +543,173 @@ test("errore stampa annulla automaticamente la vendita", async () => {
     harness.cleanup();
   }
 });
+
+test("validazione rigorosa: rifiuta centesimi frazionari e carrelli parzialmente invalidi", async () => {
+  const harness = createHarness({ printTicket: async () => {} });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const product = (await request({ url: "/api/products" })).json()[0];
+
+      const fractionalProduct = await request({
+        method: "POST",
+        url: "/api/products",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Prezzo frazionario", price_cents: 1.5 }),
+      });
+      assert.equal(fractionalProduct.status, 400);
+
+      const fractionalFloat = await request({
+        method: "POST",
+        url: "/api/sessions/open",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opening_float_cents: 1.5 }),
+      });
+      assert.equal(fractionalFloat.status, 400);
+
+      await request({
+        method: "POST",
+        url: "/api/sessions/open",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opening_float_cents: 0 }),
+      });
+
+      const mixed = await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: [
+            { product_id: product.id, qty: 1 },
+            { product_id: product.id, qty: -1 },
+          ],
+        }),
+      });
+      assert.equal(mixed.status, 400);
+
+      const duplicate = await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: [
+            { product_id: product.id, qty: 1 },
+            { product_id: product.id, qty: 1 },
+          ],
+        }),
+      });
+      assert.equal(duplicate.status, 400);
+
+      const sales = (await request({ url: "/api/sales" })).json();
+      assert.equal(sales.length, 0);
+
+      const badRange = await request({ url: "/api/reports/export.csv?from=non-data" });
+      assert.equal(badRange.status, 400);
+      assert.match(badRange.json().error, /YYYY-MM-DD/);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("storico immutabile e storni vietati dopo la chiusura del turno", async () => {
+  const harness = createHarness({ printTicket: async () => {} });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const product = (await request({ url: "/api/products" })).json()[0];
+      const originalName = product.name;
+
+      await request({
+        method: "POST",
+        url: "/api/sessions/open",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opening_float_cents: 0, operator: "Anna" }),
+      });
+      await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: [{ product_id: product.id, qty: 1 }] }),
+      });
+
+      let sale = (await request({ url: "/api/sales?limit=1" })).json()[0];
+      assert.equal(sale.items[0].name, originalName);
+      assert.equal(sale.can_void, true);
+
+      await request({
+        method: "PATCH",
+        url: `/api/products/${product.id}`,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Nome nuovo" }),
+      });
+
+      sale = (await request({ url: "/api/sales?limit=1" })).json()[0];
+      assert.equal(sale.items[0].name, originalName);
+      const report = (await request({ url: "/api/reports/today" })).json();
+      assert.equal(report.byProduct[0].name, originalName);
+
+      const close = await request({
+        method: "POST",
+        url: "/api/sessions/close",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ counted_cash_cents: product.price_cents }),
+      });
+      assert.equal(close.status, 200);
+
+      const forbiddenVoid = await request({
+        method: "POST",
+        url: `/api/sales/${sale.id}/void`,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "Troppo tardi" }),
+      });
+      assert.equal(forbiddenVoid.status, 409);
+
+      const closedSale = (await request({ url: "/api/sales?limit=1" })).json()[0];
+      assert.equal(closedSale.can_void, false);
+      assert.equal(closedSale.voided, 0);
+
+      const session = (await request({ url: "/api/sessions/1" })).json().session;
+      assert.equal(session.expected_cash_cents, session.totals.expectedCashCents);
+      assert.equal(session.difference_cents, 0);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("lo sconto percentuale decimale resta coerente tra calcolo, storico e stampa", async () => {
+  const printed = [];
+  const harness = createHarness({ printTicket: async payload => printed.push(payload) });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const product = (await request({ url: "/api/products" })).json()[0];
+      await request({
+        method: "POST",
+        url: "/api/sessions/open",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opening_float_cents: 0 }),
+      });
+
+      const result = await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: [{ product_id: product.id, qty: 1 }],
+          payment_method: "card",
+          discount: { type: "percent", value: 12.5 },
+        }),
+      });
+      assert.equal(result.status, 200);
+      assert.equal(result.json().discount_cents, Math.round(product.price_cents * 0.125));
+
+      const sale = (await request({ url: "/api/sales?limit=1" })).json()[0];
+      assert.equal(sale.discount_value, 12.5);
+      assert.equal(printed[0].discountValue, 12.5);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});

@@ -4,7 +4,7 @@
   "description": "Software di cassa locale non fiscale, configurabile per qualsiasi attivita' o evento.",
   "main": "src/server.js",
   "scripts": {
-    "test": "node --check src/app.js && node --check src/server.js && node --check src/config.js && node --check src/auth.js && node --check src/db.js && node --check src/printer.js && node --check src/routes/products.js && node --check src/routes/sales.js && node --check src/routes/sessions.js && node --check src/routes/reports.js && node --check public/app.js && node --test test/*.test.js",
+    "test": "node --check src/app.js && node --check src/server.js && node --check src/config.js && node --check src/auth.js && node --check src/db.js && node --check src/validation.js && node --check src/printer.js && node --check src/routes/products.js && node --check src/routes/sales.js && node --check src/routes/sessions.js && node --check src/routes/reports.js && node --check public/app.js && node --test test/*.test.js",
     "dev": "nodemon src/server.js",
     "start": "node src/server.js"
   },

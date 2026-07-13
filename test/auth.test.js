@@ -141,3 +141,19 @@ test("il login corretto azzera il contatore dei tentativi falliti", async () => 
     harness.cleanup();
   }
 });
+
+test("un cookie percent-encoded malformato viene rifiutato con 401", async () => {
+  const harness = createHarness({ env: { APP_PIN: PIN } });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const res = await request({
+        url: "/api/products",
+        headers: { Cookie: "pos_auth=%E0%A4%A" },
+      });
+      assert.equal(res.status, 401);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});

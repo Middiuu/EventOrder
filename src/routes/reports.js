@@ -23,6 +23,26 @@ function addDays(dateObj, days) {
   return d;
 }
 
+function parseLocalYmd(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+    return null;
+  }
+  return date;
+}
+
+function rangeError(message) {
+  const err = new Error(message);
+  err.status = 400;
+  err.publicMessage = message;
+  return err;
+}
+
 function csvEscape(value) {
   const s = String(value ?? "");
   if (/[",;\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
@@ -42,10 +62,15 @@ function centsToEuroString(cents) {
 function getRangeFromQuery(req) {
   const today = formatLocalDateYYYYMMDD(new Date());
   const fromDay = String(req.query.from || today).trim();
+  const fromDate = parseLocalYmd(fromDay);
+  if (!fromDate) throw rangeError("Data 'from' non valida: usa YYYY-MM-DD");
 
   // default: from + 1 giorno
-  const autoTo = formatLocalDateYYYYMMDD(addDays(new Date(fromDay), 1));
+  const autoTo = formatLocalDateYYYYMMDD(addDays(fromDate, 1));
   const toDay = String(req.query.to || autoTo).trim();
+  const toDate = parseLocalYmd(toDay);
+  if (!toDate) throw rangeError("Data 'to' non valida: usa YYYY-MM-DD");
+  if (toDate <= fromDate) throw rangeError("La data 'to' deve essere successiva a 'from'");
 
   const from = `${fromDay} 00:00:00`;
   const to = `${toDay} 00:00:00`;
@@ -69,14 +94,14 @@ router.get("/today", (req, res) => {
 
   const byProduct = db.prepare(`
     SELECT
-      p.name,
+      si.product_name AS name,
       SUM(si.qty) AS qty_sold,
-      SUM(si.line_total_cents) AS revenue_cents
+      SUM(si.line_total_cents) AS revenue_cents,
+      SUM(si.line_total_cents) AS gross_revenue_cents
     FROM sale_items si
     JOIN sales s ON s.id=si.sale_id
-    JOIN products p ON p.id=si.product_id
     WHERE s.voided=0 AND date(s.created_at,'localtime')=date('now','localtime')
-    GROUP BY p.id
+    GROUP BY si.product_name
     ORDER BY qty_sold DESC, revenue_cents DESC
   `).all();
 
@@ -110,16 +135,16 @@ router.get("/export.csv", (req, res) => {
 
   const byProduct = db.prepare(`
     SELECT
-      p.name AS product_name,
+      si.product_name AS product_name,
       SUM(si.qty) AS qty_sold,
-      SUM(si.line_total_cents) AS revenue_cents
+      SUM(si.line_total_cents) AS revenue_cents,
+      SUM(si.line_total_cents) AS gross_revenue_cents
     FROM sale_items si
     JOIN sales s ON s.id=si.sale_id
-    JOIN products p ON p.id=si.product_id
     WHERE s.voided=0
       AND datetime(s.created_at,'localtime') >= datetime(?)
       AND datetime(s.created_at,'localtime') < datetime(?)
-    GROUP BY p.id
+    GROUP BY si.product_name
     ORDER BY qty_sold DESC, revenue_cents DESC
   `).all(from, to);
 
@@ -141,7 +166,7 @@ router.get("/export.csv", (req, res) => {
     "total_revenue_eur",
     "product_name",
     "qty_sold",
-    "product_revenue_eur"
+    "product_gross_revenue_eur"
   ].join(sep);
 
   const lines = [header];

@@ -15,6 +15,13 @@ function createApp(options = {}) {
   initDb();
 
   const app = express();
+  app.disable("x-powered-by");
+  app.use((req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    next();
+  });
   app.use(express.json());
 
   // Config pubblica per il frontend (branding, valuta, locale) — sempre accessibile
@@ -39,9 +46,13 @@ function createApp(options = {}) {
 
   // Error handler globale: risposta JSON coerente invece della pagina di default
   app.use((err, req, res, next) => {
-    console.error("Errore non gestito:", err);
     if (res.headersSent) return next(err);
-    res.status(err.status || 500).json({ error: "Errore interno del server" });
+    const status = err.status || 500;
+    if (status >= 500) console.error("Errore non gestito:", err);
+    const message = status < 500 && err.publicMessage
+      ? err.publicMessage
+      : "Errore interno del server";
+    res.status(status).json({ error: message });
   });
 
   return app;

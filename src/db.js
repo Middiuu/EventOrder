@@ -13,31 +13,73 @@ db.pragma("foreign_keys = ON");
 
 // Migrazioni idempotenti: aggiunge colonne mancanti su DB gia' esistenti,
 // perche' "CREATE TABLE IF NOT EXISTS" non altera tabelle gia' presenti.
-function runMigrations() {
-  const expectedSalesColumns = {
-    discount_cents: "INTEGER NOT NULL DEFAULT 0",
-    discount_type: "TEXT",
-    discount_value: "INTEGER",
-    payment_method: "TEXT NOT NULL DEFAULT 'cash'",
-    cash_received_cents: "INTEGER",
-    change_cents: "INTEGER",
-    operator: "TEXT",
-    session_id: "INTEGER",
-    void_reason: "TEXT",
-  };
+const EXPECTED_SALES_COLUMNS = {
+  discount_cents: "INTEGER NOT NULL DEFAULT 0",
+  discount_type: "TEXT",
+  discount_value: "REAL",
+  payment_method: "TEXT NOT NULL DEFAULT 'cash'",
+  cash_received_cents: "INTEGER",
+  change_cents: "INTEGER",
+  operator: "TEXT",
+  session_id: "INTEGER",
+  void_reason: "TEXT",
+  voided_at: "TEXT",
+  void_operator: "TEXT",
+};
 
+const EXPECTED_SALE_ITEM_COLUMNS = {
+  product_name: "TEXT NOT NULL DEFAULT ''",
+  product_category: "TEXT NOT NULL DEFAULT 'Generale'",
+};
+
+function tableExists(table) {
+  return Boolean(db.prepare(`
+    SELECT 1 FROM sqlite_master WHERE type='table' AND name=?
+  `).get(table));
+}
+
+function addMissingColumns(table, expectedColumns) {
+  if (!tableExists(table)) return;
   const existing = new Set(
-    db.prepare("PRAGMA table_info(sales)").all().map(c => c.name)
+    db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name)
   );
-
-  for (const [name, definition] of Object.entries(expectedSalesColumns)) {
+  for (const [name, definition] of Object.entries(expectedColumns)) {
     if (!existing.has(name)) {
-      db.exec(`ALTER TABLE sales ADD COLUMN ${name} ${definition}`);
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
     }
   }
 }
 
+function ensureMigratedColumns() {
+  addMissingColumns("sales", EXPECTED_SALES_COLUMNS);
+  addMissingColumns("sale_items", EXPECTED_SALE_ITEM_COLUMNS);
+}
+
+function runMigrations() {
+  ensureMigratedColumns();
+
+  // I database precedenti conservavano il nome solo nella tabella prodotti.
+  // Lo copiamo una volta nelle righe storiche, che da ora restano immutabili.
+  db.exec(`
+    UPDATE sale_items
+    SET product_category = COALESCE(
+      (SELECT category FROM products WHERE id = sale_items.product_id),
+      'Generale'
+    )
+    WHERE product_name = '';
+
+    UPDATE sale_items
+    SET product_name = COALESCE((SELECT name FROM products WHERE id = sale_items.product_id), '')
+    WHERE product_name = '';
+  `);
+
+  db.pragma("user_version = 2");
+}
+
 function initDb() {
+  // Le colonne vanno aggiunte prima degli indici definiti nello schema: su un
+  // database vecchio, un CREATE INDEX che cita una colonna assente fallirebbe.
+  ensureMigratedColumns();
   const schema = fs.readFileSync(SCHEMA_PATH, "utf8");
   db.exec(schema);
   runMigrations();

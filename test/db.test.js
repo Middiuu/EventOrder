@@ -63,3 +63,59 @@ test("getNextSaleNumber incrementa in modo progressivo e resta allineato alle ve
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("migrazione legacy aggiunge e valorizza gli snapshot prodotto prima di creare gli indici", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
+  const dbPath = path.join(tempDir, "pos.sqlite");
+  const Database = require("better-sqlite3");
+
+  try {
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        price_cents INTEGER NOT NULL,
+        category TEXT NOT NULL DEFAULT 'Generale',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE sales (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sale_number INTEGER NOT NULL,
+        total_cents INTEGER NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        voided INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE sale_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sale_id INTEGER NOT NULL,
+        product_id INTEGER NOT NULL,
+        qty INTEGER NOT NULL,
+        unit_price_cents INTEGER NOT NULL,
+        line_total_cents INTEGER NOT NULL
+      );
+      INSERT INTO products (name, price_cents, category) VALUES ('Nome storico', 500, 'Cibo');
+      INSERT INTO sales (sale_number, total_cents) VALUES (1, 500);
+      INSERT INTO sale_items (sale_id, product_id, qty, unit_price_cents, line_total_cents)
+      VALUES (1, 1, 1, 500, 500);
+    `);
+    legacy.close();
+
+    const dbModule = loadDbModule(dbPath);
+    dbModule.initDb();
+
+    const item = dbModule.db.prepare(`
+      SELECT product_name, product_category FROM sale_items WHERE id=1
+    `).get();
+    assert.deepEqual(item, { product_name: "Nome storico", product_category: "Cibo" });
+    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 2);
+    assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "session_id"));
+
+    dbModule.db.close();
+  } finally {
+    delete process.env.POS_DB_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
