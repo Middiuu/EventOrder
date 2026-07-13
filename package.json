@@ -9,7 +9,7 @@
     "start": "node src/server.js"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=24.0.0"
   },
   "keywords": [
     "pos",
@@ -26,11 +26,15 @@
     "@fontsource/onest": "^5.2.11",
     "better-sqlite3": "^12.11.1",
     "chart.js": "^4.5.1",
-    "dotenv": "^16.4.5",
+    "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "sortablejs": "^1.15.7"
   },
   "devDependencies": {
-    "nodemon": "^3.1.11"
+    "nodemon": "^3.1.14"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "fsevents@2.3.3": true
   }
 }

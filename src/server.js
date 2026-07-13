@@ -1,4 +1,4 @@
-require("dotenv").config();
+require("dotenv").config({ quiet: true });
 
 const { createApp } = require("./app");
 const { config } = require("./config");

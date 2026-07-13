@@ -10,7 +10,7 @@ Pensato per sagre, mercatini, banchetti, feste di paese e Pro Loco:
 apri la cassa, tocca i prodotti, incassi e stampi il ticket. Fine.
 
 ![Licenza MIT](https://img.shields.io/badge/licenza-MIT-5B4BF0)
-![Node 20](https://img.shields.io/badge/Node-20_LTS-16A34A)
+![Node 24](https://img.shields.io/badge/Node-24_LTS-16A34A)
 ![Non fiscale](https://img.shields.io/badge/documento-non_fiscale-52525B)
 ![Offline](https://img.shields.io/badge/dati-100%25_locali-7D6FFF)
 
@@ -108,7 +108,7 @@ Apri **http://localhost:3000**: parti dalla schermata di benvenuto, premi
 **Inizia il servizio** e sei in cassa. Al primo avvio trovi qualche prodotto demo
 (disattivabile): entra nella pagina **Prodotti** e crea i tuoi.
 
-> Serve **Node.js 20** (vedi `.nvmrc`). Con `nvm`: `nvm use`.
+> Serve **Node.js 24 LTS** (vedi `.nvmrc`). Con `nvm`: `nvm use`.
 
 <br>
 
@@ -163,7 +163,7 @@ Con `APP_PIN` impostato, l'accesso è protetto da un **PIN-pad** touch:
 
 <br>
 
-- **Node.js 20 + Express 5**, **SQLite** (`better-sqlite3`), frontend **vanilla JS** (nessun build step).
+- **Node.js 24 LTS + Express 5**, **SQLite** (`better-sqlite3`), frontend **vanilla JS** (nessun build step).
 - Importi gestiti in **centesimi interi** (niente errori di arrotondamento).
 - Nome e categoria dei prodotti salvati nella vendita: le rinomine future non alterano lo storico.
 - Report e chiusura usano l'**ora locale** per attribuire correttamente le vendite a cavallo della mezzanotte.
