@@ -1,25 +1,8 @@
 const fs = require("fs");
-const http = require("http");
 const os = require("os");
 const path = require("path");
-const { Duplex } = require("stream");
 
 const PROJECT_ROOT = path.join(__dirname, "..", "..");
-
-class MockSocket extends Duplex {
-  constructor() {
-    super();
-    this.chunks = [];
-    this.remoteAddress = "127.0.0.1";
-  }
-
-  _read() {}
-
-  _write(chunk, encoding, callback) {
-    this.chunks.push(Buffer.from(chunk));
-    callback();
-  }
-}
 
 function clearAppModules() {
   const modules = [
@@ -51,92 +34,30 @@ function loadApp({ dbPath, printTicket, env = {} } = {}) {
   return createApp({ printTicket });
 }
 
-function parseRawHttpResponse(buffer) {
-  const raw = buffer.toString("utf8");
-  const headerEnd = raw.indexOf("\r\n\r\n");
-  const headerPart = headerEnd >= 0 ? raw.slice(0, headerEnd) : raw;
-  let bodyBuffer = headerEnd >= 0 ? buffer.subarray(headerEnd + 4) : Buffer.alloc(0);
-  const headerLines = headerPart.split("\r\n");
-  const statusLine = headerLines.shift() || "HTTP/1.1 500";
-  const status = Number(statusLine.split(" ")[1] || 500);
-  const headers = {};
+// Richiesta HTTP reale verso il server di test. I redirect non vengono
+// seguiti, cosi' i test possono verificare status 302 e header Location.
+async function requestHttp(baseUrl, { method = "GET", url = "/", headers = {}, body } = {}) {
+  const res = await fetch(baseUrl + url, { method, headers, body, redirect: "manual" });
+  const buffer = Buffer.from(await res.arrayBuffer());
 
-  for (const line of headerLines) {
-    const idx = line.indexOf(":");
-    if (idx <= 0) continue;
-    const key = line.slice(0, idx).trim().toLowerCase();
-    const value = line.slice(idx + 1).trim();
-    headers[key] = value;
+  const responseHeaders = {};
+  for (const [key, value] of res.headers.entries()) {
+    responseHeaders[key] = value;
   }
-
-  if (headers["transfer-encoding"] === "chunked") {
-    const decoded = [];
-    let offset = 0;
-
-    while (offset < bodyBuffer.length) {
-      const lenEnd = bodyBuffer.indexOf("\r\n", offset, "utf8");
-      const lenHex = bodyBuffer.toString("utf8", offset, lenEnd);
-      const len = parseInt(lenHex, 16);
-      if (!len) break;
-      const chunkStart = lenEnd + 2;
-      const chunkEnd = chunkStart + len;
-      decoded.push(bodyBuffer.subarray(chunkStart, chunkEnd));
-      offset = chunkEnd + 2;
-    }
-
-    bodyBuffer = Buffer.concat(decoded);
+  const setCookie = res.headers.getSetCookie?.() || [];
+  if (setCookie.length > 0) {
+    responseHeaders["set-cookie"] = setCookie.join("; ");
   }
 
   return {
-    status,
-    headers,
-    buffer: bodyBuffer,
-    text: bodyBuffer.toString("utf8"),
+    status: res.status,
+    headers: responseHeaders,
+    buffer,
+    text: buffer.toString("utf8"),
     json() {
-      return JSON.parse(bodyBuffer.toString("utf8") || "{}");
+      return JSON.parse(buffer.toString("utf8") || "{}");
     },
   };
-}
-
-function requestApp(app, { method = "GET", url = "/", headers = {}, body } = {}) {
-  return new Promise((resolve, reject) => {
-    const bodyBuffer = body === undefined
-      ? null
-      : Buffer.isBuffer(body)
-        ? body
-        : Buffer.from(String(body));
-
-    const normalizedHeaders = Object.fromEntries(
-      Object.entries(headers).map(([key, value]) => [key.toLowerCase(), value])
-    );
-
-    if (bodyBuffer && normalizedHeaders["content-length"] === undefined) {
-      normalizedHeaders["content-length"] = String(bodyBuffer.length);
-    }
-
-    const reqSocket = new MockSocket();
-    const req = new http.IncomingMessage(reqSocket);
-    req.method = method;
-    req.url = url;
-    req.headers = normalizedHeaders;
-    req.connection = req.socket;
-
-    const resSocket = new MockSocket();
-    const res = new http.ServerResponse(req);
-    res.assignSocket(resSocket);
-
-    res.on("finish", () => {
-      resolve(parseRawHttpResponse(Buffer.concat(resSocket.chunks)));
-    });
-    res.on("error", reject);
-
-    app.handle(req, res, reject);
-
-    if (bodyBuffer) {
-      req.push(bodyBuffer);
-    }
-    req.push(null);
-  });
 }
 
 function createHarness(options = {}) {
@@ -149,9 +70,24 @@ function createHarness(options = {}) {
     dbPath,
     app,
     async withServer(run) {
-      return run({
-        request: (reqOptions) => requestApp(app, reqOptions),
+      const server = await new Promise((resolve) => {
+        const s = app.listen(0, "127.0.0.1", () => resolve(s));
       });
+      const { port } = server.address();
+      const baseUrl = `http://127.0.0.1:${port}`;
+
+      try {
+        return await run({
+          request: (reqOptions) => requestHttp(baseUrl, reqOptions),
+        });
+      } finally {
+        await new Promise((resolve) => {
+          server.close(resolve);
+          // chiude anche le connessioni keep-alive di fetch, altrimenti
+          // close() resterebbe in attesa che scadano da sole
+          server.closeAllConnections();
+        });
+      }
     },
     cleanup() {
       delete process.env.POS_DB_PATH;
