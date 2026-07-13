@@ -236,6 +236,73 @@ test("POST /api/products/reorder aggiorna sort_order in modo atomico", async () 
         body: JSON.stringify({ order: [] }),
       });
       assert.equal(bad.status, 400);
+
+      // id inesistente -> 400 e nessun riordino applicato
+      const ghost = await request({
+        method: "POST",
+        url: "/api/products/reorder",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order: [...reversedIds, 99999] }),
+      });
+      assert.equal(ghost.status, 400);
+
+      // id duplicato -> 400
+      const dup = await request({
+        method: "POST",
+        url: "/api/products/reorder",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ order: [reversedIds[0], reversedIds[0]] }),
+      });
+      assert.equal(dup.status, 400);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("eliminazione prodotti: consentita solo se mai venduti", async () => {
+  const harness = createHarness({ printTicket: async () => {} });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const products = (await request({ url: "/api/products" })).json();
+      const soldProduct = products[0];
+
+      // prodotto mai venduto -> eliminazione ok
+      const created = await request({
+        method: "POST",
+        url: "/api/products",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Prodotto Temporaneo", price_cents: 100 }),
+      });
+      const tempId = created.json().id;
+
+      const deleted = await request({ method: "DELETE", url: `/api/products/${tempId}` });
+      assert.equal(deleted.status, 200);
+      const all = (await request({ url: "/api/products/all" })).json();
+      assert.equal(all.some((p) => p.id === tempId), false);
+
+      // prodotto con vendite registrate -> 409
+      await request({
+        method: "POST",
+        url: "/api/sessions/open",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opening_float_cents: 0 }),
+      });
+      await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: [{ product_id: soldProduct.id, qty: 1 }] }),
+      });
+
+      const conflict = await request({ method: "DELETE", url: `/api/products/${soldProduct.id}` });
+      assert.equal(conflict.status, 409);
+      assert.match(conflict.json().error, /disattivalo/);
+
+      // prodotto inesistente -> 404
+      const missing = await request({ method: "DELETE", url: "/api/products/99999" });
+      assert.equal(missing.status, 404);
     });
   } finally {
     harness.cleanup();

@@ -801,6 +801,7 @@ async function initProdotti() {
   const editForm = document.querySelector("#editProductForm");
   const closeModalBtn = document.querySelector("#closeEditModalBtn");
   const cancelModalBtn = document.querySelector("#cancelEditModalBtn");
+  const deleteBtn = document.querySelector("#deleteProductBtn");
 
   if (!table || !form) return;
 
@@ -942,6 +943,24 @@ async function initProdotti() {
 
   newBtn?.addEventListener("click", resetCreateForm);
   cancelCreateBtn?.addEventListener("click", resetCreateForm);
+  deleteBtn?.addEventListener("click", async () => {
+    const id = String(editIdEl?.value || "").trim();
+    if (!id) return;
+    const p = allRows.find(x => String(x.id) === id);
+    const ok = await uiConfirm(
+      `Eliminare definitivamente "${p ? p.name : "questo prodotto"}"? L'operazione non si può annullare.`,
+      "Elimina prodotto"
+    );
+    if (!ok) return;
+    try {
+      await api(`/api/products/${encodeURIComponent(id)}`, { method: "DELETE" });
+      showToast("Prodotto eliminato");
+      closeEditModal();
+      await refresh();
+    } catch (err) {
+      alert(err.message);
+    }
+  });
   searchEl?.addEventListener("input", applySearch);
   closeModalBtn?.addEventListener("click", closeEditModal);
   cancelModalBtn?.addEventListener("click", closeEditModal);

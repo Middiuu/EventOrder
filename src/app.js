@@ -30,7 +30,11 @@ function createApp(options = {}) {
   app.use("/api/sessions", sessions);
   app.use("/api/reports", reports);
 
-  app.use("/vendor", express.static(path.join(__dirname, "..", "node_modules")));
+  // Espone sotto /vendor solo i pacchetti usati dal frontend, non tutto node_modules
+  const vendorPackages = ["chart.js", "sortablejs", "@fontsource/onest", "@fontsource/jetbrains-mono"];
+  for (const pkg of vendorPackages) {
+    app.use(`/vendor/${pkg}`, express.static(path.join(__dirname, "..", "node_modules", pkg)));
+  }
   app.use(express.static(path.join(__dirname, "..", "public")));
 
   // Error handler globale: risposta JSON coerente invece della pagina di default

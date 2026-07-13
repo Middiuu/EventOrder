@@ -229,7 +229,10 @@ router.get("/transactions.csv", (req, res) => {
   }
 
   const filename = `${config.SLUG}_transazioni_${fromDay}_to_${toDay}.csv`;
-  const csv = "﻿" + lines.join("\n");
+
+  // BOM per Excel (UTF-8)
+  const bom = "\uFEFF";
+  const csv = bom + lines.join("\n");
 
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);

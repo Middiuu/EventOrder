@@ -5,7 +5,12 @@ const COOKIE_NAME = "pos_auth";
 
 // Percorsi sempre accessibili anche senza login (per mostrare la pagina di accesso).
 // La welcome ("/"), il login e gli asset base restano accessibili senza PIN.
-const PUBLIC_PATHS = new Set(["/", "/index.html", "/api/config", "/api/auth/login", "/login.html", "/app.css"]);
+const PUBLIC_PATHS = new Set(["/", "/index.html", "/api/config", "/api/auth/login", "/login.html", "/app.css", "/fonts.css"]);
+
+// Gli asset statici di /vendor (font, librerie) servono anche a welcome e login.
+function isPublicPath(reqPath) {
+  return PUBLIC_PATHS.has(reqPath) || reqPath.startsWith("/vendor/");
+}
 
 function expectedToken() {
   return crypto.createHmac("sha256", config.APP_PIN).update("pos-auth-v1").digest("hex");
@@ -35,7 +40,7 @@ function isAuthenticated(req) {
 // Middleware: attivo solo se APP_PIN e' impostato.
 function authMiddleware(req, res, next) {
   if (!config.APP_PIN) return next();
-  if (PUBLIC_PATHS.has(req.path) || isAuthenticated(req)) return next();
+  if (isPublicPath(req.path) || isAuthenticated(req)) return next();
 
   if (req.path.startsWith("/api/")) {
     return res.status(401).json({ error: "Autenticazione richiesta" });
@@ -43,15 +48,45 @@ function authMiddleware(req, res, next) {
   return res.redirect("/login.html");
 }
 
+// Anti brute-force sul PIN: dopo MAX_ATTEMPTS tentativi falliti dallo stesso
+// indirizzo il login resta bloccato per LOCK_MS dall'ultimo tentativo fallito.
+const MAX_ATTEMPTS = 5;
+const LOCK_MS = 5 * 60 * 1000;
+const loginAttempts = new Map(); // ip -> { count, lastFailAt }
+
+function loginBlockedMs(ip, now) {
+  // pulizia pigra: le voci scadute azzerano anche il contatore
+  for (const [key, entry] of loginAttempts) {
+    if (now - entry.lastFailAt > LOCK_MS) loginAttempts.delete(key);
+  }
+  const entry = loginAttempts.get(ip);
+  if (!entry || entry.count < MAX_ATTEMPTS) return 0;
+  return LOCK_MS - (now - entry.lastFailAt);
+}
+
 // Handler di login: verifica il PIN e imposta il cookie.
 function loginHandler(req, res) {
   if (!config.APP_PIN) return res.json({ ok: true });
+
+  const ip = req.ip || req.socket?.remoteAddress || "sconosciuto";
+  const now = Date.now();
+  const blockedMs = loginBlockedMs(ip, now);
+  if (blockedMs > 0) {
+    const min = Math.ceil(blockedMs / 60000);
+    return res.status(429).json({ error: `Troppi tentativi: riprova tra ${min} minut${min === 1 ? "o" : "i"}` });
+  }
+
   const pin = String(req.body?.pin || "");
   const a = Buffer.from(pin);
   const b = Buffer.from(config.APP_PIN);
   const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
-  if (!ok) return res.status(401).json({ error: "PIN errato" });
+  if (!ok) {
+    const entry = loginAttempts.get(ip);
+    loginAttempts.set(ip, { count: (entry?.count || 0) + 1, lastFailAt: now });
+    return res.status(401).json({ error: "PIN errato" });
+  }
 
+  loginAttempts.delete(ip);
   res.setHeader(
     "Set-Cookie",
     `${COOKIE_NAME}=${expectedToken()}; HttpOnly; Path=/; SameSite=Lax; Max-Age=86400`

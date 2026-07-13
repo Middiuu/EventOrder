@@ -40,8 +40,12 @@ function clearAppModules() {
   }
 }
 
-function loadApp({ dbPath, printTicket } = {}) {
+function loadApp({ dbPath, printTicket, env = {} } = {}) {
   process.env.POS_DB_PATH = dbPath;
+  // Override d'ambiente per-test (es. APP_PIN): config.js li legge al require.
+  for (const [key, value] of Object.entries(env)) {
+    process.env[key] = value;
+  }
   clearAppModules();
   const { createApp } = require("../../src/app");
   return createApp({ printTicket });
@@ -151,6 +155,9 @@ function createHarness(options = {}) {
     },
     cleanup() {
       delete process.env.POS_DB_PATH;
+      for (const key of Object.keys(options.env || {})) {
+        delete process.env[key];
+      }
       clearAppModules();
       fs.rmSync(tempDir, { recursive: true, force: true });
     },

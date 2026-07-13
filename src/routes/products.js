@@ -41,6 +41,16 @@ router.post("/reorder", (req, res) => {
     return res.status(400).json({ error: "order contiene id non validi" });
   }
 
+  // Tutti gli id devono esistere e comparire una sola volta
+  // (IN deduplica la lista: con duplicati o id inesistenti il conteggio non torna).
+  const placeholders = ids.map(() => "?").join(",");
+  const found = db.prepare(`
+    SELECT COUNT(*) AS c FROM products WHERE id IN (${placeholders})
+  `).get(...ids).c;
+  if (found !== ids.length) {
+    return res.status(400).json({ error: "order contiene id inesistenti o duplicati" });
+  }
+
   const update = db.prepare("UPDATE products SET sort_order=? WHERE id=?");
   const tx = db.transaction((list) => {
     list.forEach((id, idx) => update.run((idx + 1) * 10, id));
@@ -128,6 +138,25 @@ router.patch("/:id", (req, res) => {
     id
   );
 
+  res.json({ ok: true });
+});
+
+// --- Delete (solo prodotti mai venduti: lo storico vendite resta integro)
+router.delete("/:id", (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "Id non valido" });
+
+  const cur = db.prepare("SELECT id FROM products WHERE id=?").get(id);
+  if (!cur) return res.status(404).json({ error: "Prodotto non trovato" });
+
+  const used = db.prepare("SELECT 1 FROM sale_items WHERE product_id=? LIMIT 1").get(id);
+  if (used) {
+    return res.status(409).json({
+      error: "Il prodotto compare in vendite registrate: disattivalo per toglierlo dalla cassa",
+    });
+  }
+
+  db.prepare("DELETE FROM products WHERE id=?").run(id);
   res.json({ ok: true });
 });
 
