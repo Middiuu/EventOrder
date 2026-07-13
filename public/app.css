@@ -2,14 +2,8 @@
    Tema scuro di default, chiaro via toggle. Onest per la UI, JetBrains Mono
    per i numeri. Accento viola. */
 
-@import url("/vendor/@fontsource/onest/400.css");
-@import url("/vendor/@fontsource/onest/500.css");
-@import url("/vendor/@fontsource/onest/600.css");
-@import url("/vendor/@fontsource/onest/700.css");
-@import url("/vendor/@fontsource/onest/800.css");
-@import url("/vendor/@fontsource/jetbrains-mono/500.css");
-@import url("/vendor/@fontsource/jetbrains-mono/600.css");
-@import url("/vendor/@fontsource/jetbrains-mono/700.css");
+/* I font sono caricati a parte, in modo non bloccante, da /fonts.css
+   (link con media="print" onload nei file HTML). */
 
 /* ---- Tema scuro (default) ---- */
 :root {

@@ -1,0 +1,11 @@
+/* Font self-hosted, caricati in modo NON bloccante (vedi <link media="print"> nei
+   file HTML). Il testo appare subito con un font di sistema e "scambia" a
+   Onest/JetBrains quando pronti (font-display: swap). */
+@import url("/vendor/@fontsource/onest/400.css");
+@import url("/vendor/@fontsource/onest/500.css");
+@import url("/vendor/@fontsource/onest/600.css");
+@import url("/vendor/@fontsource/onest/700.css");
+@import url("/vendor/@fontsource/onest/800.css");
+@import url("/vendor/@fontsource/jetbrains-mono/500.css");
+@import url("/vendor/@fontsource/jetbrains-mono/600.css");
+@import url("/vendor/@fontsource/jetbrains-mono/700.css");

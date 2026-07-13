@@ -109,6 +109,15 @@ function renderSidebar(active) {
   syncThemeToggle();
 }
 
+// Aggiorna nome/marchio nella sidebar dopo il caricamento della config
+function refreshBrand() {
+  const appName = APP_CONFIG.appName || "EventOrder";
+  const mark = document.querySelector(".sidebar .brand-mark");
+  const title = document.querySelector(".sidebar .brand-title");
+  if (mark) mark.textContent = (appName.trim()[0] || "E").toUpperCase();
+  if (title) title.textContent = APP_CONFIG.businessName || appName;
+}
+
 // Aggiorna la card turno nella sidebar (chiamata da più pagine)
 function updateSessionCard(session) {
   const card = document.querySelector("#sessionCard");
@@ -139,6 +148,77 @@ async function refreshShellData() {
     const sales = await api("/api/sales?limit=500");
     setCount("vendite", sales.filter(s => !s.voided).length);
   } catch {}
+}
+
+// ---- Navigazione client-side: niente reload/flash tra le sezioni
+const APP_PAGES = new Set(["/cassa.html", "/products.html", "/sales.html", "/reports.html"]);
+
+function ensureScript(src) {
+  return new Promise((resolve) => {
+    if ([...document.scripts].some(s => s.src.includes(src))) return resolve();
+    const el = document.createElement("script");
+    el.src = src;
+    el.onload = () => resolve();
+    el.onerror = () => resolve();
+    document.body.appendChild(el);
+  });
+}
+
+async function runPageInits() {
+  try {
+    await initCassa();
+    await initProdotti();
+    await initSales();
+    await initReport();
+    await initReportExport();
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function setActiveNav(url) {
+  document.querySelectorAll(".side-nav a").forEach(a => {
+    a.classList.toggle("is-active", a.getAttribute("href") === url);
+  });
+}
+
+async function clientNavigate(url, push = true) {
+  let html;
+  try { html = await (await fetch(url)).text(); }
+  catch { location.href = url; return; }
+
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const newMain = doc.querySelector(".main");
+  const curMain = document.querySelector(".main");
+  if (!newMain || !curMain) { location.href = url; return; }
+
+  curMain.replaceWith(newMain);
+  document.title = doc.title || document.title;
+  document.body.dataset.page = doc.body.dataset.page || "";
+  setActiveNav(url);
+  if (push) history.pushState({ eo: true }, "", url);
+  window.scrollTo(0, 0);
+
+  const page = document.body.dataset.page;
+  if (page === "prodotti") await ensureScript("/vendor/sortablejs/Sortable.min.js");
+  if (page === "report") await ensureScript("/vendor/chart.js/dist/chart.umd.min.js");
+  await runPageInits();
+  await refreshShellData();
+}
+
+function initRouter() {
+  document.addEventListener("click", (e) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+    const a = e.target.closest?.("a");
+    const href = a?.getAttribute("href");
+    if (!a || !href || !APP_PAGES.has(href) || a.target === "_blank") return;
+    e.preventDefault();
+    if (href === location.pathname) return; // già qui: nessun reload
+    clientNavigate(href, true);
+  });
+  window.addEventListener("popstate", () => {
+    if (APP_PAGES.has(location.pathname)) clientNavigate(location.pathname, false);
+  });
 }
 
 function escapeHtml(value) {
@@ -1171,14 +1251,13 @@ async function initSales() {
 // --------------------
 document.addEventListener("DOMContentLoaded", async () => {
   try {
+    // Sidebar subito (senza attendere la rete): layout stabile dal primo paint.
+    renderSidebar(document.body.dataset.page || "");
+    initRouter();
     await loadConfig();
     applyBranding();
-    renderSidebar(document.body.dataset.page || "");
-    await initCassa();
-    await initProdotti();
-    await initSales();
-    await initReport();
-    await initReportExport();
+    refreshBrand();
+    await runPageInits();
     await refreshShellData();
   } catch (e) {
     console.error(e);
