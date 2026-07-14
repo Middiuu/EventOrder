@@ -2,6 +2,7 @@ const MAX_MONEY_CENTS = 1_000_000_000_000;
 const MAX_PRODUCT_PRICE_CENTS = 100_000_000;
 const MAX_QTY = 9_999;
 const MAX_SORT_ORDER = 1_000_000_000;
+const MAX_STOCK = 1_000_000;
 
 function isSafeIntegerInRange(value, min, max) {
   return typeof value === "number"
@@ -33,6 +34,7 @@ module.exports = {
   MAX_PRODUCT_PRICE_CENTS,
   MAX_QTY,
   MAX_SORT_ORDER,
+  MAX_STOCK,
   cleanText,
   isSafeIntegerInRange,
   isValidCents,

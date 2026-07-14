@@ -793,3 +793,143 @@ test("movimenti di cassa: prelievi e versamenti entrano nei contanti attesi", as
     harness.cleanup();
   }
 });
+
+test("esaurito e scorte: vendita bloccata, decremento e ripristino su storno", async () => {
+  let failPrint = false;
+  const harness = createHarness({
+    printTicket: async () => {
+      if (failPrint) throw new Error("Stampante offline");
+    },
+  });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const seeded = (await request({ url: "/api/products" })).json()[0];
+
+      const sellSeeded = () => request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: [{ product_id: seeded.id, qty: 1 }] }),
+      });
+      const getProduct = async (id) =>
+        (await request({ url: "/api/products/all" })).json().find((p) => p.id === id);
+
+      await request({
+        method: "POST",
+        url: "/api/sessions/open",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opening_float_cents: 0 }),
+      });
+
+      // scorte non valide -> 400
+      const badStock = await request({
+        method: "POST",
+        url: "/api/products",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Scorte rotte", price_cents: 100, stock: 1.5 }),
+      });
+      assert.equal(badStock.status, 400);
+
+      // prodotto con scorte tracciate
+      const created = await request({
+        method: "POST",
+        url: "/api/products",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Torta a fette", price_cents: 300, stock: 2 }),
+      });
+      const tortaId = created.json().id;
+      assert.equal((await getProduct(tortaId)).stock, 2);
+
+      // vendita oltre le scorte -> 409
+      const overSell = await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: [{ product_id: tortaId, qty: 3 }] }),
+      });
+      assert.equal(overSell.status, 409);
+      assert.match(overSell.json().error, /Scorte insufficienti/);
+
+      // vendita di tutte le scorte -> stock a 0, poi non piu' vendibile
+      const sellAll = await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: [{ product_id: tortaId, qty: 2 }] }),
+      });
+      assert.equal(sellAll.status, 200);
+      assert.equal((await getProduct(tortaId)).stock, 0);
+
+      const soldOutByStock = await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: [{ product_id: tortaId, qty: 1 }] }),
+      });
+      assert.equal(soldOutByStock.status, 409);
+
+      // lo storno ripristina le scorte
+      const lastSale = (await request({ url: "/api/sales?limit=1" })).json()[0];
+      await request({
+        method: "POST",
+        url: `/api/sales/${lastSale.id}/void`,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "Ordine sbagliato" }),
+      });
+      assert.equal((await getProduct(tortaId)).stock, 2);
+
+      // esaurito manuale: blocca la vendita anche senza scorte tracciate
+      const markSoldOut = await request({
+        method: "PATCH",
+        url: `/api/products/${seeded.id}`,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sold_out: 1 }),
+      });
+      assert.equal(markSoldOut.status, 200);
+
+      const blocked = await sellSeeded();
+      assert.equal(blocked.status, 409);
+      assert.match(blocked.json().error, /esaurito/i);
+
+      await request({
+        method: "PATCH",
+        url: `/api/products/${seeded.id}`,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sold_out: 0 }),
+      });
+      assert.equal((await sellSeeded()).status, 200);
+
+      // stampa fallita: la vendita si annulla e le scorte tornano indietro
+      failPrint = true;
+      const printFail = await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: [{ product_id: tortaId, qty: 1 }] }),
+      });
+      assert.equal(printFail.status, 502);
+      assert.equal((await getProduct(tortaId)).stock, 2);
+      failPrint = false;
+
+      // stock null = non tracciate: vendite senza limite di quantita'
+      const untrack = await request({
+        method: "PATCH",
+        url: `/api/products/${tortaId}`,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stock: null }),
+      });
+      assert.equal(untrack.status, 200);
+      assert.equal((await getProduct(tortaId)).stock, null);
+      const bigSale = await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: [{ product_id: tortaId, qty: 50 }] }),
+      });
+      assert.equal(bigSale.status, 200);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});

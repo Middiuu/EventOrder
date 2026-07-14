@@ -407,8 +407,18 @@ async function initCassa(signal) {
 
   if (!grid) return;
 
-  const products = await api("/api/products");
+  let products = await api("/api/products");
   let filtered = [...products];
+
+  // Ricarica il catalogo (scorte e stato esaurito cambiano durante il servizio)
+  async function reloadProducts() {
+    try {
+      products = await api("/api/products");
+    } catch {
+      // in caso di errore si continua con l'elenco già caricato
+    }
+    applySearch();
+  }
 
   const cart = new Map();
   let isPrinting = false;
@@ -598,16 +608,65 @@ async function initCassa(signal) {
     }
   });
 
+  // Disponibilità derivata: esaurito manuale oppure scorte tracciate a zero
+  function productAvailable(p) {
+    return !p.sold_out && !(p.stock != null && p.stock <= 0);
+  }
+
+  async function setSoldOut(p, soldOut) {
+    try {
+      await api(`/api/products/${p.id}`, { method: "PATCH", body: JSON.stringify({ sold_out: soldOut ? 1 : 0 }) });
+      showToast(soldOut ? `"${p.name}" segnato esaurito` : `"${p.name}" di nuovo disponibile`);
+      await reloadProducts();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+
   function renderProducts() {
     grid.innerHTML = "";
     for (const p of filtered) {
+      const available = productAvailable(p);
       const b = document.createElement("button");
-      b.className = "btn product-card";
+      b.className = "btn product-card" + (available ? "" : " is-soldout");
+
+      let stockTag = "";
+      if (available && p.stock != null) {
+        stockTag = ` • <span class="stock-tag${p.stock <= 5 ? " low" : ""}">${p.stock} rimasti</span>`;
+      }
       b.innerHTML = `
-        <div class="product-card-title">${escapeHtml(p.name)}</div>
-        <div class="product-card-meta">${escapeHtml(p.category)} • <span class="product-price">${euro(p.price_cents)}</span></div>
+        <div class="product-card-title">${escapeHtml(p.name)}${available ? "" : ' <span class="soldout-tag">Esaurito</span>'}</div>
+        <div class="product-card-meta">${escapeHtml(p.category)} • <span class="product-price">${euro(p.price_cents)}</span>${stockTag}</div>
       `;
-      b.onclick = () => addProduct(p);
+
+      // Long-press su una card disponibile: segna il prodotto come esaurito.
+      let pressTimer = null;
+      let suppressClick = false;
+      b.addEventListener("pointerdown", () => {
+        suppressClick = false;
+        if (!available) return;
+        pressTimer = setTimeout(async () => {
+          suppressClick = true;
+          const ok = await uiConfirm(`Segnare "${p.name}" come esaurito? Non sarà più vendibile finché non lo rimetti disponibile.`, "Esaurito");
+          if (ok) await setSoldOut(p, true);
+        }, 650);
+      });
+      const cancelPress = () => clearTimeout(pressTimer);
+      b.addEventListener("pointerup", cancelPress);
+      b.addEventListener("pointerleave", cancelPress);
+      b.addEventListener("pointercancel", cancelPress);
+      b.addEventListener("contextmenu", (e) => e.preventDefault());
+
+      b.onclick = async () => {
+        if (suppressClick) { suppressClick = false; return; }
+        if (available) return addProduct(p);
+        if (p.sold_out) {
+          const ok = await uiConfirm(`Rimettere "${p.name}" disponibile in cassa?`, "Di nuovo disponibile");
+          if (ok) await setSoldOut(p, false);
+        } else {
+          alert("Scorte terminate: aggiornale dalla pagina Prodotti.");
+        }
+      };
       grid.appendChild(b);
     }
   }
@@ -647,7 +706,12 @@ async function initCassa(signal) {
 
   function addProduct(p) {
     const cur = cart.get(p.id);
-    cart.set(p.id, { product: p, qty: (cur?.qty || 0) + 1 });
+    const nextQty = (cur?.qty || 0) + 1;
+    if (p.stock != null && nextQty > p.stock) {
+      showToast(`Disponibili solo ${p.stock} di "${p.name}"`);
+      return;
+    }
+    cart.set(p.id, { product: p, qty: nextQty });
     renderCart();
   }
 
@@ -663,6 +727,11 @@ async function initCassa(signal) {
   function incProduct(id) {
     const cur = cart.get(id);
     if (!cur) return;
+    const p = cur.product;
+    if (p.stock != null && cur.qty + 1 > p.stock) {
+      showToast(`Disponibili solo ${p.stock} di "${p.name}"`);
+      return;
+    }
     cart.set(id, { ...cur, qty: cur.qty + 1 });
     renderCart();
   }
@@ -830,6 +899,7 @@ async function initCassa(signal) {
       showToast(`Ticket #${String(out.sale_number).padStart(4, "0")} • ${money(out.total_cents)}${restoMsg}`);
       await refreshSession();
       await refreshShellData();
+      await reloadProducts();
     } catch (err) {
       alert(err.message);
     } finally {
@@ -885,12 +955,15 @@ async function initProdotti(signal) {
   const priceEl = form.querySelector('input[name="price_eur"]');
   const sortEl = form.querySelector('input[name="sort_order"]');
   const activeEl = form.querySelector('input[name="active"]');
+  const stockEl = form.querySelector('input[name="stock"]');
   const editIdEl = editForm?.querySelector('input[name="id"]');
   const editNameEl = editForm?.querySelector('input[name="name"]');
   const editCategoryEl = editForm?.querySelector('input[name="category"]');
   const editPriceEl = editForm?.querySelector('input[name="price_eur"]');
   const editSortEl = editForm?.querySelector('input[name="sort_order"]');
   const editActiveEl = editForm?.querySelector('input[name="active"]');
+  const editStockEl = editForm?.querySelector('input[name="stock"]');
+  const editSoldOutEl = editForm?.querySelector('input[name="sold_out"]');
 
   let allRows = [];
   let filteredRows = [];
@@ -909,6 +982,16 @@ async function initProdotti(signal) {
     return Math.round(n * 100);
   }
 
+  // Scorte dal form: "" = non tracciate (null), altrimenti intero >= 0.
+  // Ritorna undefined se il valore non è valido.
+  function stockFromInput(value) {
+    const raw = String(value ?? "").trim();
+    if (!raw) return null;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0) return undefined;
+    return n;
+  }
+
   function resetCreateForm() {
     form.reset();
     sortEl.value = "0";
@@ -924,6 +1007,8 @@ async function initProdotti(signal) {
     editPriceEl.value = (Number(product.price_cents) / 100).toFixed(2);
     editSortEl.value = String(product.sort_order ?? 0);
     editActiveEl.checked = !!product.active;
+    if (editStockEl) editStockEl.value = product.stock == null ? "" : String(product.stock);
+    if (editSoldOutEl) editSoldOutEl.checked = !!product.sold_out;
     modalEl.hidden = false;
     document.body.style.overflow = "hidden";
     setTimeout(() => editNameEl.focus(), 0);
@@ -936,14 +1021,23 @@ async function initProdotti(signal) {
     document.body.style.overflow = "";
   }
 
+  function statusPill(p) {
+    if (!p.active) return '<span class="status-pill is-inactive">Disattivo</span>';
+    if (p.sold_out || (p.stock != null && p.stock <= 0)) {
+      return '<span class="status-pill is-soldout">Esaurito</span>';
+    }
+    return '<span class="status-pill is-active">Attivo</span>';
+  }
+
   function renderTable() {
     table.innerHTML = filteredRows.map(p => `
       <tr>
         <td data-label="Sposta"><span class="table-handle" aria-hidden="true">⋮⋮</span></td>
-        <td data-label="Stato"><span class="status-pill ${p.active ? "is-active" : "is-inactive"}">${p.active ? "Attivo" : "Disattivo"}</span></td>
+        <td data-label="Stato">${statusPill(p)}</td>
         <td data-label="Nome"><b>${escapeHtml(p.name)}</b></td>
         <td data-label="Categoria">${escapeHtml(p.category)}</td>
         <td data-label="Prezzo">${euro(p.price_cents)}</td>
+        <td data-label="Scorte">${p.stock == null ? "—" : p.stock}</td>
         <td data-label="Azioni">
           <button class="btn btn-secondary btn-compact" data-edit="${p.id}" type="button">Modifica</button>
         </td>
@@ -1058,12 +1152,14 @@ async function initProdotti(signal) {
     const price_cents = centsFromEuroInput(priceEl.value);
     const sort_order = Number(sortEl.value || 0);
     const active = activeEl.checked ? 1 : 0;
+    const stock = stockFromInput(stockEl?.value);
 
     if (!name) return alert("Inserisci un nome prodotto.");
     if (price_cents === null) return alert("Prezzo non valido.");
+    if (stock === undefined) return alert("Scorte non valide: intero >= 0 o vuoto.");
 
     try {
-      await api("/api/products", { method: "POST", body: JSON.stringify({ name, category, price_cents, sort_order, active }) });
+      await api("/api/products", { method: "POST", body: JSON.stringify({ name, category, price_cents, sort_order, active, stock }) });
       showToast("Prodotto creato");
       await refresh();
       resetCreateForm();
@@ -1081,15 +1177,18 @@ async function initProdotti(signal) {
     const price_cents = centsFromEuroInput(editPriceEl.value);
     const sort_order = Number(editSortEl.value || 0);
     const active = editActiveEl.checked ? 1 : 0;
+    const sold_out = editSoldOutEl?.checked ? 1 : 0;
+    const stock = stockFromInput(editStockEl?.value);
 
     if (!id) return alert("Prodotto non valido.");
     if (!name) return alert("Inserisci un nome prodotto.");
     if (price_cents === null) return alert("Prezzo non valido.");
+    if (stock === undefined) return alert("Scorte non valide: intero >= 0 o vuoto.");
 
     try {
       await api(`/api/products/${encodeURIComponent(id)}`, {
         method: "PATCH",
-        body: JSON.stringify({ name, category, price_cents, sort_order, active })
+        body: JSON.stringify({ name, category, price_cents, sort_order, active, sold_out, stock })
       });
       showToast("Prodotto aggiornato");
       closeEditModal();

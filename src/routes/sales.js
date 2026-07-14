@@ -24,6 +24,24 @@ function loadItems(saleIds) {
   return map;
 }
 
+// Storno con ripristino delle scorte tracciate, in un'unica transazione:
+// l'annullo rimette a disposizione la merce non consegnata.
+const voidSale = db.transaction((saleId, reason, operator) => {
+  db.prepare(`
+    UPDATE sales
+    SET voided=1, void_reason=?, voided_at=datetime('now'), void_operator=?
+    WHERE id=?
+  `).run(reason, operator, saleId);
+
+  const items = db.prepare("SELECT product_id, qty FROM sale_items WHERE sale_id=?").all(saleId);
+  const incStock = db.prepare(`
+    UPDATE products SET stock = stock + ? WHERE id = ? AND stock IS NOT NULL
+  `);
+  for (const it of items) {
+    incStock.run(it.qty, it.product_id);
+  }
+});
+
 function createSalesRouter({ printTicket }) {
   const router = express.Router();
 
@@ -57,15 +75,22 @@ function createSalesRouter({ printTicket }) {
     }
     const placeholders = ids.map(() => "?").join(",");
     const products = db.prepare(`
-      SELECT id, name, category, price_cents
+      SELECT id, name, category, price_cents, sold_out, stock
       FROM products
       WHERE active=1 AND id IN (${placeholders})
     `).all(...ids);
 
     const map = new Map(products.map(p => [p.id, p]));
     for (const it of normalized) {
-      if (!map.has(it.product_id)) {
+      const p = map.get(it.product_id);
+      if (!p) {
         return res.status(400).json({ error: `Prodotto non valido o non attivo: ${it.product_id}` });
+      }
+      if (p.sold_out) {
+        return res.status(409).json({ error: `Prodotto esaurito: ${p.name}` });
+      }
+      if (p.stock != null && p.stock < it.qty) {
+        return res.status(409).json({ error: `Scorte insufficienti per ${p.name}: disponibili ${p.stock}` });
       }
     }
 
@@ -161,6 +186,14 @@ function createSalesRouter({ printTicket }) {
         );
       }
 
+      // Decrementa le scorte tracciate (NULL = non tracciate, resta invariato)
+      const decStock = db.prepare(`
+        UPDATE products SET stock = stock - ? WHERE id = ? AND stock IS NOT NULL
+      `);
+      for (const it of computedItems) {
+        decStock.run(it.qty, it.product_id);
+      }
+
       const sale = db.prepare("SELECT id, sale_number, total_cents, created_at FROM sales WHERE id=?").get(saleId);
       return { saleId, saleNumber: sale.sale_number, createdAt: sale.created_at };
     });
@@ -184,11 +217,7 @@ function createSalesRouter({ printTicket }) {
       });
     } catch (err) {
       console.error(`Stampa vendita #${result.saleNumber} non riuscita: ${err?.message || String(err)}`);
-      db.prepare(`
-        UPDATE sales
-        SET voided=1, void_reason=?, voided_at=datetime('now'), void_operator=?
-        WHERE id=?
-      `).run("Stampa non riuscita", session.operator, result.saleId);
+      voidSale(result.saleId, "Stampa non riuscita", session.operator);
       return res.status(502).json({
         error: `Stampa non riuscita. Vendita #${String(result.saleNumber).padStart(4, "0")} annullata automaticamente.`,
       });
@@ -260,11 +289,7 @@ function createSalesRouter({ printTicket }) {
 
     const reason = cleanText(req.body?.reason || "Storno manuale", 240);
     if (!reason) return res.status(400).json({ error: "Motivo storno non valido" });
-    db.prepare(`
-      UPDATE sales
-      SET voided=1, void_reason=?, voided_at=datetime('now'), void_operator=?
-      WHERE id=?
-    `).run(reason, openSession.operator, id);
+    voidSale(id, reason, openSession.operator);
     res.json({ ok: true, sale_number: sale.sale_number });
   });
 
@@ -283,11 +308,7 @@ function createSalesRouter({ printTicket }) {
 
     if (!last) return res.status(404).json({ error: "Nessuna vendita da annullare" });
 
-    db.prepare(`
-      UPDATE sales
-      SET voided=1, void_reason=?, voided_at=datetime('now'), void_operator=?
-      WHERE id=?
-    `).run("Annullo ultima vendita", openSession.operator, last.id);
+    voidSale(last.id, "Annullo ultima vendita", openSession.operator);
     res.json({ ok: true, sale_number: last.sale_number });
   });
 

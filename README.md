@@ -68,6 +68,14 @@ A turno aperto registri anche i **movimenti di cassa** — prelievi di sicurezza
 aggiunta di monete per il resto — con importo e motivo: entrano nel calcolo dei
 contanti attesi, così la quadratura torna anche quando la cassa non resta intatta.
 
+### 🚫 "Esaurito" al volo e scorte
+
+Il ragù è finito a metà serata? **Tieni premuta la card** del prodotto in cassa
+e segnalo **esaurito**: resta visibile ma non vendibile, un tocco lo rimette in
+vendita. Se vuoi, imposta le **scorte** dalla pagina Prodotti: si scalano a ogni
+vendita (gli storni le ripristinano), la card mostra i pezzi rimasti e a zero il
+prodotto si blocca da solo.
+
 ### 📜 Storico vendite e storni
 
 Ogni vendita finisce nel registro. Hai sbagliato una comanda? **Annullala** con un

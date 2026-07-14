@@ -33,7 +33,7 @@
 
           <form id="productForm" class="stack">
             <input type="hidden" name="sort_order" value="0" />
-            <div class="grid" style="grid-template-columns:1.4fr 1fr .8fr">
+            <div class="grid" style="grid-template-columns:1.4fr 1fr .7fr .7fr">
               <label class="field">
                 <span class="field-label">Nome</span>
                 <input class="input" name="name" placeholder="Es. Panino rustico" required />
@@ -45,6 +45,10 @@
               <label class="field">
                 <span class="field-label">Prezzo (€)</span>
                 <input class="input mono" name="price_eur" type="number" step="0.01" min="0" placeholder="0,00" required />
+              </label>
+              <label class="field">
+                <span class="field-label">Scorte</span>
+                <input class="input mono" name="stock" type="number" step="1" min="0" placeholder="Non tracciate" />
               </label>
             </div>
             <div class="section-heading" style="margin:0; align-items:center">
@@ -78,7 +82,7 @@
           <div class="table-wrap">
             <table class="data-table">
               <thead>
-                <tr><th></th><th>Stato</th><th>Nome</th><th>Categoria</th><th>Prezzo</th><th>Azioni</th></tr>
+                <tr><th></th><th>Stato</th><th>Nome</th><th>Categoria</th><th>Prezzo</th><th>Scorte</th><th>Azioni</th></tr>
               </thead>
               <tbody id="productsTable"></tbody>
             </table>
@@ -97,7 +101,7 @@
           <form id="editProductForm" class="stack" style="margin-top:16px">
             <input type="hidden" name="id" />
             <input type="hidden" name="sort_order" value="0" />
-            <div class="grid" style="grid-template-columns:1.4fr 1fr .8fr">
+            <div class="grid" style="grid-template-columns:1.4fr 1fr .7fr .7fr">
               <label class="field">
                 <span class="field-label">Nome</span>
                 <input class="input" name="name" placeholder="Es. Panino rustico" required />
@@ -110,12 +114,22 @@
                 <span class="field-label">Prezzo (€)</span>
                 <input class="input mono" name="price_eur" type="number" step="0.01" min="0" placeholder="0,00" required />
               </label>
+              <label class="field">
+                <span class="field-label">Scorte</span>
+                <input class="input mono" name="stock" type="number" step="1" min="0" placeholder="Non tracciate" />
+              </label>
             </div>
             <div class="section-heading" style="margin:0; align-items:center">
-              <label class="toggle">
-                <input type="checkbox" name="active" checked />
-                <span>Prodotto attivo in cassa</span>
-              </label>
+              <div class="stack" style="gap:8px">
+                <label class="toggle">
+                  <input type="checkbox" name="active" checked />
+                  <span>Prodotto attivo in cassa</span>
+                </label>
+                <label class="toggle">
+                  <input type="checkbox" name="sold_out" />
+                  <span>Esaurito (temporaneamente non vendibile)</span>
+                </label>
+              </div>
               <div class="actions" style="margin:0">
                 <button class="btn btn-danger" type="button" id="deleteProductBtn">Elimina</button>
                 <button class="btn btn-primary" type="submit" id="saveEditBtn">Salva modifiche</button>

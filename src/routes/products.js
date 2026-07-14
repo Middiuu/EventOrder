@@ -3,6 +3,7 @@ const { db } = require("../db");
 const {
   MAX_PRODUCT_PRICE_CENTS,
   MAX_SORT_ORDER,
+  MAX_STOCK,
   cleanText,
   isSafeIntegerInRange,
   isValidCents,
@@ -16,10 +17,18 @@ function cleanName(name) {
   return cleanText(name, 120);
 }
 
+// Scorte: undefined = mantieni, null/"" = non tracciate, altrimenti intero >= 0.
+function normalizeStock(value, fallback) {
+  if (value === undefined) return { ok: true, stock: fallback };
+  if (value === null || value === "") return { ok: true, stock: null };
+  if (isSafeIntegerInRange(value, 0, MAX_STOCK)) return { ok: true, stock: value };
+  return { ok: false };
+}
+
 // --- Read (solo attivi per Cassa)
 router.get("/", (req, res) => {
   const rows = db.prepare(`
-    SELECT id, name, price_cents, category, sort_order, active
+    SELECT id, name, price_cents, category, sort_order, active, sold_out, stock
     FROM products
     WHERE active = 1
     ORDER BY sort_order ASC, name ASC
@@ -30,7 +39,7 @@ router.get("/", (req, res) => {
 // --- Read (tutti per pagina Prodotti)
 router.get("/all", (req, res) => {
   const rows = db.prepare(`
-    SELECT id, name, price_cents, category, sort_order, active
+    SELECT id, name, price_cents, category, sort_order, active, sold_out, stock
     FROM products
     ORDER BY active DESC, sort_order ASC, name ASC
   `).all();
@@ -75,6 +84,7 @@ router.post("/", (req, res) => {
   const n = cleanName(name);
   const nextCategory = cleanText(category || "Generale", 80);
   const nextActive = normalizeActive(active, true);
+  const nextStock = normalizeStock(req.body?.stock, null);
   if (!n) return res.status(400).json({ error: "Nome prodotto non valido (massimo 120 caratteri)" });
   if (!isValidCents(price_cents, MAX_PRODUCT_PRICE_CENTS)) {
     return res.status(400).json({ error: "Prezzo non valido: usa un numero intero di centesimi" });
@@ -85,6 +95,9 @@ router.post("/", (req, res) => {
   }
   if (nextActive === null) {
     return res.status(400).json({ error: "Stato attivo non valido" });
+  }
+  if (!nextStock.ok) {
+    return res.status(400).json({ error: "Scorte non valide: usa un intero >= 0 o lascia vuoto" });
   }
 
   // Unicità nome: case-insensitive + trim
@@ -100,14 +113,15 @@ router.post("/", (req, res) => {
   }
 
   const info = db.prepare(`
-    INSERT INTO products (name, price_cents, category, sort_order, active)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO products (name, price_cents, category, sort_order, active, stock)
+    VALUES (?, ?, ?, ?, ?, ?)
   `).run(
     n,
     price_cents,
     nextCategory,
     sort_order,
-    nextActive
+    nextActive,
+    nextStock.stock
   );
 
   res.json({ id: info.lastInsertRowid });
@@ -127,6 +141,8 @@ router.patch("/:id", (req, res) => {
   const nextCategory = cleanText(req.body?.category ?? cur.category, 80);
   const nextSort = req.body?.sort_order ?? cur.sort_order;
   const nextActive = normalizeActive(req.body?.active, cur.active);
+  const nextSoldOut = normalizeActive(req.body?.sold_out, cur.sold_out);
+  const nextStock = normalizeStock(req.body?.stock, cur.stock);
 
   if (!nextName) return res.status(400).json({ error: "Nome non valido (massimo 120 caratteri)" });
   if (!isValidCents(nextPrice, MAX_PRODUCT_PRICE_CENTS)) {
@@ -137,6 +153,10 @@ router.patch("/:id", (req, res) => {
     return res.status(400).json({ error: "Ordine non valido" });
   }
   if (nextActive === null) return res.status(400).json({ error: "Stato attivo non valido" });
+  if (nextSoldOut === null) return res.status(400).json({ error: "Stato esaurito non valido" });
+  if (!nextStock.ok) {
+    return res.status(400).json({ error: "Scorte non valide: usa un intero >= 0 o lascia vuoto" });
+  }
 
   // Unicità nome: case-insensitive + trim, escludendo questo id
   const clash = db.prepare(`
@@ -153,7 +173,7 @@ router.patch("/:id", (req, res) => {
 
   db.prepare(`
     UPDATE products
-    SET name=?, price_cents=?, category=?, sort_order=?, active=?
+    SET name=?, price_cents=?, category=?, sort_order=?, active=?, sold_out=?, stock=?
     WHERE id=?
   `).run(
     nextName,
@@ -161,6 +181,8 @@ router.patch("/:id", (req, res) => {
     nextCategory,
     nextSort,
     nextActive,
+    nextSoldOut,
+    nextStock.stock,
     id
   );
 

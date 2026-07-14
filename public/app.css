@@ -199,6 +199,7 @@ input::placeholder { color:var(--faint); }
 .status-pill::before { content:""; width:8px; height:8px; border-radius:50%; background:currentColor; }
 .status-pill.is-active { background:var(--ok-soft); color:var(--ok); border:1px solid var(--ok-border); }
 .status-pill.is-inactive { background:var(--chip); color:var(--muted); }
+.status-pill.is-soldout { background:var(--danger-soft); color:var(--danger); border:1px solid var(--danger-border); }
 
 /* ============ Bottoni ============ */
 .btn {
@@ -260,6 +261,15 @@ select.input { appearance:none; -webkit-appearance:none; }
 .product-card-cat { text-transform:uppercase; letter-spacing:.12em; font-size:.64rem; font-weight:700; color:var(--faint); }
 .product-card-title { font-weight:700; font-size:1rem; margin-top:auto; }
 .product-card-meta { color:var(--muted); font-size:.85rem; }
+.product-card.is-soldout { opacity:.55; }
+.product-card.is-soldout:hover { border-color:var(--danger-border); }
+.soldout-tag {
+  display:inline-block; padding:2px 9px; margin-left:6px; border-radius:999px;
+  background:var(--danger-soft); color:var(--danger); border:1px solid var(--danger-border);
+  font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.05em; vertical-align:middle;
+}
+.stock-tag { font-weight:600; }
+.stock-tag.low { color:var(--danger); font-weight:700; }
 .product-price { font-family:var(--mono); font-weight:700; color:var(--accent-ink); }
 
 .cart-card { display:flex; flex-direction:column; }

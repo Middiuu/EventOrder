@@ -32,6 +32,11 @@ const EXPECTED_SALE_ITEM_COLUMNS = {
   product_category: "TEXT NOT NULL DEFAULT 'Generale'",
 };
 
+const EXPECTED_PRODUCT_COLUMNS = {
+  sold_out: "INTEGER NOT NULL DEFAULT 0",
+  stock: "INTEGER",
+};
+
 function tableExists(table) {
   return Boolean(db.prepare(`
     SELECT 1 FROM sqlite_master WHERE type='table' AND name=?
@@ -53,6 +58,7 @@ function addMissingColumns(table, expectedColumns) {
 function ensureMigratedColumns() {
   addMissingColumns("sales", EXPECTED_SALES_COLUMNS);
   addMissingColumns("sale_items", EXPECTED_SALE_ITEM_COLUMNS);
+  addMissingColumns("products", EXPECTED_PRODUCT_COLUMNS);
 }
 
 function runMigrations() {

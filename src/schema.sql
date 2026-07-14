@@ -7,6 +7,10 @@ CREATE TABLE IF NOT EXISTS products (
   category TEXT NOT NULL DEFAULT 'Generale',
   sort_order INTEGER NOT NULL DEFAULT 0 CHECK(typeof(sort_order) = 'integer'),
   active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+  -- Esaurito manuale e scorte opzionali (NULL = non tracciate). In cassa il
+  -- prodotto e' vendibile solo se non esaurito e con scorte disponibili.
+  sold_out INTEGER NOT NULL DEFAULT 0 CHECK(sold_out IN (0, 1)),
+  stock INTEGER CHECK(stock IS NULL OR (typeof(stock) = 'integer' AND stock >= 0)),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
