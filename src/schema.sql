@@ -64,6 +64,9 @@ CREATE TABLE IF NOT EXISTS sale_items (
   product_name TEXT NOT NULL DEFAULT '',
   product_category TEXT NOT NULL DEFAULT 'Generale',
   product_cost_cents INTEGER CHECK(product_cost_cents IS NULL OR (typeof(product_cost_cents) = 'integer' AND product_cost_cents >= 0)),
+  -- Quantità effettivamente sottratta dalle scorte alla vendita. È zero se
+  -- per il prodotto le scorte non erano tracciate in quel momento.
+  stock_decremented_qty INTEGER NOT NULL DEFAULT 0 CHECK(typeof(stock_decremented_qty) = 'integer' AND stock_decremented_qty >= 0),
   FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
   FOREIGN KEY (product_id) REFERENCES products(id)
 );

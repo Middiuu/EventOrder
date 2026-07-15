@@ -1399,7 +1399,9 @@ async function initReport() {
     const prodRows = data.byProduct.map(p => {
       const sub = [`${p.qty_sold} venduti`];
       if (p.gross_revenue_cents !== p.net_revenue_cents) sub.push(`lordo ${euro(p.gross_revenue_cents)}`);
-      if (p.margin_cents !== null) sub.push(`margine ${euro(p.margin_cents)}`);
+      if (p.margin_cents !== null) {
+        sub.push(`${p.margin_complete ? "margine" : "margine parziale"} ${euro(p.margin_cents)}`);
+      }
       return `
         <div class="bar-row">
           <div class="bar-head"><b>${escapeHtml(p.name)}</b><span class="amt">${euro(p.net_revenue_cents)}</span></div>
@@ -1419,11 +1421,15 @@ async function initReport() {
         </div>`;
     }).join("");
 
+    const marginLabel = s.margin_complete ? "Margine" : "Margine parziale";
+    const marginSub = s.margin_complete
+      ? `costi completi su ${s.margin_products} prodotti`
+      : `${s.margin_coverage_percent || 0}% dell'incasso coperto dai costi`;
     const marginTile = s.margin_cents === null ? "" : `
       <div class="kpi">
-        <div class="k-label">Margine</div>
+        <div class="k-label">${marginLabel}</div>
         <div class="k-value">${euro(s.margin_cents)}</div>
-        <div class="k-sub">su ${s.margin_products} prodotti con costo</div>
+        <div class="k-sub">${marginSub}</div>
       </div>`;
 
     const dayCompare = !multiDay ? "" : `

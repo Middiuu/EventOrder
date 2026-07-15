@@ -95,6 +95,8 @@ test("summary per turno e margine dal costo storicizzato", async () => {
       assert.equal(t1.session, 1);
       // margine turno 1: 600 - 2*100 = 400
       assert.equal(t1.summary.margin_cents, 400);
+      assert.equal(t1.summary.margin_complete, true);
+      assert.equal(t1.summary.margin_coverage_percent, 100);
       assert.equal(t1.byProduct[0].margin_cents, 400);
 
       const t2 = (await request({ url: "/api/reports/summary?session=2" })).json();
@@ -118,6 +120,39 @@ test("summary per turno e margine dal costo storicizzato", async () => {
   }
 });
 
+test("margine: conserva la quota nota e segnala copertura parziale", async () => {
+  const harness = createHarness({ printTicket: async () => {} });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const pid = (await postJson(request, "/api/products", {
+        name: "Polenta", price_cents: 300,
+      })).json().id;
+
+      await postJson(request, "/api/sessions/open", { opening_float_cents: 0 });
+      await postJson(request, "/api/sales/print", { items: [{ product_id: pid, qty: 1 }] });
+      await request({
+        method: "PATCH",
+        url: `/api/products/${pid}`,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cost_cents: 100 }),
+      });
+      await postJson(request, "/api/sales/print", { items: [{ product_id: pid, qty: 1 }] });
+
+      const data = (await request({ url: "/api/reports/summary" })).json();
+      assert.equal(data.summary.revenue_cents, 600);
+      assert.equal(data.summary.margin_cents, 200);
+      assert.equal(data.summary.margin_complete, false);
+      assert.equal(data.summary.margin_coverage_percent, 50);
+      assert.equal(data.byProduct[0].margin_cents, 200);
+      assert.equal(data.byProduct[0].margin_complete, false);
+      assert.equal(data.byProduct[0].tracked_net_revenue_cents, 300);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test("elenco turni: chiusure con attesi, contati e differenza", async () => {
   const harness = createHarness({ printTicket: async () => {} });
 
@@ -127,9 +162,12 @@ test("elenco turni: chiusure con attesi, contati e differenza", async () => {
 
       await postJson(request, "/api/sessions/open", { opening_float_cents: 5000, operator: "Anna" });
       await postJson(request, "/api/sales/print", { items: [{ product_id: product.id, qty: 1 }] });
+      await postJson(request, "/api/sessions/movements", {
+        direction: "in", amount_cents: 200, reason: "Fondo aggiuntivo",
+      });
       // chiusura con ammanco di 100
       await postJson(request, "/api/sessions/close", {
-        counted_cash_cents: 5000 + product.price_cents - 100,
+        counted_cash_cents: 5000 + product.price_cents + 200 - 100,
         note: "Mancano spicci",
       });
 
@@ -143,10 +181,13 @@ test("elenco turni: chiusure con attesi, contati e differenza", async () => {
 
       const closed = list[1];
       assert.equal(closed.operator, "Anna");
-      assert.equal(closed.expected_cash_cents, 5000 + product.price_cents);
+      assert.equal(closed.expected_cash_cents, 5000 + product.price_cents + 200);
       assert.equal(closed.difference_cents, -100);
       assert.equal(closed.note, "Mancano spicci");
       assert.equal(closed.totals.revenueCents, product.price_cents);
+      assert.equal(closed.totals.movementsInCents, 200);
+      assert.equal(closed.movements.length, 1);
+      assert.equal(closed.movements[0].reason, "Fondo aggiuntivo");
 
       assert.equal((await request({ url: "/api/sessions?limit=0" })).status, 400);
     });
@@ -234,7 +275,7 @@ test("export: items.csv riga-per-articolo con sconto ripartito, aggregato con ne
 
       const aggCsv = await request({ url: `/api/reports/export.csv?from=${TODAY}&to=${TOMORROW}` });
       assert.equal(aggCsv.status, 200);
-      assert.match(aggCsv.text, /product_net_revenue_eur;product_margin_eur/);
+      assert.match(aggCsv.text, /product_net_revenue_eur;product_margin_eur;product_margin_complete/);
       assert.match(aggCsv.text, /Frittella;2;"8,00";"6,86";"3,86"/); // margine 686-300
       assert.match(aggCsv.text, /Vino;1;"6,00";"5,14";/);
 

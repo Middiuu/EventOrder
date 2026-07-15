@@ -31,6 +31,7 @@ const EXPECTED_SALE_ITEM_COLUMNS = {
   product_name: "TEXT NOT NULL DEFAULT ''",
   product_category: "TEXT NOT NULL DEFAULT 'Generale'",
   product_cost_cents: "INTEGER",
+  stock_decremented_qty: "INTEGER NOT NULL DEFAULT 0",
 };
 
 const EXPECTED_PRODUCT_COLUMNS = {
@@ -64,6 +65,7 @@ function ensureMigratedColumns() {
 }
 
 function runMigrations() {
+  const previousVersion = db.pragma("user_version", { simple: true });
   ensureMigratedColumns();
 
   // I database precedenti conservavano il nome solo nella tabella prodotti.
@@ -81,7 +83,25 @@ function runMigrations() {
     WHERE product_name = '';
   `);
 
-  db.pragma("user_version = 2");
+  if (previousVersion < 3) {
+    // Le sole vendite legacy ancora stornabili appartengono al turno aperto.
+    // Per queste righe deduciamo una volta se la scorta era presumibilmente
+    // tracciata; tutte le nuove vendite fotografano il dato in modo esatto.
+    db.exec(`
+      UPDATE sale_items
+      SET stock_decremented_qty = qty
+      WHERE stock_decremented_qty = 0
+        AND product_id IN (SELECT id FROM products WHERE stock IS NOT NULL)
+        AND sale_id IN (
+          SELECT s.id
+          FROM sales s
+          JOIN cash_sessions cs ON cs.id = s.session_id
+          WHERE s.voided = 0 AND cs.closed_at IS NULL
+        )
+    `);
+  }
+
+  db.pragma("user_version = 3");
 }
 
 function initDb() {

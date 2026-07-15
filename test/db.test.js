@@ -107,10 +107,14 @@ test("migrazione legacy aggiunge e valorizza gli snapshot prodotto prima di crea
     dbModule.initDb();
 
     const item = dbModule.db.prepare(`
-      SELECT product_name, product_category FROM sale_items WHERE id=1
+      SELECT product_name, product_category, stock_decremented_qty FROM sale_items WHERE id=1
     `).get();
-    assert.deepEqual(item, { product_name: "Nome storico", product_category: "Cibo" });
-    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 2);
+    assert.deepEqual(item, {
+      product_name: "Nome storico",
+      product_category: "Cibo",
+      stock_decremented_qty: 0,
+    });
+    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 3);
     assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "session_id"));
 
     dbModule.db.close();

@@ -1,6 +1,19 @@
 const express = require("express");
 const { db, getNextSaleNumber, getOpenSession } = require("../db");
-const { MAX_MONEY_CENTS, MAX_QTY, cleanText, isValidCents, parseLocalYmd } = require("../validation");
+const {
+  hasPendingSaleForSession,
+  isSalePending,
+  markSalePending,
+  unmarkSalePending,
+} = require("../pending-sales");
+const {
+  MAX_MONEY_CENTS,
+  MAX_QTY,
+  cleanText,
+  isValidCents,
+  localYmdToUtcSql,
+  parseLocalYmd,
+} = require("../validation");
 
 const PAYMENT_METHODS = new Set(["cash", "card", "other"]);
 
@@ -24,22 +37,73 @@ function loadItems(saleIds) {
   return map;
 }
 
-// Storno con ripristino delle scorte tracciate, in un'unica transazione:
-// l'annullo rimette a disposizione la merce non consegnata.
-const voidSale = db.transaction((saleId, reason, operator) => {
-  db.prepare(`
+function conflictError(message) {
+  const err = new Error(message);
+  err.status = 409;
+  err.publicMessage = message;
+  return err;
+}
+
+function expectedCashForSession(sessionId) {
+  return db.prepare(`
+    SELECT
+      cs.opening_float_cents
+      + COALESCE((
+          SELECT SUM(s.total_cents) FROM sales s
+          WHERE s.session_id = cs.id AND s.voided = 0 AND s.payment_method = 'cash'
+        ), 0)
+      + COALESCE((
+          SELECT SUM(cm.amount_cents) FROM cash_movements cm
+          WHERE cm.session_id = cs.id AND cm.direction = 'in'
+        ), 0)
+      - COALESCE((
+          SELECT SUM(cm.amount_cents) FROM cash_movements cm
+          WHERE cm.session_id = cs.id AND cm.direction = 'out'
+        ), 0) AS expected_cash_cents
+    FROM cash_sessions cs
+    WHERE cs.id = ?
+  `).get(sessionId)?.expected_cash_cents;
+}
+
+// Storno idempotente con ripristino della sola quantità effettivamente
+// decrementata alla vendita. Gli storni manuali proteggono inoltre l'invariante
+// dei contanti attesi, evitando di lasciare il turno in uno stato non chiudibile.
+const voidSale = db.transaction((saleId, reason, operator, protectExpectedCash = true) => {
+  const sale = db.prepare(`
+    SELECT id, session_id, payment_method, total_cents, voided
+    FROM sales WHERE id = ?
+  `).get(saleId);
+  if (!sale || sale.voided) return false;
+
+  if (protectExpectedCash && sale.payment_method === "cash") {
+    const expected = expectedCashForSession(sale.session_id);
+    if (expected != null && expected - sale.total_cents < 0) {
+      throw conflictError(
+        "Lo storno renderebbe negativi i contanti attesi. Registra prima un versamento di cassa sufficiente."
+      );
+    }
+  }
+
+  const updated = db.prepare(`
     UPDATE sales
     SET voided=1, void_reason=?, voided_at=datetime('now'), void_operator=?
-    WHERE id=?
+    WHERE id=? AND voided=0
   `).run(reason, operator, saleId);
+  if (updated.changes !== 1) return false;
 
-  const items = db.prepare("SELECT product_id, qty FROM sale_items WHERE sale_id=?").all(saleId);
+  const items = db.prepare(`
+    SELECT product_id, stock_decremented_qty
+    FROM sale_items WHERE sale_id=?
+  `).all(saleId);
   const incStock = db.prepare(`
     UPDATE products SET stock = stock + ? WHERE id = ? AND stock IS NOT NULL
   `);
   for (const it of items) {
-    incStock.run(it.qty, it.product_id);
+    if (it.stock_decremented_qty > 0) {
+      incStock.run(it.stock_decremented_qty, it.product_id);
+    }
   }
+  return true;
 });
 
 function createSalesRouter({ printTicket }) {
@@ -106,6 +170,7 @@ function createSalesRouter({ printTicket }) {
         unit_price_cents: unit,
         line_total_cents: line,
         cost_cents: p.cost_cents,
+        stock_decremented_qty: p.stock == null ? 0 : it.qty,
       };
     });
 
@@ -176,14 +241,14 @@ function createSalesRouter({ printTicket }) {
       const insItem = db.prepare(`
         INSERT INTO sale_items
           (sale_id, product_id, qty, unit_price_cents, line_total_cents,
-           product_name, product_category, product_cost_cents)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           product_name, product_category, product_cost_cents, stock_decremented_qty)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const it of computedItems) {
         insItem.run(
           saleId, it.product_id, it.qty, it.unit_price_cents, it.line_total_cents,
-          it.name, it.category, it.cost_cents
+          it.name, it.category, it.cost_cents, it.stock_decremented_qty
         );
       }
 
@@ -200,6 +265,7 @@ function createSalesRouter({ printTicket }) {
     });
 
     const result = tx();
+    markSalePending(result.saleId, session.id);
 
     try {
       await printTicket({
@@ -218,10 +284,14 @@ function createSalesRouter({ printTicket }) {
       });
     } catch (err) {
       console.error(`Stampa vendita #${result.saleNumber} non riuscita: ${err?.message || String(err)}`);
-      voidSale(result.saleId, "Stampa non riuscita", session.operator);
+      // Durante la stampa movimenti, chiusura e storni manuali sono bloccati:
+      // l'annullo automatico può quindi ripristinare in sicurezza la vendita.
+      voidSale(result.saleId, "Stampa non riuscita", session.operator, false);
       return res.status(502).json({
         error: `Stampa non riuscita. Vendita #${String(result.saleNumber).padStart(4, "0")} annullata automaticamente.`,
       });
+    } finally {
+      unmarkSalePending(result.saleId);
     }
 
     res.json({
@@ -270,15 +340,15 @@ function createSalesRouter({ printTicket }) {
       if (!parseLocalYmd(req.query.from)) {
         return res.status(400).json({ error: "Data 'from' non valida: usa YYYY-MM-DD" });
       }
-      where.push("date(created_at,'localtime') >= ?");
-      params.push(String(req.query.from));
+      where.push("created_at >= ?");
+      params.push(localYmdToUtcSql(req.query.from));
     }
     if (req.query.to) {
       if (!parseLocalYmd(req.query.to)) {
         return res.status(400).json({ error: "Data 'to' non valida: usa YYYY-MM-DD" });
       }
-      where.push("date(created_at,'localtime') <= ?");
-      params.push(String(req.query.to));
+      where.push("created_at < ?");
+      params.push(localYmdToUtcSql(req.query.to, 1));
     }
 
     if (req.query.operator) {
@@ -342,6 +412,9 @@ function createSalesRouter({ printTicket }) {
   router.post("/:id/void", (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: "Id non valido" });
+    if (isSalePending(id)) {
+      return res.status(409).json({ error: "Attendi la conclusione della stampa prima di annullare la vendita" });
+    }
     const sale = db.prepare("SELECT id, sale_number, session_id, voided FROM sales WHERE id = ?").get(id);
     if (!sale) return res.status(404).json({ error: "Vendita non trovata" });
     if (sale.voided) return res.status(400).json({ error: "Vendita gia' annullata" });
@@ -362,6 +435,9 @@ function createSalesRouter({ printTicket }) {
     const openSession = getOpenSession();
     if (!openSession) {
       return res.status(409).json({ error: "Nessun turno aperto: non puoi annullare vendite gia' chiuse" });
+    }
+    if (hasPendingSaleForSession(openSession.id)) {
+      return res.status(409).json({ error: "Attendi la conclusione della stampa prima di annullare vendite" });
     }
     const last = db.prepare(`
       SELECT id, sale_number FROM sales

@@ -933,3 +933,133 @@ test("esaurito e scorte: vendita bloccata, decremento e ripristino su storno", a
     harness.cleanup();
   }
 });
+
+test("storno: ripristina solo le scorte decrementate al momento della vendita", async () => {
+  const harness = createHarness({ printTicket: async () => {} });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const post = (url, body) => request({
+        method: "POST",
+        url,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const product = (await request({ url: "/api/products" })).json()[0];
+      assert.equal(product.stock, null);
+
+      await post("/api/sessions/open", { opening_float_cents: 0 });
+      const sale = await post("/api/sales/print", {
+        items: [{ product_id: product.id, qty: 2 }],
+      });
+      assert.equal(sale.status, 200);
+
+      // Attivare il tracciamento dopo la vendita non deve trasformare lo
+      // storno in un incremento di scorte mai sottratte.
+      await request({
+        method: "PATCH",
+        url: `/api/products/${product.id}`,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stock: 10 }),
+      });
+      const savedSale = (await request({ url: "/api/sales?limit=1" })).json()[0];
+      assert.equal((await post(`/api/sales/${savedSale.id}/void`, { reason: "Test snapshot" })).status, 200);
+
+      const updated = (await request({ url: "/api/products/all" })).json()
+        .find(p => p.id === product.id);
+      assert.equal(updated.stock, 10);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("storno dopo prelievo: protegge i contanti attesi e consente la correzione", async () => {
+  const harness = createHarness({ printTicket: async () => {} });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const post = (url, body) => request({
+        method: "POST",
+        url,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const product = (await request({ url: "/api/products" })).json()[0];
+
+      await post("/api/sessions/open", { opening_float_cents: 0 });
+      await post("/api/sales/print", { items: [{ product_id: product.id, qty: 1 }] });
+      const sale = (await request({ url: "/api/sales?limit=1" })).json()[0];
+      await post("/api/sessions/movements", {
+        direction: "out", amount_cents: product.price_cents, reason: "Prelievo completo",
+      });
+
+      const blocked = await post(`/api/sales/${sale.id}/void`, { reason: "Storno dopo prelievo" });
+      assert.equal(blocked.status, 409);
+      assert.match(blocked.json().error, /versamento/i);
+
+      await post("/api/sessions/movements", {
+        direction: "in", amount_cents: product.price_cents, reason: "Rientro per storno",
+      });
+      assert.equal((await post(`/api/sales/${sale.id}/void`, { reason: "Storno corretto" })).status, 200);
+
+      const current = (await request({ url: "/api/sessions/current" })).json().session;
+      assert.equal(current.totals.expectedCashCents, 0);
+      assert.equal((await post("/api/sessions/close", { counted_cash_cents: 0 })).status, 200);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("stampa pendente: blocca movimenti, chiusura e storni concorrenti", async () => {
+  let notifyPrintStarted;
+  let rejectPrint;
+  const printStarted = new Promise(resolve => { notifyPrintStarted = resolve; });
+  const printResult = new Promise((resolve, reject) => { rejectPrint = reject; });
+  const harness = createHarness({
+    printTicket: async () => {
+      notifyPrintStarted();
+      return printResult;
+    },
+  });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const post = (url, body) => request({
+        method: "POST",
+        url,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const product = (await request({ url: "/api/products" })).json()[0];
+      await request({
+        method: "PATCH",
+        url: `/api/products/${product.id}`,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stock: 5 }),
+      });
+      await post("/api/sessions/open", { opening_float_cents: 0 });
+
+      const saleRequest = post("/api/sales/print", { items: [{ product_id: product.id, qty: 1 }] });
+      await printStarted;
+
+      assert.equal((await post("/api/sessions/movements", {
+        direction: "out", amount_cents: product.price_cents, reason: "Durante stampa",
+      })).status, 409);
+      assert.equal((await post("/api/sessions/close", { counted_cash_cents: 0 })).status, 409);
+      assert.equal((await post("/api/sales/1/void", { reason: "Durante stampa" })).status, 409);
+      assert.equal((await post("/api/sales/void-last", {})).status, 409);
+
+      rejectPrint(new Error("Stampante offline"));
+      assert.equal((await saleRequest).status, 502);
+
+      const updated = (await request({ url: "/api/products/all" })).json()
+        .find(p => p.id === product.id);
+      assert.equal(updated.stock, 5);
+      assert.equal((await post("/api/sessions/close", { counted_cash_cents: 0 })).status, 200);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});

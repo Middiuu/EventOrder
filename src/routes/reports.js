@@ -1,7 +1,7 @@
 const express = require("express");
 const { db, DB_PATH } = require("../db");
 const { config } = require("../config");
-const { parseLocalYmd } = require("../validation");
+const { localYmdToUtcSql, parseLocalYmd } = require("../validation");
 const fs = require("fs");
 const path = require("path");
 
@@ -60,8 +60,10 @@ function getRangeFromQuery(req) {
   if (!toDate) throw rangeError("Data 'to' non valida: usa YYYY-MM-DD");
   if (toDate <= fromDate) throw rangeError("La data 'to' deve essere successiva a 'from'");
 
-  const from = `${fromDay} 00:00:00`;
-  const to = `${toDay} 00:00:00`;
+  // created_at e' memorizzato come UTC. Convertiamo i confini locali una
+  // sola volta, lasciando la colonna nuda nella query cosi' l'indice resta usabile.
+  const from = localYmdToUtcSql(fromDay);
+  const to = localYmdToUtcSql(toDay);
 
   return { fromDay, toDay, from, to };
 }
@@ -78,7 +80,7 @@ function salesScopeFromQuery(req) {
   }
   const { fromDay, toDay, from, to } = getRangeFromQuery(req);
   return {
-    where: "datetime(s.created_at,'localtime') >= datetime(?) AND datetime(s.created_at,'localtime') < datetime(?)",
+    where: "s.created_at >= ? AND s.created_at < ?",
     params: [from, to],
     fromDay,
     toDay,
@@ -156,14 +158,21 @@ function productBreakdown(sales, itemsBySale) {
         qty_sold: 0,
         gross_revenue_cents: 0,
         net_revenue_cents: 0,
+        tracked_net_revenue_cents: 0,
         cost_cents: 0,
-        cost_tracked: true,
+        tracked_items: 0,
+        untracked_items: 0,
       };
       row.qty_sold += it.qty;
       row.gross_revenue_cents += it.line_total_cents;
       row.net_revenue_cents += net.get(it.id) || 0;
-      if (it.product_cost_cents == null) row.cost_tracked = false;
-      else row.cost_cents += it.product_cost_cents * it.qty;
+      if (it.product_cost_cents == null) {
+        row.untracked_items += 1;
+      } else {
+        row.tracked_items += 1;
+        row.tracked_net_revenue_cents += net.get(it.id) || 0;
+        row.cost_cents += it.product_cost_cents * it.qty;
+      }
       agg.set(it.product_name, row);
     }
   }
@@ -171,7 +180,13 @@ function productBreakdown(sales, itemsBySale) {
     .map(row => ({
       ...row,
       revenue_cents: row.gross_revenue_cents, // nome storico: lordo
-      margin_cents: row.cost_tracked ? row.net_revenue_cents - row.cost_cents : null,
+      cost_tracked: row.untracked_items === 0,
+      margin_complete: row.untracked_items === 0,
+      // Se il costo copre solo alcune vendite, mostriamo il margine noto
+      // marcandolo esplicitamente come parziale invece di scartarlo tutto.
+      margin_cents: row.tracked_items > 0
+        ? row.tracked_net_revenue_cents - row.cost_cents
+        : null,
     }))
     .sort((a, b) => b.qty_sold - a.qty_sold || b.net_revenue_cents - a.net_revenue_cents);
 }
@@ -181,15 +196,24 @@ function buildSummary(scope) {
 
   const byProduct = productBreakdown(sales, itemsBySale);
   const trackedProducts = byProduct.filter(p => p.margin_cents !== null);
+  const trackedRevenueCents = byProduct.reduce((sum, p) => sum + p.tracked_net_revenue_cents, 0);
+  const totalRevenueCents = sales.reduce((sum, s) => sum + s.total_cents, 0);
+  const marginComplete = byProduct.length > 0 && byProduct.every(p => p.margin_complete);
 
   const summary = {
     sales_count: sales.length,
-    revenue_cents: sales.reduce((sum, s) => sum + s.total_cents, 0),
+    revenue_cents: totalRevenueCents,
     discount_cents: sales.reduce((sum, s) => sum + s.discount_cents, 0),
     margin_cents: trackedProducts.length
       ? trackedProducts.reduce((sum, p) => sum + p.margin_cents, 0)
       : null,
     margin_products: trackedProducts.length,
+    margin_total_products: byProduct.length,
+    margin_complete: marginComplete,
+    margin_tracked_revenue_cents: trackedRevenueCents,
+    margin_coverage_percent: totalRevenueCents > 0
+      ? Math.round(trackedRevenueCents / totalRevenueCents * 100)
+      : (marginComplete ? 100 : 0),
   };
 
   const payAgg = new Map();
@@ -264,7 +288,8 @@ router.get("/export.csv", (req, res) => {
     "qty_sold",
     "product_gross_revenue_eur",
     "product_net_revenue_eur",
-    "product_margin_eur"
+    "product_margin_eur",
+    "product_margin_complete"
   ].join(sep);
 
   const lines = [header];
@@ -282,6 +307,7 @@ router.get("/export.csv", (req, res) => {
       "0",
       "0,00",
       "0,00",
+      "",
       ""
     ].map(csvEscape).join(sep));
   } else {
@@ -295,7 +321,8 @@ router.get("/export.csv", (req, res) => {
         String(r.qty_sold),
         centsToEuroString(r.gross_revenue_cents),
         centsToEuroString(r.net_revenue_cents),
-        r.margin_cents === null ? "" : centsToEuroString(r.margin_cents)
+        r.margin_cents === null ? "" : centsToEuroString(r.margin_cents),
+        r.margin_cents === null ? "" : (r.margin_complete ? "1" : "0")
       ].map(csvEscape).join(sep));
     }
   }

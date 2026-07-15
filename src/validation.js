@@ -29,20 +29,6 @@ function cleanText(value, maxLength) {
   return text;
 }
 
-// Data locale YYYY-MM-DD: ritorna un Date valido o null (respinge 2026-02-31).
-function parseLocalYmd(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
-  if (!match) return null;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const date = new Date(year, month - 1, day);
-  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
-    return null;
-  }
-  return date;
-}
-
 // Data locale YYYY-MM-DD -> Date, oppure null se malformata o inesistente.
 function parseLocalYmd(value) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
@@ -57,6 +43,16 @@ function parseLocalYmd(value) {
   return date;
 }
 
+// Converte la mezzanotte di una data locale nel timestamp UTC usato da SQLite.
+// L'offset in giorni viene applicato nel calendario locale, quindi resta corretto
+// anche nei giorni di passaggio tra ora solare e ora legale.
+function localYmdToUtcSql(value, dayOffset = 0) {
+  const date = parseLocalYmd(value);
+  if (!date || !Number.isSafeInteger(dayOffset)) return null;
+  date.setDate(date.getDate() + dayOffset);
+  return date.toISOString().slice(0, 19).replace("T", " ");
+}
+
 module.exports = {
   MAX_MONEY_CENTS,
   MAX_PRODUCT_PRICE_CENTS,
@@ -64,9 +60,9 @@ module.exports = {
   MAX_SORT_ORDER,
   MAX_STOCK,
   cleanText,
-  parseLocalYmd,
   isSafeIntegerInRange,
   isValidCents,
+  localYmdToUtcSql,
   normalizeActive,
   parseLocalYmd,
 };
