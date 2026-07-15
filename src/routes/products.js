@@ -25,10 +25,18 @@ function normalizeStock(value, fallback) {
   return { ok: false };
 }
 
+// Costo unitario: undefined = mantieni, null/"" = non tracciato, altrimenti centesimi interi.
+function normalizeCost(value, fallback) {
+  if (value === undefined) return { ok: true, cost: fallback };
+  if (value === null || value === "") return { ok: true, cost: null };
+  if (isValidCents(value, MAX_PRODUCT_PRICE_CENTS)) return { ok: true, cost: value };
+  return { ok: false };
+}
+
 // --- Read (solo attivi per Cassa)
 router.get("/", (req, res) => {
   const rows = db.prepare(`
-    SELECT id, name, price_cents, category, sort_order, active, sold_out, stock
+    SELECT id, name, price_cents, category, sort_order, active, sold_out, stock, cost_cents
     FROM products
     WHERE active = 1
     ORDER BY sort_order ASC, name ASC
@@ -39,7 +47,7 @@ router.get("/", (req, res) => {
 // --- Read (tutti per pagina Prodotti)
 router.get("/all", (req, res) => {
   const rows = db.prepare(`
-    SELECT id, name, price_cents, category, sort_order, active, sold_out, stock
+    SELECT id, name, price_cents, category, sort_order, active, sold_out, stock, cost_cents
     FROM products
     ORDER BY active DESC, sort_order ASC, name ASC
   `).all();
@@ -85,6 +93,7 @@ router.post("/", (req, res) => {
   const nextCategory = cleanText(category || "Generale", 80);
   const nextActive = normalizeActive(active, true);
   const nextStock = normalizeStock(req.body?.stock, null);
+  const nextCost = normalizeCost(req.body?.cost_cents, null);
   if (!n) return res.status(400).json({ error: "Nome prodotto non valido (massimo 120 caratteri)" });
   if (!isValidCents(price_cents, MAX_PRODUCT_PRICE_CENTS)) {
     return res.status(400).json({ error: "Prezzo non valido: usa un numero intero di centesimi" });
@@ -98,6 +107,9 @@ router.post("/", (req, res) => {
   }
   if (!nextStock.ok) {
     return res.status(400).json({ error: "Scorte non valide: usa un intero >= 0 o lascia vuoto" });
+  }
+  if (!nextCost.ok) {
+    return res.status(400).json({ error: "Costo non valido: usa centesimi interi o lascia vuoto" });
   }
 
   // Unicità nome: case-insensitive + trim
@@ -113,15 +125,16 @@ router.post("/", (req, res) => {
   }
 
   const info = db.prepare(`
-    INSERT INTO products (name, price_cents, category, sort_order, active, stock)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO products (name, price_cents, category, sort_order, active, stock, cost_cents)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `).run(
     n,
     price_cents,
     nextCategory,
     sort_order,
     nextActive,
-    nextStock.stock
+    nextStock.stock,
+    nextCost.cost
   );
 
   res.json({ id: info.lastInsertRowid });
@@ -143,6 +156,7 @@ router.patch("/:id", (req, res) => {
   const nextActive = normalizeActive(req.body?.active, cur.active);
   const nextSoldOut = normalizeActive(req.body?.sold_out, cur.sold_out);
   const nextStock = normalizeStock(req.body?.stock, cur.stock);
+  const nextCost = normalizeCost(req.body?.cost_cents, cur.cost_cents);
 
   if (!nextName) return res.status(400).json({ error: "Nome non valido (massimo 120 caratteri)" });
   if (!isValidCents(nextPrice, MAX_PRODUCT_PRICE_CENTS)) {
@@ -156,6 +170,9 @@ router.patch("/:id", (req, res) => {
   if (nextSoldOut === null) return res.status(400).json({ error: "Stato esaurito non valido" });
   if (!nextStock.ok) {
     return res.status(400).json({ error: "Scorte non valide: usa un intero >= 0 o lascia vuoto" });
+  }
+  if (!nextCost.ok) {
+    return res.status(400).json({ error: "Costo non valido: usa centesimi interi o lascia vuoto" });
   }
 
   // Unicità nome: case-insensitive + trim, escludendo questo id
@@ -173,7 +190,7 @@ router.patch("/:id", (req, res) => {
 
   db.prepare(`
     UPDATE products
-    SET name=?, price_cents=?, category=?, sort_order=?, active=?, sold_out=?, stock=?
+    SET name=?, price_cents=?, category=?, sort_order=?, active=?, sold_out=?, stock=?, cost_cents=?
     WHERE id=?
   `).run(
     nextName,
@@ -183,6 +200,7 @@ router.patch("/:id", (req, res) => {
     nextActive,
     nextSoldOut,
     nextStock.stock,
+    nextCost.cost,
     id
   );
 

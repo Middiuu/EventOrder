@@ -86,11 +86,17 @@ chiusura il turno è immutabile, così quadratura e storico restano coerenti.
 <img src="docs/screenshots/vendite.png" alt="Storico delle vendite con storno" width="820">
 </div>
 
-### 📊 Numeri chiari e report del giorno
+### 📊 Numeri chiari, per giorno o per turno
 
-Incasso del giorno, **suddivisione per prodotto e per metodo di pagamento**,
-sconti e omaggi erogati, con grafici a colpo d'occhio. Esporti tutto in **CSV**
-(aggregato o riga-per-vendita) e fai il **backup del database**.
+Incassi, **suddivisione per prodotto e per metodo di pagamento**, sconti e
+omaggi, con grafici a colpo d'occhio. Filtri il report **per intervallo di date
+o per singolo turno**, confronti le **giornate di una sagra multi-giorno** e
+consulti le **chiusure di cassa** con ammanchi, eccedenze e note. Se imposti il
+**costo** dei prodotti vedi anche il **margine** (fotografato alla vendita), e
+gli **sconti sono ripartiti sui prodotti** al centesimo. Esporti tutto in
+**CSV** — aggregato, per transazione o **riga per articolo** — e fai il
+**backup del database**. Lo storico vendite si filtra per numero, data,
+prodotto, operatore, metodo e stato.
 
 <div align="center">
 <img src="docs/screenshots/report.png" alt="Report del giorno con grafici" width="860">

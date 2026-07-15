@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS products (
   -- prodotto e' vendibile solo se non esaurito e con scorte disponibili.
   sold_out INTEGER NOT NULL DEFAULT 0 CHECK(sold_out IN (0, 1)),
   stock INTEGER CHECK(stock IS NULL OR (typeof(stock) = 'integer' AND stock >= 0)),
+  -- Costo unitario opzionale (NULL = non tracciato): abilita il margine nei report.
+  cost_cents INTEGER CHECK(cost_cents IS NULL OR (typeof(cost_cents) = 'integer' AND cost_cents >= 0)),
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -61,6 +63,7 @@ CREATE TABLE IF NOT EXISTS sale_items (
   line_total_cents INTEGER NOT NULL CHECK(typeof(line_total_cents) = 'integer' AND line_total_cents >= 0),
   product_name TEXT NOT NULL DEFAULT '',
   product_category TEXT NOT NULL DEFAULT 'Generale',
+  product_cost_cents INTEGER CHECK(product_cost_cents IS NULL OR (typeof(product_cost_cents) = 'integer' AND product_cost_cents >= 0)),
   FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
   FOREIGN KEY (product_id) REFERENCES products(id)
 );

@@ -21,8 +21,64 @@
       <section class="card">
         <div class="section-heading">
           <div>
+            <div class="eyebrow">Filtri</div>
+            <h2>Cerca nel registro</h2>
+          </div>
+        </div>
+        <form id="salesFilters">
+          <div class="report-controls">
+            <label class="field">
+              <span class="field-label">Numero</span>
+              <input class="input mono" name="number" type="number" min="1" step="1" placeholder="Es. 42" />
+            </label>
+            <label class="field">
+              <span class="field-label">Da</span>
+              <input class="input" name="from" type="date" />
+            </label>
+            <label class="field">
+              <span class="field-label">A (incluso)</span>
+              <input class="input" name="to" type="date" />
+            </label>
+            <label class="field">
+              <span class="field-label">Prodotto</span>
+              <input class="input" name="product" placeholder="Nome prodotto" />
+            </label>
+          </div>
+          <div class="report-controls" style="margin-top:12px">
+            <label class="field">
+              <span class="field-label">Operatore</span>
+              <input class="input" name="operator" placeholder="Nome operatore" />
+            </label>
+            <label class="field">
+              <span class="field-label">Metodo</span>
+              <select class="input" name="method">
+                <option value="">Tutti</option>
+                <option value="cash">Contanti</option>
+                <option value="card">Carta</option>
+                <option value="other">Altro</option>
+              </select>
+            </label>
+            <label class="field">
+              <span class="field-label">Stato</span>
+              <select class="input" name="status">
+                <option value="">Tutte</option>
+                <option value="valid">Valide</option>
+                <option value="voided">Annullate</option>
+              </select>
+            </label>
+            <div class="actions" style="margin:0; align-self:end">
+              <button class="btn btn-primary btn-compact" type="submit">Filtra</button>
+              <button class="btn btn-ghost btn-compact" id="resetSalesFilters" type="button">Azzera</button>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <section class="card" style="margin-top:18px">
+        <div class="section-heading">
+          <div>
             <div class="eyebrow">Registro</div>
-            <h2>Vendite recenti</h2>
+            <h2 id="salesListTitle">Vendite recenti</h2>
           </div>
           <button class="btn btn-secondary btn-compact" id="refreshSalesBtn" type="button">Aggiorna</button>
         </div>

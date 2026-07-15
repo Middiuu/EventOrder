@@ -33,7 +33,7 @@
 
           <form id="productForm" class="stack">
             <input type="hidden" name="sort_order" value="0" />
-            <div class="grid" style="grid-template-columns:1.4fr 1fr .7fr .7fr">
+            <div class="grid" style="grid-template-columns:1.3fr .9fr .6fr .6fr .6fr">
               <label class="field">
                 <span class="field-label">Nome</span>
                 <input class="input" name="name" placeholder="Es. Panino rustico" required />
@@ -45,6 +45,10 @@
               <label class="field">
                 <span class="field-label">Prezzo (€)</span>
                 <input class="input mono" name="price_eur" type="number" step="0.01" min="0" placeholder="0,00" required />
+              </label>
+              <label class="field">
+                <span class="field-label">Costo (€)</span>
+                <input class="input mono" name="cost_eur" type="number" step="0.01" min="0" placeholder="Opzionale" />
               </label>
               <label class="field">
                 <span class="field-label">Scorte</span>
@@ -101,7 +105,7 @@
           <form id="editProductForm" class="stack" style="margin-top:16px">
             <input type="hidden" name="id" />
             <input type="hidden" name="sort_order" value="0" />
-            <div class="grid" style="grid-template-columns:1.4fr 1fr .7fr .7fr">
+            <div class="grid" style="grid-template-columns:1.3fr .9fr .6fr .6fr .6fr">
               <label class="field">
                 <span class="field-label">Nome</span>
                 <input class="input" name="name" placeholder="Es. Panino rustico" required />
@@ -113,6 +117,10 @@
               <label class="field">
                 <span class="field-label">Prezzo (€)</span>
                 <input class="input mono" name="price_eur" type="number" step="0.01" min="0" placeholder="0,00" required />
+              </label>
+              <label class="field">
+                <span class="field-label">Costo (€)</span>
+                <input class="input mono" name="cost_eur" type="number" step="0.01" min="0" placeholder="Opzionale" />
               </label>
               <label class="field">
                 <span class="field-label">Scorte</span>

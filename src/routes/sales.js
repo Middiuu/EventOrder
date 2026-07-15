@@ -1,6 +1,6 @@
 const express = require("express");
 const { db, getNextSaleNumber, getOpenSession } = require("../db");
-const { MAX_MONEY_CENTS, MAX_QTY, cleanText, isValidCents } = require("../validation");
+const { MAX_MONEY_CENTS, MAX_QTY, cleanText, isValidCents, parseLocalYmd } = require("../validation");
 
 const PAYMENT_METHODS = new Set(["cash", "card", "other"]);
 
@@ -75,7 +75,7 @@ function createSalesRouter({ printTicket }) {
     }
     const placeholders = ids.map(() => "?").join(",");
     const products = db.prepare(`
-      SELECT id, name, category, price_cents, sold_out, stock
+      SELECT id, name, category, price_cents, sold_out, stock, cost_cents
       FROM products
       WHERE active=1 AND id IN (${placeholders})
     `).all(...ids);
@@ -105,6 +105,7 @@ function createSalesRouter({ printTicket }) {
         qty: it.qty,
         unit_price_cents: unit,
         line_total_cents: line,
+        cost_cents: p.cost_cents,
       };
     });
 
@@ -175,14 +176,14 @@ function createSalesRouter({ printTicket }) {
       const insItem = db.prepare(`
         INSERT INTO sale_items
           (sale_id, product_id, qty, unit_price_cents, line_total_cents,
-           product_name, product_category)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+           product_name, product_category, product_cost_cents)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const it of computedItems) {
         insItem.run(
           saleId, it.product_id, it.qty, it.unit_price_cents, it.line_total_cents,
-          it.name, it.category
+          it.name, it.category, it.cost_cents
         );
       }
 
@@ -234,25 +235,88 @@ function createSalesRouter({ printTicket }) {
     });
   });
 
-  // Elenco vendite recenti (opzionalmente filtrate per turno)
+  // Elenco vendite recenti, filtrabile per numero, data, prodotto,
+  // operatore, metodo, stato e turno.
   router.get("/", (req, res) => {
     const requestedLimit = req.query.limit === undefined ? 50 : Number(req.query.limit);
     if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1) {
       return res.status(400).json({ error: "Limite non valido" });
     }
     const limit = Math.min(500, requestedLimit);
-    const sessionId = req.query.session === undefined ? null : Number(req.query.session);
-    if (sessionId !== null && (!Number.isSafeInteger(sessionId) || sessionId <= 0)) {
-      return res.status(400).json({ error: "Turno non valido" });
+
+    const where = [];
+    const params = [];
+
+    if (req.query.session !== undefined) {
+      const sessionId = Number(req.query.session);
+      if (!Number.isSafeInteger(sessionId) || sessionId <= 0) {
+        return res.status(400).json({ error: "Turno non valido" });
+      }
+      where.push("session_id = ?");
+      params.push(sessionId);
     }
 
-    const rows = sessionId
-      ? db.prepare(`
-          SELECT * FROM sales WHERE session_id = ? ORDER BY id DESC LIMIT ?
-        `).all(sessionId, limit)
-      : db.prepare(`
-          SELECT * FROM sales ORDER BY id DESC LIMIT ?
-        `).all(limit);
+    if (req.query.number !== undefined && req.query.number !== "") {
+      const number = Number(req.query.number);
+      if (!Number.isSafeInteger(number) || number <= 0) {
+        return res.status(400).json({ error: "Numero vendita non valido" });
+      }
+      where.push("sale_number = ?");
+      params.push(number);
+    }
+
+    // Date locali inclusive (from <= giorno <= to)
+    if (req.query.from) {
+      if (!parseLocalYmd(req.query.from)) {
+        return res.status(400).json({ error: "Data 'from' non valida: usa YYYY-MM-DD" });
+      }
+      where.push("date(created_at,'localtime') >= ?");
+      params.push(String(req.query.from));
+    }
+    if (req.query.to) {
+      if (!parseLocalYmd(req.query.to)) {
+        return res.status(400).json({ error: "Data 'to' non valida: usa YYYY-MM-DD" });
+      }
+      where.push("date(created_at,'localtime') <= ?");
+      params.push(String(req.query.to));
+    }
+
+    if (req.query.operator) {
+      const operator = cleanText(String(req.query.operator), 80);
+      if (!operator) return res.status(400).json({ error: "Operatore non valido" });
+      where.push("operator LIKE ?");
+      params.push(`%${operator}%`);
+    }
+
+    if (req.query.product) {
+      const product = cleanText(String(req.query.product), 120);
+      if (!product) return res.status(400).json({ error: "Prodotto non valido" });
+      where.push("EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_id = sales.id AND si.product_name LIKE ?)");
+      params.push(`%${product}%`);
+    }
+
+    if (req.query.method) {
+      const method = String(req.query.method);
+      if (!PAYMENT_METHODS.has(method)) {
+        return res.status(400).json({ error: "Metodo di pagamento non valido" });
+      }
+      where.push("payment_method = ?");
+      params.push(method);
+    }
+
+    if (req.query.status) {
+      const status = String(req.query.status);
+      if (status !== "valid" && status !== "voided") {
+        return res.status(400).json({ error: "Stato non valido: usa 'valid' o 'voided'" });
+      }
+      where.push("voided = ?");
+      params.push(status === "voided" ? 1 : 0);
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const rows = db.prepare(`
+      SELECT * FROM sales ${whereSql} ORDER BY id DESC LIMIT ?
+    `).all(...params, limit);
 
     const itemsBySale = loadItems(rows.map(r => r.id));
     const openSession = getOpenSession();

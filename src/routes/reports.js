@@ -1,6 +1,7 @@
 const express = require("express");
 const { db, DB_PATH } = require("../db");
 const { config } = require("../config");
+const { parseLocalYmd } = require("../validation");
 const fs = require("fs");
 const path = require("path");
 
@@ -21,19 +22,6 @@ function addDays(dateObj, days) {
   const d = new Date(dateObj);
   d.setDate(d.getDate() + days);
   return d;
-}
-
-function parseLocalYmd(value) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
-  if (!match) return null;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const date = new Date(year, month - 1, day);
-  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
-    return null;
-  }
-  return date;
 }
 
 function rangeError(message) {
@@ -78,85 +66,193 @@ function getRangeFromQuery(req) {
   return { fromDay, toDay, from, to };
 }
 
-// --- JSON report "oggi"
-router.get("/today", (req, res) => {
-  // created_at e' salvato in UTC: va convertito in ora locale prima di
-  // confrontarlo con la data odierna locale, altrimenti le vendite a cavallo
-  // della mezzanotte (es. eventi serali) finiscono nel giorno sbagliato.
-  const summary = db.prepare(`
-    SELECT
-      COUNT(*) AS sales_count,
-      COALESCE(SUM(total_cents), 0) AS revenue_cents,
-      COALESCE(SUM(discount_cents), 0) AS discount_cents
-    FROM sales
-    WHERE voided=0 AND date(created_at,'localtime')=date('now','localtime')
-  `).get();
+// --- Selezione vendite per i report: intervallo di date locali (from/to,
+// to esclusivo) oppure un turno specifico (?session=id).
+function salesScopeFromQuery(req) {
+  if (req.query.session !== undefined) {
+    const sessionId = Number(req.query.session);
+    if (!Number.isSafeInteger(sessionId) || sessionId <= 0) {
+      throw rangeError("Turno non valido");
+    }
+    return { where: "s.session_id = ?", params: [sessionId], sessionId };
+  }
+  const { fromDay, toDay, from, to } = getRangeFromQuery(req);
+  return {
+    where: "datetime(s.created_at,'localtime') >= datetime(?) AND datetime(s.created_at,'localtime') < datetime(?)",
+    params: [from, to],
+    fromDay,
+    toDay,
+  };
+}
 
-  const byProduct = db.prepare(`
-    SELECT
-      si.product_name AS name,
-      SUM(si.qty) AS qty_sold,
-      SUM(si.line_total_cents) AS revenue_cents,
-      SUM(si.line_total_cents) AS gross_revenue_cents
-    FROM sale_items si
-    JOIN sales s ON s.id=si.sale_id
-    WHERE s.voided=0 AND date(s.created_at,'localtime')=date('now','localtime')
-    GROUP BY si.product_name
-    ORDER BY qty_sold DESC, revenue_cents DESC
-  `).all();
+// Vendite del perimetro con le rispettive righe (per la ripartizione sconti).
+// created_at e' salvato in UTC: convertito in ora locale gia' in query, cosi'
+// le vendite dopo mezzanotte restano attribuite alla serata giusta.
+function loadScopedSales(scope, { includeVoided = false } = {}) {
+  const voidedFilter = includeVoided ? "" : "AND s.voided = 0";
+  const sales = db.prepare(`
+    SELECT s.id, s.sale_number, s.total_cents, s.discount_cents, s.payment_method,
+           s.operator, s.session_id, s.voided,
+           datetime(s.created_at, 'localtime') AS created_local
+    FROM sales s
+    WHERE ${scope.where} ${voidedFilter}
+    ORDER BY s.id ASC
+  `).all(...scope.params);
 
-  const byPayment = db.prepare(`
-    SELECT
-      payment_method,
-      COUNT(*) AS count,
-      COALESCE(SUM(total_cents), 0) AS revenue_cents
-    FROM sales
-    WHERE voided=0 AND date(created_at,'localtime')=date('now','localtime')
-    GROUP BY payment_method
-    ORDER BY revenue_cents DESC
-  `).all();
+  const itemsBySale = new Map();
+  const ids = sales.map(s => s.id);
+  if (ids.length > 0) {
+    const placeholders = ids.map(() => "?").join(",");
+    const items = db.prepare(`
+      SELECT id, sale_id, qty, unit_price_cents, line_total_cents,
+             product_name, product_category, product_cost_cents
+      FROM sale_items
+      WHERE sale_id IN (${placeholders})
+      ORDER BY id ASC
+    `).all(...ids);
+    for (const it of items) {
+      if (!itemsBySale.has(it.sale_id)) itemsBySale.set(it.sale_id, []);
+      itemsBySale.get(it.sale_id).push(it);
+    }
+  }
+  return { sales, itemsBySale };
+}
 
-  const byHour = db.prepare(`
-    SELECT
-      CAST(strftime('%H', datetime(created_at, 'localtime')) AS INTEGER) AS hour,
-      COALESCE(SUM(total_cents), 0) AS revenue_cents
-    FROM sales
-    WHERE voided=0 AND date(created_at,'localtime')=date('now','localtime')
-    GROUP BY hour
-    ORDER BY hour
-  `).all();
+// Ripartisce lo sconto della vendita sulle righe in proporzione al lordo
+// (metodo dei resti maggiori): la somma dei netti coincide esattamente
+// con il totale incassato della vendita.
+function allocateNetByItem(sale, items) {
+  const net = new Map();
+  const subtotal = items.reduce((sum, it) => sum + it.line_total_cents, 0);
+  if (!sale.discount_cents || subtotal <= 0) {
+    for (const it of items) net.set(it.id, it.line_total_cents);
+    return net;
+  }
+  const target = sale.total_cents;
+  const shares = items.map(it => {
+    const raw = it.line_total_cents * target / subtotal;
+    return { id: it.id, floor: Math.floor(raw), frac: raw - Math.floor(raw) };
+  });
+  let remainder = target - shares.reduce((sum, sh) => sum + sh.floor, 0);
+  shares.sort((a, b) => b.frac - a.frac);
+  for (const sh of shares) {
+    net.set(sh.id, sh.floor + (remainder > 0 ? 1 : 0));
+    if (remainder > 0) remainder -= 1;
+  }
+  return net;
+}
 
-  res.json({ summary, byProduct, byPayment, byHour });
+// Aggregato per prodotto: quantita', lordo, netto sconti e margine
+// (solo dove il costo era tracciato al momento della vendita).
+function productBreakdown(sales, itemsBySale) {
+  const agg = new Map();
+  for (const sale of sales) {
+    const items = itemsBySale.get(sale.id) || [];
+    const net = allocateNetByItem(sale, items);
+    for (const it of items) {
+      const row = agg.get(it.product_name) || {
+        name: it.product_name,
+        category: it.product_category,
+        qty_sold: 0,
+        gross_revenue_cents: 0,
+        net_revenue_cents: 0,
+        cost_cents: 0,
+        cost_tracked: true,
+      };
+      row.qty_sold += it.qty;
+      row.gross_revenue_cents += it.line_total_cents;
+      row.net_revenue_cents += net.get(it.id) || 0;
+      if (it.product_cost_cents == null) row.cost_tracked = false;
+      else row.cost_cents += it.product_cost_cents * it.qty;
+      agg.set(it.product_name, row);
+    }
+  }
+  return [...agg.values()]
+    .map(row => ({
+      ...row,
+      revenue_cents: row.gross_revenue_cents, // nome storico: lordo
+      margin_cents: row.cost_tracked ? row.net_revenue_cents - row.cost_cents : null,
+    }))
+    .sort((a, b) => b.qty_sold - a.qty_sold || b.net_revenue_cents - a.net_revenue_cents);
+}
+
+function buildSummary(scope) {
+  const { sales, itemsBySale } = loadScopedSales(scope);
+
+  const byProduct = productBreakdown(sales, itemsBySale);
+  const trackedProducts = byProduct.filter(p => p.margin_cents !== null);
+
+  const summary = {
+    sales_count: sales.length,
+    revenue_cents: sales.reduce((sum, s) => sum + s.total_cents, 0),
+    discount_cents: sales.reduce((sum, s) => sum + s.discount_cents, 0),
+    margin_cents: trackedProducts.length
+      ? trackedProducts.reduce((sum, p) => sum + p.margin_cents, 0)
+      : null,
+    margin_products: trackedProducts.length,
+  };
+
+  const payAgg = new Map();
+  const hourAgg = new Map();
+  const dayAgg = new Map();
+  for (const s of sales) {
+    const pay = payAgg.get(s.payment_method) || { payment_method: s.payment_method, count: 0, revenue_cents: 0 };
+    pay.count += 1;
+    pay.revenue_cents += s.total_cents;
+    payAgg.set(s.payment_method, pay);
+
+    const hour = Number(s.created_local.slice(11, 13));
+    hourAgg.set(hour, (hourAgg.get(hour) || 0) + s.total_cents);
+
+    const day = s.created_local.slice(0, 10);
+    const d = dayAgg.get(day) || { day, sales_count: 0, revenue_cents: 0 };
+    d.sales_count += 1;
+    d.revenue_cents += s.total_cents;
+    dayAgg.set(day, d);
+  }
+
+  const byPayment = [...payAgg.values()].sort((a, b) => b.revenue_cents - a.revenue_cents);
+  const byHour = [...hourAgg.entries()]
+    .map(([hour, revenue_cents]) => ({ hour, revenue_cents }))
+    .sort((a, b) => a.hour - b.hour);
+  const byDay = [...dayAgg.values()].sort((a, b) => a.day.localeCompare(b.day));
+
+  return { summary, byProduct, byPayment, byHour, byDay };
+}
+
+// --- JSON report su intervallo di date o turno (default: oggi)
+router.get("/summary", (req, res) => {
+  const scope = salesScopeFromQuery(req);
+  res.json({
+    ...buildSummary(scope),
+    fromDay: scope.fromDay ?? null,
+    toDay: scope.toDay ?? null,
+    session: scope.sessionId ?? null,
+  });
 });
 
-// --- CSV export (Excel-friendly, separatore ';', BOM UTF-8)
+// --- Alias storico: report di oggi
+router.get("/today", (req, res) => {
+  res.json(buildSummary(salesScopeFromQuery({ query: {} })));
+});
+
+// Etichetta del perimetro per i nomi file (intervallo o turno)
+function scopeLabel(scope) {
+  return scope.sessionId ? `turno-${scope.sessionId}` : `${scope.fromDay}_to_${scope.toDay}`;
+}
+
+function sendCsv(res, filename, lines) {
+  // BOM per Excel (UTF-8)
+  const bom = "\uFEFF";
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.send(bom + lines.join("\n"));
+}
+
+// --- CSV export aggregato per prodotto (Excel-friendly, separatore ';')
 router.get("/export.csv", (req, res) => {
-  const { fromDay, toDay, from, to } = getRangeFromQuery(req);
-
-  const byProduct = db.prepare(`
-    SELECT
-      si.product_name AS product_name,
-      SUM(si.qty) AS qty_sold,
-      SUM(si.line_total_cents) AS revenue_cents,
-      SUM(si.line_total_cents) AS gross_revenue_cents
-    FROM sale_items si
-    JOIN sales s ON s.id=si.sale_id
-    WHERE s.voided=0
-      AND datetime(s.created_at,'localtime') >= datetime(?)
-      AND datetime(s.created_at,'localtime') < datetime(?)
-    GROUP BY si.product_name
-    ORDER BY qty_sold DESC, revenue_cents DESC
-  `).all(from, to);
-
-  const total = db.prepare(`
-    SELECT
-      COALESCE(SUM(total_cents), 0) AS revenue_cents,
-      COUNT(*) AS sales_count
-    FROM sales s
-    WHERE s.voided=0
-      AND datetime(s.created_at,'localtime') >= datetime(?)
-      AND datetime(s.created_at,'localtime') < datetime(?)
-  `).get(from, to);
+  const scope = salesScopeFromQuery(req);
+  const { summary, byProduct } = buildSummary(scope);
 
   const sep = ";";
   const header = [
@@ -166,66 +262,116 @@ router.get("/export.csv", (req, res) => {
     "total_revenue_eur",
     "product_name",
     "qty_sold",
-    "product_gross_revenue_eur"
+    "product_gross_revenue_eur",
+    "product_net_revenue_eur",
+    "product_margin_eur"
   ].join(sep);
 
   const lines = [header];
+  const fromLabel = scope.fromDay || `turno-${scope.sessionId}`;
+  const toLabel = scope.toDay || "";
 
   if (byProduct.length === 0) {
     // comunque esporta una riga "vuota" con i totali
     lines.push([
-      fromDay,
-      toDay,
-      String(total.sales_count),
-      centsToEuroString(total.revenue_cents),
+      fromLabel,
+      toLabel,
+      String(summary.sales_count),
+      centsToEuroString(summary.revenue_cents),
       "",
       "0",
-      "0,00"
+      "0,00",
+      "0,00",
+      ""
     ].map(csvEscape).join(sep));
   } else {
     for (const r of byProduct) {
       lines.push([
-        fromDay,
-        toDay,
-        String(total.sales_count),
-        centsToEuroString(total.revenue_cents),
-        r.product_name,
+        fromLabel,
+        toLabel,
+        String(summary.sales_count),
+        centsToEuroString(summary.revenue_cents),
+        r.name,
         String(r.qty_sold),
-        centsToEuroString(r.revenue_cents)
+        centsToEuroString(r.gross_revenue_cents),
+        centsToEuroString(r.net_revenue_cents),
+        r.margin_cents === null ? "" : centsToEuroString(r.margin_cents)
       ].map(csvEscape).join(sep));
     }
   }
 
-  const filename = `${config.SLUG}_${fromDay}_to_${toDay}.csv`;
+  sendCsv(res, `${config.SLUG}_${scopeLabel(scope)}.csv`, lines);
+});
 
-  // BOM per Excel (UTF-8)
-  const bom = "\uFEFF";
-  const csv = bom + lines.join("\n");
+// --- CSV export riga-per-articolo (con sconto ripartito e costo storicizzato)
+router.get("/items.csv", (req, res) => {
+  const scope = salesScopeFromQuery(req);
+  const { sales, itemsBySale } = loadScopedSales(scope, { includeVoided: true });
 
-  res.setHeader("Content-Type", "text/csv; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-  res.send(csv);
+  const sep = ";";
+  const header = [
+    "sale_number",
+    "datetime",
+    "operator",
+    "session_id",
+    "payment_method",
+    "voided",
+    "product_name",
+    "category",
+    "qty",
+    "unit_price_eur",
+    "line_gross_eur",
+    "line_discount_eur",
+    "line_net_eur",
+    "line_cost_eur",
+  ].join(sep);
+
+  const lines = [header];
+  for (const sale of sales) {
+    const items = itemsBySale.get(sale.id) || [];
+    const net = allocateNetByItem(sale, items);
+    for (const it of items) {
+      const netCents = net.get(it.id) || 0;
+      lines.push([
+        String(sale.sale_number),
+        sale.created_local || "",
+        sale.operator || "",
+        sale.session_id == null ? "" : String(sale.session_id),
+        sale.payment_method || "",
+        sale.voided ? "1" : "0",
+        it.product_name,
+        it.product_category,
+        String(it.qty),
+        centsToEuroString(it.unit_price_cents),
+        centsToEuroString(it.line_total_cents),
+        centsToEuroString(it.line_total_cents - netCents),
+        centsToEuroString(netCents),
+        it.product_cost_cents == null ? "" : centsToEuroString(it.product_cost_cents * it.qty),
+      ].map(csvEscape).join(sep));
+    }
+  }
+
+  sendCsv(res, `${config.SLUG}_righe_${scopeLabel(scope)}.csv`, lines);
 });
 
 // --- CSV export per-transazione (una riga per vendita, per contabilita')
 router.get("/transactions.csv", (req, res) => {
-  const { fromDay, toDay, from, to } = getRangeFromQuery(req);
+  const scope = salesScopeFromQuery(req);
 
   const rows = db.prepare(`
     SELECT
-      sale_number,
-      datetime(created_at, 'localtime') AS created_local,
-      operator,
-      payment_method,
-      discount_cents,
-      total_cents,
-      voided,
-      session_id
-    FROM sales
-    WHERE datetime(created_at, 'localtime') >= datetime(?)
-      AND datetime(created_at, 'localtime') < datetime(?)
-    ORDER BY sale_number ASC
-  `).all(from, to);
+      s.sale_number,
+      datetime(s.created_at, 'localtime') AS created_local,
+      s.operator,
+      s.payment_method,
+      s.discount_cents,
+      s.total_cents,
+      s.voided,
+      s.session_id
+    FROM sales s
+    WHERE ${scope.where}
+    ORDER BY s.sale_number ASC
+  `).all(...scope.params);
 
   const sep = ";";
   const header = [
@@ -253,15 +399,7 @@ router.get("/transactions.csv", (req, res) => {
     ].map(csvEscape).join(sep));
   }
 
-  const filename = `${config.SLUG}_transazioni_${fromDay}_to_${toDay}.csv`;
-
-  // BOM per Excel (UTF-8)
-  const bom = "\uFEFF";
-  const csv = bom + lines.join("\n");
-
-  res.setHeader("Content-Type", "text/csv; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-  res.send(csv);
+  sendCsv(res, `${config.SLUG}_transazioni_${scopeLabel(scope)}.csv`, lines);
 });
 
 // --- Backup DB (copia consistente e download)

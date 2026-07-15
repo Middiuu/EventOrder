@@ -14,17 +14,17 @@
     <main class="main">
       <div class="page-head">
         <div class="eyebrow">Report</div>
-        <h1>Andamento della serata</h1>
-        <div class="sub">Numeri del giorno · export e backup.</div>
+        <h1>Andamento dell'evento</h1>
+        <div class="sub">Numeri per giorno o turno · export e backup.</div>
       </div>
 
       <section class="card">
         <div class="section-heading">
           <div>
-            <div class="eyebrow">Export &amp; backup</div>
-            <h2>Strumenti amministrativi</h2>
+            <div class="eyebrow">Periodo</div>
+            <h2>Filtri, export e backup</h2>
           </div>
-          <p class="section-note">Nel CSV il campo “A” è incluso: il giorno successivo è calcolato come limite tecnico.</p>
+          <p class="section-note">Le date ("A" incluso) valgono per dashboard ed export. Se scegli un turno, ha la precedenza sulle date.</p>
         </div>
         <div class="report-controls">
           <label class="field">
@@ -35,15 +35,39 @@
             <span class="field-label">A (incluso)</span>
             <input id="toDate" class="input" type="date" />
           </label>
+          <label class="field">
+            <span class="field-label">Turno</span>
+            <select id="sessionFilter" class="input">
+              <option value="">Tutto il periodo</option>
+            </select>
+          </label>
+        </div>
+        <div class="report-controls" style="margin-top:12px">
           <button class="btn btn-secondary" id="downloadCsvBtn" type="button">CSV per prodotto</button>
           <button class="btn btn-secondary" id="downloadTxCsvBtn" type="button">CSV transazioni</button>
-        </div>
-        <div class="actions" style="margin-top:14px">
+          <button class="btn btn-secondary" id="downloadItemsCsvBtn" type="button">CSV righe vendute</button>
           <a class="btn btn-primary btn-center" href="/api/reports/backup">Backup database</a>
         </div>
       </section>
 
       <div id="reportBox" class="stack" style="margin-top:18px"></div>
+
+      <section class="card" style="margin-top:18px">
+        <div class="section-heading section-heading-tight">
+          <div>
+            <div class="eyebrow">Turni</div>
+            <h2>Chiusure di cassa</h2>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr><th>Turno</th><th>Operatore</th><th>Apertura</th><th>Chiusura</th><th>Incasso</th><th>Attesi</th><th>Contati</th><th>Differenza</th><th>Note</th></tr>
+            </thead>
+            <tbody id="closuresTable"></tbody>
+          </table>
+        </div>
+      </section>
 
       <div id="toast" class="toast"></div>
     </main>

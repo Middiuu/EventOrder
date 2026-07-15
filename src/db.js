@@ -30,11 +30,13 @@ const EXPECTED_SALES_COLUMNS = {
 const EXPECTED_SALE_ITEM_COLUMNS = {
   product_name: "TEXT NOT NULL DEFAULT ''",
   product_category: "TEXT NOT NULL DEFAULT 'Generale'",
+  product_cost_cents: "INTEGER",
 };
 
 const EXPECTED_PRODUCT_COLUMNS = {
   sold_out: "INTEGER NOT NULL DEFAULT 0",
   stock: "INTEGER",
+  cost_cents: "INTEGER",
 };
 
 function tableExists(table) {

@@ -956,6 +956,7 @@ async function initProdotti(signal) {
   const sortEl = form.querySelector('input[name="sort_order"]');
   const activeEl = form.querySelector('input[name="active"]');
   const stockEl = form.querySelector('input[name="stock"]');
+  const costEl = form.querySelector('input[name="cost_eur"]');
   const editIdEl = editForm?.querySelector('input[name="id"]');
   const editNameEl = editForm?.querySelector('input[name="name"]');
   const editCategoryEl = editForm?.querySelector('input[name="category"]');
@@ -963,6 +964,7 @@ async function initProdotti(signal) {
   const editSortEl = editForm?.querySelector('input[name="sort_order"]');
   const editActiveEl = editForm?.querySelector('input[name="active"]');
   const editStockEl = editForm?.querySelector('input[name="stock"]');
+  const editCostEl = editForm?.querySelector('input[name="cost_eur"]');
   const editSoldOutEl = editForm?.querySelector('input[name="sold_out"]');
 
   let allRows = [];
@@ -992,6 +994,16 @@ async function initProdotti(signal) {
     return n;
   }
 
+  // Costo dal form: "" = non tracciato (null), altrimenti euro -> centesimi.
+  // Ritorna undefined se il valore non è valido.
+  function costFromInput(value) {
+    const raw = String(value ?? "").trim();
+    if (!raw) return null;
+    const cents = centsFromEuroInput(raw);
+    if (cents === null) return undefined;
+    return cents;
+  }
+
   function resetCreateForm() {
     form.reset();
     sortEl.value = "0";
@@ -1008,6 +1020,7 @@ async function initProdotti(signal) {
     editSortEl.value = String(product.sort_order ?? 0);
     editActiveEl.checked = !!product.active;
     if (editStockEl) editStockEl.value = product.stock == null ? "" : String(product.stock);
+    if (editCostEl) editCostEl.value = product.cost_cents == null ? "" : (Number(product.cost_cents) / 100).toFixed(2);
     if (editSoldOutEl) editSoldOutEl.checked = !!product.sold_out;
     modalEl.hidden = false;
     document.body.style.overflow = "hidden";
@@ -1153,13 +1166,15 @@ async function initProdotti(signal) {
     const sort_order = Number(sortEl.value || 0);
     const active = activeEl.checked ? 1 : 0;
     const stock = stockFromInput(stockEl?.value);
+    const cost_cents = costFromInput(costEl?.value);
 
     if (!name) return alert("Inserisci un nome prodotto.");
     if (price_cents === null) return alert("Prezzo non valido.");
     if (stock === undefined) return alert("Scorte non valide: intero >= 0 o vuoto.");
+    if (cost_cents === undefined) return alert("Costo non valido: importo in euro o vuoto.");
 
     try {
-      await api("/api/products", { method: "POST", body: JSON.stringify({ name, category, price_cents, sort_order, active, stock }) });
+      await api("/api/products", { method: "POST", body: JSON.stringify({ name, category, price_cents, sort_order, active, stock, cost_cents }) });
       showToast("Prodotto creato");
       await refresh();
       resetCreateForm();
@@ -1179,16 +1194,18 @@ async function initProdotti(signal) {
     const active = editActiveEl.checked ? 1 : 0;
     const sold_out = editSoldOutEl?.checked ? 1 : 0;
     const stock = stockFromInput(editStockEl?.value);
+    const cost_cents = costFromInput(editCostEl?.value);
 
     if (!id) return alert("Prodotto non valido.");
     if (!name) return alert("Inserisci un nome prodotto.");
     if (price_cents === null) return alert("Prezzo non valido.");
     if (stock === undefined) return alert("Scorte non valide: intero >= 0 o vuoto.");
+    if (cost_cents === undefined) return alert("Costo non valido: importo in euro o vuoto.");
 
     try {
       await api(`/api/products/${encodeURIComponent(id)}`, {
         method: "PATCH",
-        body: JSON.stringify({ name, category, price_cents, sort_order, active, sold_out, stock })
+        body: JSON.stringify({ name, category, price_cents, sort_order, active, sold_out, stock, cost_cents })
       });
       showToast("Prodotto aggiornato");
       closeEditModal();
@@ -1214,129 +1231,286 @@ function cssVar(name, fb) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fb;
 }
 
-// Grafico "incassi per ora" (area)
-function renderHourChart(byHour) {
-  destroyReportCharts();
-  const canvas = document.querySelector("#reportHourChart");
-  if (!window.Chart || !canvas || !byHour || byHour.length === 0) return;
+// Perimetro corrente dei report: turno selezionato (prioritario) o intervallo
+// di date inclusive, convertite in "to" esclusivo per le API.
+function reportScopeQuery() {
+  const sessionEl = document.querySelector("#sessionFilter");
+  const fromEl = document.querySelector("#fromDate");
+  const toEl = document.querySelector("#toDate");
+  if (sessionEl?.value) {
+    return { qs: `?session=${encodeURIComponent(sessionEl.value)}`, label: `turno #${sessionEl.value}` };
+  }
+  const from = (fromEl?.value || "").trim();
+  const toInclusive = (toEl?.value || "").trim();
+  if (!from || !toInclusive) return null;
+  return {
+    qs: `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(addDaysYmd(toInclusive, 1))}`,
+    label: from === toInclusive ? from : `${from} → ${toInclusive}`,
+  };
+}
 
-  const minH = Math.min(...byHour.map(r => r.hour));
-  const maxH = Math.max(...byHour.map(r => r.hour));
-  const map = new Map(byHour.map(r => [r.hour, Number(r.revenue_cents) / 100]));
-  const labels = [], data = [];
-  for (let h = minH; h <= maxH; h++) { labels.push(String(h).padStart(2, "0")); data.push(map.get(h) || 0); }
+// Grafici del report: incassi per ora (area) e confronto giornate (barre)
+function renderReportCharts(data) {
+  destroyReportCharts();
+  if (!window.Chart) return;
 
   const accent = cssVar("--accent", "#7D6FFF");
   const muted = cssVar("--muted", "#868C9B");
   const grid = cssVar("--hair", "rgba(255,255,255,.06)");
   const sym = APP_CONFIG.currencySymbol || "€";
+  const moneyScales = {
+    y: { beginAtZero: true, ticks: { color: muted, callback: v => `${sym} ${v}` }, grid: { color: grid } },
+    x: { ticks: { color: muted }, grid: { display: false } },
+  };
 
-  reportRevenueChart = new window.Chart(canvas, {
-    type: "line",
-    data: { labels, datasets: [{
-      data, borderColor: accent, backgroundColor: accent + "22",
-      fill: true, tension: 0.35, pointRadius: 3, pointBackgroundColor: accent, borderWidth: 2,
-    }] },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: { legend: { display: false } },
-      scales: {
-        y: { beginAtZero: true, ticks: { color: muted, callback: v => `${sym} ${v}` }, grid: { color: grid } },
-        x: { ticks: { color: muted }, grid: { display: false } },
+  const hourCanvas = document.querySelector("#reportHourChart");
+  const byHour = data.byHour || [];
+  if (hourCanvas && byHour.length > 0) {
+    const minH = Math.min(...byHour.map(r => r.hour));
+    const maxH = Math.max(...byHour.map(r => r.hour));
+    const map = new Map(byHour.map(r => [r.hour, Number(r.revenue_cents) / 100]));
+    const labels = [], values = [];
+    for (let h = minH; h <= maxH; h++) { labels.push(String(h).padStart(2, "0")); values.push(map.get(h) || 0); }
+
+    reportRevenueChart = new window.Chart(hourCanvas, {
+      type: "line",
+      data: { labels, datasets: [{
+        data: values, borderColor: accent, backgroundColor: accent + "22",
+        fill: true, tension: 0.35, pointRadius: 3, pointBackgroundColor: accent, borderWidth: 2,
+      }] },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: moneyScales,
       },
-    },
-  });
+    });
+  }
+
+  const dayCanvas = document.querySelector("#reportDayChart");
+  const byDay = data.byDay || [];
+  if (dayCanvas && byDay.length > 1) {
+    reportMixChart = new window.Chart(dayCanvas, {
+      type: "bar",
+      data: {
+        labels: byDay.map(d => d.day.slice(5)),
+        datasets: [{ data: byDay.map(d => Number(d.revenue_cents) / 100), backgroundColor: accent + "CC", borderRadius: 6 }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: moneyScales,
+      },
+    });
+  }
 }
 
 async function initReport() {
   const box = document.querySelector("#reportBox");
   if (!box) return;
 
-  const data = await api("/api/reports/today");
-  const s = data.summary;
-  const count = s.sales_count || 0;
-  const avg = count > 0 ? Math.round(s.revenue_cents / count) : 0;
+  const fromEl = document.querySelector("#fromDate");
+  const toEl = document.querySelector("#toDate");
+  const sessionEl = document.querySelector("#sessionFilter");
   const PAY_LABEL = { cash: "Contanti", card: "Carta", other: "Altro" };
+  const fmtDateTime = v => v ? new Date(v + "Z").toLocaleString(APP_CONFIG.locale, { dateStyle: "short", timeStyle: "short" }) : "—";
 
-  const payTotal = (data.byPayment || []).reduce((a, b) => a + b.revenue_cents, 0) || 1;
-  const payBars = (data.byPayment || []).map(p => {
-    const pct = Math.round(p.revenue_cents / payTotal * 100);
-    return `
-      <div class="bar-row">
-        <div class="bar-head">
-          <b>${escapeHtml(PAY_LABEL[p.payment_method] || p.payment_method)}</b>
-          <span><span class="amt">${euro(p.revenue_cents)}</span> <span class="pct">${pct}%</span></span>
-        </div>
-        <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
-        <div class="small">${p.count} vendite</div>
+  // default: oggi (solo se vuoti: il cambio tema ri-esegue initReport)
+  const today = ymd(new Date());
+  if (fromEl && !fromEl.value) fromEl.value = today;
+  if (toEl && !toEl.value) toEl.value = today;
+
+  // Selettore turni + tabella chiusure
+  let sessions = [];
+  try {
+    sessions = (await api("/api/sessions?limit=100")).sessions || [];
+  } catch {
+    // senza elenco turni restano il filtro per data e la dashboard
+  }
+
+  if (sessionEl) {
+    const selected = sessionEl.value;
+    sessionEl.innerHTML = '<option value="">Tutto il periodo</option>' + sessions.map(s => {
+      const label = `#${s.id} · ${fmtDateTime(s.opened_at)}${s.operator ? " · " + s.operator : ""}${s.closed_at ? "" : " (aperto)"}`;
+      return `<option value="${s.id}">${escapeHtml(label)}</option>`;
+    }).join("");
+    if (selected && sessions.some(s => String(s.id) === selected)) sessionEl.value = selected;
+  }
+
+  function renderClosures() {
+    const tbody = document.querySelector("#closuresTable");
+    if (!tbody) return;
+    if (sessions.length === 0) {
+      tbody.innerHTML = "<tr><td colspan='9' class='empty-state'>Nessun turno registrato.</td></tr>";
+      return;
+    }
+    tbody.innerHTML = sessions.map(s => {
+      const t = s.totals || {};
+      const closed = Boolean(s.closed_at);
+      const expected = closed ? s.expected_cash_cents : t.expectedCashCents;
+      let diffCell = "<span class='small'>in corso</span>";
+      if (closed) {
+        const diff = s.difference_cents || 0;
+        const cls = diff === 0 ? "diff-ok" : (diff > 0 ? "diff-plus" : "diff-minus");
+        diffCell = `<span class="${cls}">${diff >= 0 ? "+" : "−"} ${money(Math.abs(diff))}</span>`;
+      }
+      const movements = (t.movementsInCents || 0) > 0 || (t.movementsOutCents || 0) > 0
+        ? `<div class="small">Mov.: +${money(t.movementsInCents || 0)} / −${money(t.movementsOutCents || 0)}</div>`
+        : "";
+      return `
+        <tr>
+          <td data-label="Turno"><b>#${s.id}</b></td>
+          <td data-label="Operatore">${escapeHtml(s.operator || "—")}</td>
+          <td data-label="Apertura">${fmtDateTime(s.opened_at)}</td>
+          <td data-label="Chiusura">${closed ? fmtDateTime(s.closed_at) : '<span class="status-pill is-active">Aperto</span>'}</td>
+          <td data-label="Incasso">${money(t.revenueCents || 0)}</td>
+          <td data-label="Attesi">${money(expected || 0)}</td>
+          <td data-label="Contati">${closed ? money(s.counted_cash_cents || 0) : "—"}</td>
+          <td data-label="Differenza">${diffCell}</td>
+          <td data-label="Note">${escapeHtml(s.note || "")}${movements}</td>
+        </tr>`;
+    }).join("");
+  }
+
+  async function render() {
+    const scope = reportScopeQuery();
+    if (!scope) return;
+    const data = await api(`/api/reports/summary${scope.qs}`);
+    const s = data.summary;
+    const count = s.sales_count || 0;
+    const avg = count > 0 ? Math.round(s.revenue_cents / count) : 0;
+    const byDay = data.byDay || [];
+    const multiDay = byDay.length > 1;
+
+    const payTotal = (data.byPayment || []).reduce((a, b) => a + b.revenue_cents, 0) || 1;
+    const payBars = (data.byPayment || []).map(p => {
+      const pct = Math.round(p.revenue_cents / payTotal * 100);
+      return `
+        <div class="bar-row">
+          <div class="bar-head">
+            <b>${escapeHtml(PAY_LABEL[p.payment_method] || p.payment_method)}</b>
+            <span><span class="amt">${euro(p.revenue_cents)}</span> <span class="pct">${pct}%</span></span>
+          </div>
+          <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>
+          <div class="small">${p.count} vendite</div>
+        </div>`;
+    }).join("") || "<div class='empty-state'>Nessun incasso nel periodo.</div>";
+
+    const prodMax = Math.max(1, ...data.byProduct.map(p => p.qty_sold));
+    const prodRows = data.byProduct.map(p => {
+      const sub = [`${p.qty_sold} venduti`];
+      if (p.gross_revenue_cents !== p.net_revenue_cents) sub.push(`lordo ${euro(p.gross_revenue_cents)}`);
+      if (p.margin_cents !== null) sub.push(`margine ${euro(p.margin_cents)}`);
+      return `
+        <div class="bar-row">
+          <div class="bar-head"><b>${escapeHtml(p.name)}</b><span class="amt">${euro(p.net_revenue_cents)}</span></div>
+          <div class="bar-track"><div class="bar-fill" style="width:${Math.round(p.qty_sold / prodMax * 100)}%"></div></div>
+          <div class="small">${sub.join(" · ")}</div>
+        </div>`;
+    }).join("") || "<div class='empty-state'>Nessuna vendita nel periodo.</div>";
+
+    const dayMax = Math.max(1, ...byDay.map(d => d.revenue_cents));
+    const dayRows = byDay.map(d => {
+      const label = new Date(d.day + "T00:00:00").toLocaleDateString(APP_CONFIG.locale, { weekday: "short", day: "numeric", month: "short" });
+      return `
+        <div class="bar-row">
+          <div class="bar-head"><b>${escapeHtml(label)}</b><span class="amt">${euro(d.revenue_cents)}</span></div>
+          <div class="bar-track"><div class="bar-fill" style="width:${Math.round(d.revenue_cents / dayMax * 100)}%"></div></div>
+          <div class="small">${d.sales_count} vendite</div>
+        </div>`;
+    }).join("");
+
+    const marginTile = s.margin_cents === null ? "" : `
+      <div class="kpi">
+        <div class="k-label">Margine</div>
+        <div class="k-value">${euro(s.margin_cents)}</div>
+        <div class="k-sub">su ${s.margin_products} prodotti con costo</div>
       </div>`;
-  }).join("") || "<div class='empty-state'>Nessun incasso oggi.</div>";
 
-  const prodMax = Math.max(1, ...data.byProduct.map(p => p.qty_sold));
-  const prodRows = data.byProduct.map(p => `
-    <div class="bar-row">
-      <div class="bar-head"><b>${escapeHtml(p.name)}</b><span class="amt">${euro(p.revenue_cents)}</span></div>
-      <div class="bar-track"><div class="bar-fill" style="width:${Math.round(p.qty_sold / prodMax * 100)}%"></div></div>
-      <div class="small">${p.qty_sold} venduti · importo lordo prima degli sconti</div>
-    </div>`).join("") || "<div class='empty-state'>Nessuna vendita registrata oggi.</div>";
+    const dayCompare = !multiDay ? "" : `
+      <div class="report-grid">
+        <section class="card chart-card">
+          <div class="section-heading section-heading-tight">
+            <div><div class="eyebrow">Confronto</div><h2>Incassi per giornata</h2></div>
+          </div>
+          <div class="chart-wrap"><canvas id="reportDayChart" aria-label="Grafico incassi per giornata"></canvas></div>
+        </section>
+        <section class="card">
+          <div class="section-heading section-heading-tight">
+            <div><div class="eyebrow">Giornate</div><h2>Dettaglio per giorno</h2></div>
+          </div>
+          <div class="bars">${dayRows}</div>
+        </section>
+      </div>`;
 
-  box.innerHTML = `
-    <div class="kpi-grid">
-      <div class="kpi kpi-accent">
-        <div class="k-label">Incasso di oggi</div>
-        <div class="k-value">${euro(s.revenue_cents)}</div>
-        <div class="k-sub">turno in corso</div>
-      </div>
-      <div class="kpi">
-        <div class="k-label">Vendite</div>
-        <div class="k-value">${count}</div>
-        <div class="k-sub">ticket emessi</div>
-      </div>
-      <div class="kpi">
-        <div class="k-label">Scontrino medio</div>
-        <div class="k-value">${euro(avg)}</div>
-        <div class="k-sub">per comanda</div>
-      </div>
-      <div class="kpi">
-        <div class="k-label">Sconti e omaggi</div>
-        <div class="k-value">${euro(s.discount_cents || 0)}</div>
-        <div class="k-sub">erogati oggi</div>
-      </div>
-    </div>
-
-    <div class="report-grid">
-      <section class="card chart-card">
-        <div class="section-heading section-heading-tight">
-          <div><div class="eyebrow">Andamento</div><h2>Incassi per ora</h2></div>
+    box.innerHTML = `
+      <div class="kpi-grid">
+        <div class="kpi kpi-accent">
+          <div class="k-label">Incasso</div>
+          <div class="k-value">${euro(s.revenue_cents)}</div>
+          <div class="k-sub">${escapeHtml(scope.label)}</div>
         </div>
-        <div class="chart-wrap"><canvas id="reportHourChart" aria-label="Grafico incassi per ora"></canvas></div>
-      </section>
+        <div class="kpi">
+          <div class="k-label">Vendite</div>
+          <div class="k-value">${count}</div>
+          <div class="k-sub">ticket emessi</div>
+        </div>
+        <div class="kpi">
+          <div class="k-label">Scontrino medio</div>
+          <div class="k-value">${euro(avg)}</div>
+          <div class="k-sub">per comanda</div>
+        </div>
+        <div class="kpi">
+          <div class="k-label">Sconti e omaggi</div>
+          <div class="k-value">${euro(s.discount_cents || 0)}</div>
+          <div class="k-sub">erogati nel periodo</div>
+        </div>
+        ${marginTile}
+      </div>
+
+      ${dayCompare}
+
+      <div class="report-grid">
+        <section class="card chart-card">
+          <div class="section-heading section-heading-tight">
+            <div><div class="eyebrow">Andamento</div><h2>Incassi per ora</h2></div>
+          </div>
+          <div class="chart-wrap"><canvas id="reportHourChart" aria-label="Grafico incassi per ora"></canvas></div>
+        </section>
+        <section class="card">
+          <div class="section-heading section-heading-tight">
+            <div><div class="eyebrow">Ripartizione</div><h2>Metodi di pagamento</h2></div>
+          </div>
+          <div class="bars">${payBars}</div>
+        </section>
+      </div>
+
       <section class="card">
         <div class="section-heading section-heading-tight">
-          <div><div class="eyebrow">Ripartizione</div><h2>Metodi di pagamento</h2></div>
+          <div><div class="eyebrow">Dettaglio</div><h2>Prodotti più venduti</h2></div>
         </div>
-        <div class="bars">${payBars}</div>
+        <div class="bars">${prodRows}</div>
       </section>
-    </div>
+    `;
 
-    <section class="card">
-      <div class="section-heading section-heading-tight">
-        <div><div class="eyebrow">Dettaglio</div><h2>Prodotti più venduti</h2></div>
-      </div>
-      <div class="bars">${prodRows}</div>
-    </section>
-  `;
+    renderReportCharts(data);
+  }
 
-  renderHourChart(data.byHour);
+  // onchange (assegnazione, non addEventListener): niente doppi binding
+  // quando initReport viene rieseguito dal router o dal cambio tema.
+  if (fromEl) fromEl.onchange = () => render().catch(err => alert(err.message));
+  if (toEl) toEl.onchange = () => render().catch(err => alert(err.message));
+  if (sessionEl) sessionEl.onchange = () => render().catch(err => alert(err.message));
+
+  renderClosures();
+  await render();
 }
 
 async function initReportExport() {
-  const fromEl = document.querySelector("#fromDate");
-  const toEl = document.querySelector("#toDate");
   const btn = document.querySelector("#downloadCsvBtn");
   const txBtn = document.querySelector("#downloadTxCsvBtn");
+  const itemsBtn = document.querySelector("#downloadItemsCsvBtn");
   const toastEl = document.querySelector("#toast");
-  if (!fromEl || !toEl || !btn) return;
+  if (!btn) return;
 
   function showToast(msg) {
     if (!toastEl) return;
@@ -1345,31 +1519,17 @@ async function initReportExport() {
     setTimeout(() => toastEl.classList.remove("show"), 1700);
   }
 
-  const today = ymd(new Date());
-  fromEl.value = today;
-  toEl.value = today;
-
-  function rangeUrl(endpoint) {
-    const from = (fromEl.value || "").trim();
-    const toInclusive = (toEl.value || "").trim();
-    if (!from || !toInclusive) { alert("Seleziona entrambe le date (Da / A)."); return null; }
-    const toExclusive = addDaysYmd(toInclusive, 1);
-    return { url: `${endpoint}?from=${encodeURIComponent(from)}&to=${encodeURIComponent(toExclusive)}`, from, toInclusive };
+  // Gli export usano lo stesso perimetro della dashboard (date o turno)
+  function download(endpoint, name) {
+    const scope = reportScopeQuery();
+    if (!scope) { alert("Seleziona entrambe le date (Da / A) o un turno."); return; }
+    showToast(`${name}: ${scope.label}`);
+    window.location.href = `${endpoint}${scope.qs}`;
   }
 
-  btn.onclick = () => {
-    const r = rangeUrl("/api/reports/export.csv");
-    if (!r) return;
-    showToast(`CSV prodotti: ${r.from} → ${r.toInclusive}`);
-    window.location.href = r.url;
-  };
-
-  if (txBtn) txBtn.onclick = () => {
-    const r = rangeUrl("/api/reports/transactions.csv");
-    if (!r) return;
-    showToast(`CSV transazioni: ${r.from} → ${r.toInclusive}`);
-    window.location.href = r.url;
-  };
+  btn.onclick = () => download("/api/reports/export.csv", "CSV prodotti");
+  if (txBtn) txBtn.onclick = () => download("/api/reports/transactions.csv", "CSV transazioni");
+  if (itemsBtn) itemsBtn.onclick = () => download("/api/reports/items.csv", "CSV righe vendute");
 }
 
 // --------------------
@@ -1377,6 +1537,9 @@ async function initReportExport() {
 async function initSales() {
   const listEl = document.querySelector("#salesList");
   const refreshBtn = document.querySelector("#refreshSalesBtn");
+  const filtersForm = document.querySelector("#salesFilters");
+  const resetBtn = document.querySelector("#resetSalesFilters");
+  const listTitle = document.querySelector("#salesListTitle");
   const toastEl = document.querySelector("#toast");
   if (!listEl) return;
 
@@ -1413,11 +1576,25 @@ async function initSales() {
     `;
   }
 
+  // Querystring dai filtri compilati (i campi vuoti non vengono inviati)
+  function filtersQuery() {
+    const params = new URLSearchParams({ limit: "100" });
+    if (!filtersForm) return params;
+    for (const name of ["number", "from", "to", "product", "operator", "method", "status"]) {
+      const value = String(filtersForm[name]?.value || "").trim();
+      if (value) params.set(name, value);
+    }
+    return params;
+  }
+
   async function refresh() {
-    const sales = await api("/api/sales?limit=100");
+    const params = filtersQuery();
+    const sales = await api(`/api/sales?${params.toString()}`);
+    const filtered = [...params.keys()].length > 1;
+    if (listTitle) listTitle.textContent = filtered ? `Risultati (${sales.length})` : "Vendite recenti";
     listEl.innerHTML = sales.length
       ? sales.map(saleCard).join("")
-      : "<div class='empty-state'>Nessuna vendita registrata.</div>";
+      : "<div class='empty-state'>Nessuna vendita trovata con questi filtri.</div>";
   }
 
   listEl.addEventListener("click", async (e) => {
@@ -1437,7 +1614,15 @@ async function initSales() {
     }
   });
 
-  refreshBtn?.addEventListener("click", refresh);
+  refreshBtn?.addEventListener("click", () => refresh().catch(err => alert(err.message)));
+  if (filtersForm) filtersForm.onsubmit = (e) => {
+    e.preventDefault();
+    refresh().catch(err => alert(err.message));
+  };
+  if (resetBtn) resetBtn.onclick = () => {
+    filtersForm?.reset();
+    refresh().catch(err => alert(err.message));
+  };
   await refresh();
 }
 

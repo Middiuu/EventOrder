@@ -66,6 +66,19 @@ function withTotals(session) {
   };
 }
 
+// Elenco turni (piu' recenti prima) con totali: report delle chiusure
+router.get("/", (req, res) => {
+  const requestedLimit = req.query.limit === undefined ? 50 : Number(req.query.limit);
+  if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1) {
+    return res.status(400).json({ error: "Limite non valido" });
+  }
+  const limit = Math.min(200, requestedLimit);
+  const rows = db.prepare(`
+    SELECT * FROM cash_sessions ORDER BY id DESC LIMIT ?
+  `).all(limit);
+  res.json({ sessions: rows.map(withTotals) });
+});
+
 // Turno attualmente aperto (con totali live) o null
 router.get("/current", (req, res) => {
   res.json({ session: withTotals(getOpenSession()) || null });
