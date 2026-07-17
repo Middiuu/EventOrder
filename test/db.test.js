@@ -16,7 +16,7 @@ test("initDb crea schema, seed iniziale e contatore vendite", () => {
   const dbPath = path.join(tempDir, "pos.sqlite");
 
   try {
-    const { db, initDb, DB_PATH } = loadDbModule(dbPath);
+    const { db, initDb, DB_PATH, DB_BUSY_TIMEOUT_MS } = loadDbModule(dbPath);
     initDb();
 
     assert.equal(DB_PATH, dbPath);
@@ -27,6 +27,9 @@ test("initDb crea schema, seed iniziale e contatore vendite", () => {
     assert.equal(productCount, 4);
     assert.equal(saleCounter.int_value, 0);
     assert.equal(db.pragma("user_version", { simple: true }), 6);
+    assert.equal(db.pragma("journal_mode", { simple: true }), "wal");
+    assert.equal(db.pragma("synchronous", { simple: true }), 2);
+    assert.equal(db.pragma("busy_timeout", { simple: true }), DB_BUSY_TIMEOUT_MS);
 
     db.close();
   } finally {
@@ -333,6 +336,8 @@ test("un restore interrotto recupera automaticamente il backup di sicurezza", as
       safetyBackupPath: safetyPath,
       createdAt: new Date().toISOString(),
     }));
+    fs.writeFileSync(`${dbPath}-wal`, "sidecar WAL del database sostituito");
+    fs.writeFileSync(`${dbPath}-shm`, "sidecar SHM del database sostituito");
 
     dbModule = loadDbModule(dbPath);
     dbModule.initDb();
@@ -368,6 +373,70 @@ test("recupera un restore legacy rimasto fra i due rename", () => {
     assert.equal(fs.existsSync(originalPath), false);
     dbModule.db.close();
   } finally {
+    delete process.env.POS_DB_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("il restore non sostituisce il DB se un lettore esterno blocca il checkpoint WAL", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
+  const dbPath = path.join(tempDir, "pos.sqlite");
+  const backupsDir = path.join(tempDir, "backups");
+  const safetyPath = path.join(backupsDir, "eventorder-pre-restore-test.sqlite");
+  const candidatePath = path.join(tempDir, "candidate.sqlite");
+  const Database = require("better-sqlite3");
+  let reader;
+
+  try {
+    fs.mkdirSync(backupsDir);
+    const dbModule = loadDbModule(dbPath);
+    dbModule.initDb();
+    dbModule.db.prepare("INSERT INTO products (name, price_cents) VALUES (?, ?)")
+      .run("Database corrente", 700);
+    await dbModule.db.backup(candidatePath);
+
+    // Mantiene una snapshot precedente mentre la connessione principale
+    // aggiunge una pagina WAL che il checkpoint non puo' ancora troncare.
+    reader = new Database(dbPath, { readonly: true, fileMustExist: true });
+    reader.exec("BEGIN");
+    reader.prepare("SELECT COUNT(*) AS count FROM products").get();
+    dbModule.db.prepare("INSERT INTO products (name, price_cents) VALUES (?, ?)")
+      .run("Dato solo nel WAL corrente", 800);
+    await dbModule.db.backup(safetyPath);
+
+    let activeReaderError;
+    try {
+      dbModule.restoreDatabaseFromFile(candidatePath, safetyPath);
+    } catch (err) {
+      activeReaderError = err;
+    }
+    assert.match(activeReaderError?.message || "", /Checkpoint WAL occupato/);
+    assert.equal(activeReaderError.status, 409);
+    assert.match(activeReaderError.publicMessage, /chiudi altri programmi/);
+    assert.equal(fs.existsSync(candidatePath), true);
+    assert.equal(fs.existsSync(`${dbPath}.restore-state.json`), false);
+    assert.ok(dbModule.db.prepare("SELECT 1 FROM products WHERE name=?")
+      .get("Dato solo nel WAL corrente"));
+    assert.equal(dbModule.db.pragma("journal_mode", { simple: true }), "wal");
+
+    reader.exec("ROLLBACK");
+    let idleReaderError;
+    try {
+      dbModule.restoreDatabaseFromFile(candidatePath, safetyPath);
+    } catch (err) {
+      idleReaderError = err;
+    }
+    assert.match(idleReaderError?.message || "", /SQLite e' ancora aperto in un altro programma/);
+    assert.equal(idleReaderError.status, 409);
+    assert.equal(fs.existsSync(candidatePath), true);
+    assert.ok(dbModule.db.prepare("SELECT 1 FROM products WHERE name=?")
+      .get("Dato solo nel WAL corrente"));
+
+    reader.close();
+    reader = null;
+    dbModule.closeDatabase();
+  } finally {
+    try { reader?.close(); } catch {}
     delete process.env.POS_DB_PATH;
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

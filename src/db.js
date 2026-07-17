@@ -8,7 +8,9 @@ const DB_PATH = process.env.POS_DB_PATH
   : path.join(__dirname, "..", "pos.sqlite");
 const SCHEMA_PATH = path.join(__dirname, "schema.sql");
 const DB_SCHEMA_VERSION = 6;
+const DB_BUSY_TIMEOUT_MS = 5000;
 const RESTORE_MARKER_PATH = `${DB_PATH}.restore-state.json`;
+const DB_SIDECAR_PATHS = [`${DB_PATH}-wal`, `${DB_PATH}-shm`];
 
 function fsyncDirectory(dirPath) {
   let fd;
@@ -20,6 +22,20 @@ function fsyncDirectory(dirPath) {
     // comunque sincronizzati singolarmente prima di ogni rename.
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+// I sidecar WAL appartengono esattamente al file DB corrente. Li rimuoviamo
+// solo al boot, prima di recuperare un database da un marker di restore e
+// quando nessuna connessione di questo processo e' ancora stata aperta.
+function removeDatabaseSidecars() {
+  for (const sidecarPath of DB_SIDECAR_PATHS) {
+    if (!fs.existsSync(sidecarPath)) continue;
+    const stat = fs.lstatSync(sidecarPath);
+    if (!stat.isFile() && !stat.isSymbolicLink()) {
+      throw new Error(`Sidecar SQLite non valido: ${sidecarPath}`);
+    }
+    fs.unlinkSync(sidecarPath);
   }
 }
 
@@ -67,6 +83,7 @@ function recoverFromRestoreMarker() {
 
   const fd = fs.openSync(recoveryPath, "r");
   try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  removeDatabaseSidecars();
   fs.renameSync(recoveryPath, DB_PATH);
   fs.rmSync(RESTORE_MARKER_PATH, { force: true });
   fsyncDirectory(path.dirname(DB_PATH));
@@ -93,6 +110,7 @@ function recoverLegacyRestoreOriginal() {
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
   if (candidates.length === 0) return false;
 
+  removeDatabaseSidecars();
   fs.renameSync(candidates[0].candidatePath, DB_PATH);
   fsyncDirectory(dir);
   console.warn("Recuperato automaticamente un database lasciato da un restore interrotto.");
@@ -104,6 +122,7 @@ recoverLegacyRestoreOriginal();
 
 function openConnection() {
   const next = new Database(DB_PATH);
+  next.pragma(`busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
   next.pragma("foreign_keys = ON");
   return next;
 }
@@ -121,6 +140,49 @@ const db = new Proxy({}, {
     return typeof value === "function" ? value.bind(connection) : value;
   },
 });
+
+function configureDurability() {
+  const journalMode = db.pragma("journal_mode = WAL", { simple: true });
+  if (String(journalMode).toLowerCase() !== "wal") {
+    throw new Error(`Impossibile attivare SQLite WAL (modalita': ${journalMode})`);
+  }
+  // FULL sincronizza anche il WAL a ogni commit: per una cassa privilegiamo
+  // la durabilita' in caso di perdita di alimentazione rispetto al throughput.
+  db.pragma("synchronous = FULL");
+  db.pragma(`busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
+}
+
+function databaseBusyError(message) {
+  const err = new Error(message);
+  err.status = 409;
+  err.publicMessage = message;
+  return err;
+}
+
+function checkpointWal(database = connection) {
+  if (!database?.open) return;
+  const journalMode = database.pragma("journal_mode", { simple: true });
+  if (String(journalMode).toLowerCase() !== "wal") return;
+  const result = database.pragma("wal_checkpoint(TRUNCATE)")[0];
+  if (!result || result.busy !== 0) {
+    throw databaseBusyError(
+      "Checkpoint WAL occupato: chiudi altri programmi che stanno leggendo il database"
+    );
+  }
+}
+
+function closeDatabase() {
+  if (!connection?.open) return;
+  checkpointWal(connection);
+  connection.close();
+  const remainingSidecars = DB_SIDECAR_PATHS.filter(sidecarPath => fs.existsSync(sidecarPath));
+  if (remainingSidecars.length > 0) {
+    throw databaseBusyError(
+      "SQLite e' ancora aperto in un altro programma: impossibile chiudere in sicurezza i file WAL"
+    );
+  }
+  fsyncDirectory(path.dirname(DB_PATH));
+}
 
 const CANONICAL_TABLES = [
   "products",
@@ -341,6 +403,7 @@ function initDb() {
   if (previousVersion > DB_SCHEMA_VERSION) {
     throw new Error(`Database creato da una versione piu' recente (${previousVersion})`);
   }
+  configureDurability();
 
   const hasLegacyTables = CANONICAL_TABLES.some(table => tableExistsIn(db, table));
   if (hasLegacyTables && previousVersion < DB_SCHEMA_VERSION) {
@@ -484,9 +547,12 @@ function validateRestoreCandidate(candidatePath) {
 // Il marker viene sincronizzato prima del rename atomico. Un errore in-process
 // o un crash provoca il recupero del backup pre-restore, mai un DB vuoto.
 function restoreDatabaseFromFile(candidatePath, safetyBackupPath) {
-  writeRestoreMarker(safetyBackupPath);
   try {
-    connection.close();
+    // Il lock applicativo blocca nuove route; il checkpoint rileva anche
+    // eventuali lettori esterni e impedisce la sostituzione finche' il WAL non
+    // e' interamente consolidato nel file principale.
+    closeDatabase();
+    writeRestoreMarker(safetyBackupPath);
     fs.renameSync(candidatePath, DB_PATH);
     fsyncDirectory(path.dirname(DB_PATH));
 
@@ -502,7 +568,7 @@ function restoreDatabaseFromFile(candidatePath, safetyBackupPath) {
     fsyncDirectory(path.dirname(DB_PATH));
     return;
   } catch (err) {
-    try { connection.close(); } catch {}
+    try { if (connection?.open) connection.close(); } catch {}
     recoverFromRestoreMarker();
     connection = openConnection();
     initDb();
@@ -517,6 +583,8 @@ module.exports = {
   getOpenSession,
   validateRestoreCandidate,
   restoreDatabaseFromFile,
+  closeDatabase,
   RESTORE_MARKER_PATH,
   DB_PATH,
+  DB_BUSY_TIMEOUT_MS,
 };
