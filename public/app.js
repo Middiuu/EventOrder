@@ -502,6 +502,7 @@ async function initCassa(signal) {
   const printBtn = document.querySelector("#printBtn");
   const clearBtn = document.querySelector("#clearBtn");
   const searchEl = document.querySelector("#search");
+  const categoryFiltersEl = document.querySelector("#categoryFilters");
   const toastEl = document.querySelector("#toast");
   const cartCard = document.querySelector("#cartCard");
   const cartHelper = document.querySelector("#cartHelper");
@@ -553,6 +554,57 @@ async function initCassa(signal) {
 
   let products = await api("/api/products");
   let filtered = [...products];
+  let selectedCategory = null;
+
+  function productCategory(product) {
+    return String(product.category || "").trim() || "Generale";
+  }
+
+  function catalogCategories() {
+    const counts = new Map();
+    for (const product of products) {
+      const category = productCategory(product);
+      counts.set(category, (counts.get(category) || 0) + 1);
+    }
+    return [...counts.entries()].sort(([a], [b]) => a.localeCompare(b, APP_CONFIG.locale, { sensitivity: "base" }));
+  }
+
+  function renderCategoryFilters() {
+    if (!categoryFiltersEl) return;
+    const categories = catalogCategories();
+    if (selectedCategory && !categories.some(([category]) => category === selectedCategory)) {
+      selectedCategory = null;
+    }
+
+    categoryFiltersEl.innerHTML = "";
+    const options = [[null, "Tutte", products.length], ...categories.map(([category, count]) => [category, category, count])];
+    for (const [value, label, count] of options) {
+      const button = document.createElement("button");
+      const active = value === selectedCategory;
+      button.type = "button";
+      button.className = `category-filter${active ? " is-active" : ""}`;
+      button.setAttribute("aria-pressed", String(active));
+
+      const name = document.createElement("span");
+      name.textContent = label;
+      const badge = document.createElement("span");
+      badge.className = "category-filter-count";
+      badge.setAttribute("aria-hidden", "true");
+      badge.textContent = count;
+      button.append(name, badge);
+
+      button.addEventListener("click", () => {
+        selectedCategory = value;
+        for (const candidate of categoryFiltersEl.querySelectorAll(".category-filter")) {
+          const candidateActive = candidate === button;
+          candidate.classList.toggle("is-active", candidateActive);
+          candidate.setAttribute("aria-pressed", String(candidateActive));
+        }
+        applySearch();
+      });
+      categoryFiltersEl.appendChild(button);
+    }
+  }
 
   function newCheckoutRequestId() {
     if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -566,6 +618,7 @@ async function initCassa(signal) {
     } catch {
       // in caso di errore si continua con l'elenco già caricato
     }
+    renderCategoryFilters();
     applySearch();
   }
 
@@ -785,6 +838,14 @@ async function initCassa(signal) {
 
   function renderProducts() {
     grid.innerHTML = "";
+    if (filtered.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "catalog-empty";
+      empty.setAttribute("role", "status");
+      empty.textContent = "Nessun prodotto corrisponde ai filtri selezionati.";
+      grid.appendChild(empty);
+      return;
+    }
     for (const p of filtered) {
       const available = productAvailable(p);
       const b = document.createElement("button");
@@ -919,11 +980,13 @@ async function initCassa(signal) {
   });
 
   function applySearch() {
-    const q = (searchEl?.value || "").trim().toLowerCase();
-    if (!q) filtered = [...products];
-    else filtered = products.filter(p =>
-      (p.name + " " + p.category).toLowerCase().includes(q)
-    );
+    const q = (searchEl?.value || "").trim().toLocaleLowerCase(APP_CONFIG.locale);
+    filtered = products.filter(p => {
+      const category = productCategory(p);
+      const matchesCategory = selectedCategory === null || category === selectedCategory;
+      const searchable = `${p.name} ${category}`.toLocaleLowerCase(APP_CONFIG.locale);
+      return matchesCategory && (!q || searchable.includes(q));
+    });
     renderProducts();
   }
   searchEl?.addEventListener("input", applySearch);
@@ -1158,7 +1221,8 @@ async function initCassa(signal) {
     cartCard?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
 
-  renderProducts();
+  renderCategoryFilters();
+  applySearch();
   renderCart();
   await refreshSession();
 }

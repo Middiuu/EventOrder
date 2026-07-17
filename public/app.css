@@ -262,10 +262,40 @@ select.input { appearance:none; -webkit-appearance:none; }
 
 /* ============ Cassa: griglia prodotti + comanda ============ */
 .dashboard-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(340px,.8fr); gap:22px; align-items:start; }
+.dashboard-layout > .card { min-width:0; }
 .sidebar-stack { position:sticky; top:24px; display:grid; gap:18px; }
 
 .grid { display:grid; gap:14px; }
 .products-grid { grid-template-columns:repeat(auto-fill, minmax(180px,1fr)); }
+
+.category-rail {
+  display:flex; gap:8px; overflow-x:auto;
+  margin:-4px 0 18px; padding:2px 2px 7px;
+  overscroll-behavior-inline:contain; scrollbar-width:thin;
+}
+.category-filter {
+  display:inline-flex; align-items:center; gap:8px; flex:0 0 auto;
+  min-height:40px; padding:0 13px;
+  border:1px solid var(--border); border-radius:999px;
+  background:var(--surface-2); color:var(--ink-2);
+  font:600 .86rem var(--ui); white-space:nowrap;
+  transition:background .15s ease, border-color .15s ease, color .15s ease, transform .12s ease;
+}
+.category-filter:hover { border-color:var(--accent-border); color:var(--ink); }
+.category-filter:active { transform:scale(.98); }
+.category-filter:focus-visible { outline:3px solid var(--accent-soft); outline-offset:2px; border-color:var(--accent); }
+.category-filter.is-active { background:var(--accent-soft); border-color:var(--accent-border); color:var(--accent-ink); }
+.category-filter-count {
+  display:inline-grid; place-items:center; min-width:22px; height:22px; padding:0 6px;
+  border-radius:999px; background:var(--chip); color:var(--muted);
+  font:600 .7rem var(--mono);
+}
+.category-filter.is-active .category-filter-count { background:var(--accent); color:#fff; }
+.catalog-empty {
+  grid-column:1 / -1; display:grid; place-items:center; min-height:150px;
+  padding:24px; border:1px dashed var(--field-border); border-radius:var(--r);
+  color:var(--muted); text-align:center;
+}
 
 .product-card {
   text-align:left;
@@ -616,6 +646,7 @@ select.input { appearance:none; -webkit-appearance:none; }
 
 @media (pointer: coarse) {
   .btn, .input { min-height:52px; }
+  .category-filter { min-height:48px; }
   .qtyBtn { width:44px; height:44px; }
   .side-nav a { min-height:48px; }
 }
