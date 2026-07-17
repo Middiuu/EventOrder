@@ -50,6 +50,22 @@
         </div>
       </section>
 
+      <section class="card" style="margin-top:18px">
+        <div class="section-heading">
+          <div>
+            <div class="eyebrow">Sicurezza dati</div>
+            <h2>Ripristina un backup</h2>
+          </div>
+          <p class="section-note">La cassa deve essere chiusa. Il file viene verificato e il database corrente viene salvato automaticamente prima del ripristino.</p>
+        </div>
+        <input id="restoreFile" type="file" accept=".sqlite,application/x-sqlite3,application/vnd.sqlite3" hidden />
+        <div class="actions" style="margin-top:0">
+          <button class="btn btn-secondary" id="selectRestoreFileBtn" type="button">Scegli backup</button>
+          <span class="small" id="restoreFileName">Nessun file selezionato</span>
+          <button class="btn btn-danger" id="restoreBackupBtn" type="button" disabled>Verifica e ripristina</button>
+        </div>
+      </section>
+
       <div id="reportBox" class="stack" style="margin-top:18px"></div>
 
       <section class="card" style="margin-top:18px">

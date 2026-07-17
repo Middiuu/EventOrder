@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS cash_sessions (
 CREATE TABLE IF NOT EXISTS sales (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   sale_number INTEGER NOT NULL,
+  -- Chiave e impronta della richiesta: i retry dello stesso incasso non
+  -- possono creare una seconda vendita o scalare due volte le scorte.
+  client_request_id TEXT,
+  request_fingerprint TEXT,
   total_cents INTEGER NOT NULL CHECK(typeof(total_cents) = 'integer' AND total_cents >= 0),
   discount_cents INTEGER NOT NULL DEFAULT 0 CHECK(typeof(discount_cents) = 'integer' AND discount_cents >= 0),
   discount_type TEXT,
@@ -91,6 +95,8 @@ CREATE INDEX IF NOT EXISTS idx_sales_session ON sales(session_id);
 CREATE INDEX IF NOT EXISTS idx_sales_voided ON sales(voided, created_at);
 CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_sales_sale_number ON sales(sale_number);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_sales_client_request_id
+ON sales(client_request_id) WHERE client_request_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_cash_sessions_single_open
 ON cash_sessions((1)) WHERE closed_at IS NULL;
 

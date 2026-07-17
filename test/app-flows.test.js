@@ -1,5 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("fs");
+const path = require("path");
 const { createHarness } = require("./helpers/app-test-utils");
 
 test("flusso prodotti: seed, creazione, unicita', update e filtro attivi", async () => {
@@ -173,6 +175,183 @@ test("flussi vendite, report, export, backup e annullo funzionano insieme", asyn
       assert.equal(closed.expected_cash_cents, 5000);
       assert.equal(closed.difference_cents, 0);
       assert.ok(closed.closed_at);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("idempotenza incasso: un retry restituisce la stessa vendita senza ristampa o duplicati", async () => {
+  const printed = [];
+  const harness = createHarness({ printTicket: async payload => printed.push(payload) });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const created = await request({
+        method: "POST",
+        url: "/api/products",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Prodotto idempotente", price_cents: 500, stock: 5 }),
+      });
+      const product = (await request({ url: "/api/products/all" })).json()
+        .find(p => p.id === created.json().id);
+      assert.equal((await request({
+        method: "POST",
+        url: "/api/sessions/open",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opening_float_cents: 0, operator: "Anna" }),
+      })).status, 200);
+
+      const key = "checkout-test-0001";
+      const body = JSON.stringify({
+        items: [{ product_id: product.id, qty: 2 }],
+        payment_method: "card",
+      });
+      const send = (payload = body) => request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+        body: payload,
+      });
+
+      const first = await send();
+      const retry = await send();
+      assert.equal(first.status, 200);
+      assert.equal(retry.status, 200);
+      assert.equal(retry.json().idempotent_replay, true);
+      assert.equal(retry.json().sale_number, first.json().sale_number);
+      assert.equal(printed.length, 1);
+
+      const sales = (await request({ url: "/api/sales?limit=50" })).json();
+      assert.equal(sales.length, 1);
+      const stockAfterRetry = (await request({ url: "/api/products/all" })).json()
+        .find(p => p.id === product.id).stock;
+      assert.equal(stockAfterRetry, 3);
+
+      const changedPayload = JSON.stringify({
+        items: [{ product_id: product.id, qty: 1 }],
+        payment_method: "card",
+      });
+      const conflict = await send(changedPayload);
+      assert.equal(conflict.status, 409);
+      assert.match(conflict.json().error, /richiesta diversa/);
+
+      const invalidKey = await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": "bad" },
+        body,
+      });
+      assert.equal(invalidKey.status, 400);
+
+      assert.equal((await request({
+        method: "POST",
+        url: "/api/sessions/close",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ counted_cash_cents: 0 }),
+      })).status, 200);
+      const retryAfterClose = await send();
+      assert.equal(retryAfterClose.status, 200);
+      assert.equal(retryAfterClose.json().idempotent_replay, true);
+      assert.equal(printed.length, 1);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("restore backup: valida il file, blocca il turno aperto e sostituisce il DB senza riavvio", async () => {
+  const harness = createHarness({ printTicket: async () => {} });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const createProduct = (name) => request({
+        method: "POST",
+        url: "/api/products",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, price_cents: 450, category: "Test" }),
+      });
+
+      assert.equal((await createProduct("Presente nel backup")).status, 200);
+      const backup = await request({ url: "/api/reports/backup" });
+      assert.equal(backup.status, 200);
+      assert.equal((await createProduct("Creato dopo il backup")).status, 200);
+
+      const restoreHeaders = {
+        "Content-Type": "application/octet-stream",
+        "X-EventOrder-Restore": "RESTORE",
+      };
+      const invalid = await request({
+        method: "POST",
+        url: "/api/reports/restore",
+        headers: restoreHeaders,
+        body: Buffer.from("non e' sqlite"),
+      });
+      assert.equal(invalid.status, 400);
+      assert.match(invalid.json().error, /SQLite EventOrder valido/);
+
+      assert.equal((await request({
+        method: "POST",
+        url: "/api/sessions/open",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opening_float_cents: 0 }),
+      })).status, 200);
+      const blocked = await request({
+        method: "POST",
+        url: "/api/reports/restore",
+        headers: restoreHeaders,
+        body: backup.buffer,
+      });
+      assert.equal(blocked.status, 409);
+      assert.match(blocked.json().error, /Chiudi la cassa/);
+      assert.equal((await request({
+        method: "POST",
+        url: "/api/sessions/close",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ counted_cash_cents: 0 }),
+      })).status, 200);
+
+      const restored = await request({
+        method: "POST",
+        url: "/api/reports/restore",
+        headers: restoreHeaders,
+        body: backup.buffer,
+      });
+      assert.equal(restored.status, 200);
+      const restoredBody = restored.json();
+      assert.equal(restoredBody.ok, true);
+      assert.ok(restoredBody.safety_backup.includes("pre-restore"));
+      assert.equal(
+        fs.existsSync(path.join(harness.tempDir, "backups", restoredBody.safety_backup)),
+        true
+      );
+
+      const products = (await request({ url: "/api/products/all" })).json();
+      assert.equal(products.some(p => p.name === "Presente nel backup"), true);
+      assert.equal(products.some(p => p.name === "Creato dopo il backup"), false);
+
+      // Le route devono usare subito la nuova connessione, incluse le
+      // transazioni di vendita e storno create prima del restore.
+      assert.equal((await request({
+        method: "POST",
+        url: "/api/sessions/open",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opening_float_cents: 0 }),
+      })).status, 200);
+      const product = products.find(p => p.name === "Presente nel backup");
+      const sale = await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": "post-restore-sale-0001",
+        },
+        body: JSON.stringify({ items: [{ product_id: product.id, qty: 1 }], payment_method: "card" }),
+      });
+      assert.equal(sale.status, 200);
+      const voided = await request({ method: "POST", url: "/api/sales/void-last" });
+      assert.equal(voided.status, 200);
+      assert.equal(voided.json().sale_number, sale.json().sale_number);
     });
   } finally {
     harness.cleanup();

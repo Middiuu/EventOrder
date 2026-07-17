@@ -7,13 +7,31 @@ const DB_PATH = process.env.POS_DB_PATH
   ? path.resolve(process.env.POS_DB_PATH)
   : path.join(__dirname, "..", "pos.sqlite");
 const SCHEMA_PATH = path.join(__dirname, "schema.sql");
+const DB_SCHEMA_VERSION = 4;
 
-const db = new Database(DB_PATH);
-db.pragma("foreign_keys = ON");
+function openConnection() {
+  const next = new Database(DB_PATH);
+  next.pragma("foreign_keys = ON");
+  return next;
+}
+
+let connection = openConnection();
+
+// Le route conservano questo riferimento per tutta la vita del processo. Il
+// proxy permette di sostituire in sicurezza la connessione dopo un restore,
+// senza lasciare i moduli collegati a un Database ormai chiuso.
+const db = new Proxy({}, {
+  get(_target, property) {
+    const value = connection[property];
+    return typeof value === "function" ? value.bind(connection) : value;
+  },
+});
 
 // Migrazioni idempotenti: aggiunge colonne mancanti su DB gia' esistenti,
 // perche' "CREATE TABLE IF NOT EXISTS" non altera tabelle gia' presenti.
 const EXPECTED_SALES_COLUMNS = {
+  client_request_id: "TEXT",
+  request_fingerprint: "TEXT",
   discount_cents: "INTEGER NOT NULL DEFAULT 0",
   discount_type: "TEXT",
   discount_value: "REAL",
@@ -101,7 +119,7 @@ function runMigrations() {
     `);
   }
 
-  db.pragma("user_version = 3");
+  db.pragma(`user_version = ${DB_SCHEMA_VERSION}`);
 }
 
 function initDb() {
@@ -167,4 +185,122 @@ function getOpenSession() {
   `).get();
 }
 
-module.exports = { db, initDb, getNextSaleNumber, getOpenSession, DB_PATH };
+const REQUIRED_RESTORE_SCHEMA = {
+  products: ["id", "name", "price_cents", "category"],
+  cash_sessions: ["id", "opened_at", "closed_at", "opening_float_cents"],
+  sales: ["id", "sale_number", "total_cents", "created_at"],
+  sale_items: ["id", "sale_id", "product_id", "qty", "unit_price_cents", "line_total_cents"],
+  app_state: ["key", "int_value"],
+};
+
+function restoreError(message) {
+  const err = new Error(message);
+  err.status = 400;
+  err.publicMessage = message;
+  return err;
+}
+
+// Apre il file separatamente e in sola lettura: nessun contenuto del backup
+// viene eseguito o copiato prima che integrita' e identita' siano verificate.
+function validateRestoreCandidate(candidatePath) {
+  let candidate;
+  try {
+    candidate = new Database(candidatePath, { readonly: true, fileMustExist: true });
+
+    const integrity = candidate.pragma("integrity_check");
+    if (integrity.length !== 1 || integrity[0].integrity_check !== "ok") {
+      throw restoreError("Il file SQLite non supera il controllo di integrita'");
+    }
+
+    const foreignKeyErrors = candidate.pragma("foreign_key_check");
+    if (foreignKeyErrors.length > 0) {
+      throw restoreError("Il backup contiene relazioni non valide");
+    }
+
+    // EventOrder non usa trigger o view. Rifiutarli evita che un file SQLite
+    // estraneo possa eseguire effetti inattesi durante le migrazioni.
+    const executableSchema = candidate.prepare(`
+      SELECT type, name FROM sqlite_master
+      WHERE type IN ('trigger', 'view')
+      LIMIT 1
+    `).get();
+    if (executableSchema) {
+      throw restoreError("Il file non e' un backup EventOrder supportato");
+    }
+
+    for (const [table, requiredColumns] of Object.entries(REQUIRED_RESTORE_SCHEMA)) {
+      const exists = candidate.prepare(`
+        SELECT 1 FROM sqlite_master WHERE type='table' AND name=?
+      `).get(table);
+      if (!exists) throw restoreError(`Backup non valido: tabella ${table} mancante`);
+
+      const columns = new Set(candidate.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name));
+      if (requiredColumns.some(column => !columns.has(column))) {
+        throw restoreError(`Backup non valido: struttura ${table} non compatibile`);
+      }
+    }
+
+    const userVersion = candidate.pragma("user_version", { simple: true });
+    if (userVersion > DB_SCHEMA_VERSION) {
+      throw restoreError("Il backup proviene da una versione piu' recente di EventOrder");
+    }
+
+    return {
+      products: candidate.prepare("SELECT COUNT(*) AS count FROM products").get().count,
+      sales: candidate.prepare("SELECT COUNT(*) AS count FROM sales").get().count,
+      sessions: candidate.prepare("SELECT COUNT(*) AS count FROM cash_sessions").get().count,
+      userVersion,
+    };
+  } catch (err) {
+    if (err.status === 400) throw err;
+    throw restoreError("Il file selezionato non e' un database SQLite EventOrder valido");
+  } finally {
+    candidate?.close();
+  }
+}
+
+// Sostituzione atomica sullo stesso filesystem. Se apertura o migrazione del
+// database ripristinato falliscono, il file originale viene rimesso al suo posto.
+function restoreDatabaseFromFile(candidatePath) {
+  const token = `${process.pid}-${Date.now()}`;
+  const originalPath = `${DB_PATH}.restore-original-${token}`;
+  let originalMoved = false;
+
+  try {
+    connection.close();
+    fs.renameSync(DB_PATH, originalPath);
+    originalMoved = true;
+    fs.renameSync(candidatePath, DB_PATH);
+
+    connection = openConnection();
+    initDb();
+
+    const foreignKeyErrors = db.pragma("foreign_key_check");
+    if (foreignKeyErrors.length > 0) {
+      throw new Error("Il database ripristinato non supera il controllo delle relazioni");
+    }
+
+    fs.rmSync(originalPath, { force: true });
+    return;
+  } catch (err) {
+    try { connection.close(); } catch {}
+
+    if (originalMoved) {
+      try { fs.rmSync(DB_PATH, { force: true }); } catch {}
+      fs.renameSync(originalPath, DB_PATH);
+    }
+    connection = openConnection();
+    initDb();
+    throw err;
+  }
+}
+
+module.exports = {
+  db,
+  initDb,
+  getNextSaleNumber,
+  getOpenSession,
+  validateRestoreCandidate,
+  restoreDatabaseFromFile,
+  DB_PATH,
+};
