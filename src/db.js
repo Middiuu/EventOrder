@@ -7,7 +7,7 @@ const DB_PATH = process.env.POS_DB_PATH
   ? path.resolve(process.env.POS_DB_PATH)
   : path.join(__dirname, "..", "pos.sqlite");
 const SCHEMA_PATH = path.join(__dirname, "schema.sql");
-const DB_SCHEMA_VERSION = 7;
+const DB_SCHEMA_VERSION = 8;
 const DB_BUSY_TIMEOUT_MS = 5000;
 const RESTORE_MARKER_PATH = `${DB_PATH}.restore-state.json`;
 const DB_SIDECAR_PATHS = [`${DB_PATH}-wal`, `${DB_PATH}-shm`];
@@ -187,6 +187,8 @@ function closeDatabase() {
 const CANONICAL_TABLES = [
   "products",
   "cash_sessions",
+  "product_option_groups",
+  "product_option_values",
   "sales",
   "app_state",
   "sale_items",
@@ -201,6 +203,8 @@ const DROP_TABLE_ORDER = [
   "cash_movements",
   "sale_items",
   "sales",
+  "product_option_values",
+  "product_option_groups",
   "cash_sessions",
   "products",
   "app_state",
@@ -306,6 +310,10 @@ function migrateLegacySchema(schema, previousVersion) {
 
       // I database precedenti conservavano nome e categoria solo nei prodotti.
       db.exec(`
+        UPDATE __eventorder_migrate_sale_items
+        SET base_unit_price_cents = unit_price_cents
+        WHERE base_unit_price_cents = 0 AND unit_price_cents > 0;
+
         UPDATE __eventorder_migrate_sale_items
         SET product_category = COALESCE(
           (SELECT category FROM __eventorder_migrate_products

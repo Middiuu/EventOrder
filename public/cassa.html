@@ -62,6 +62,10 @@
               <span>Totale</span>
               <strong id="total" class="totalBig">€ 0,00</strong>
             </div>
+            <label class="field order-note-field">
+              <span class="field-label">Nota comanda <span class="small">(opzionale)</span></span>
+              <textarea class="input" id="orderNote" maxlength="500" rows="2" placeholder="Es. consegnare insieme, tavolo esterno"></textarea>
+            </label>
             <div class="actions actions-vertical">
               <button class="btn btn-primary" id="printBtn" disabled type="button">Incassa e stampa</button>
               <div class="cart-secondary-actions">
@@ -165,6 +169,30 @@
           <div class="actions">
             <button class="btn btn-primary" id="confirmPayBtn" type="button">Conferma e stampa</button>
           </div>
+        </div>
+      </div>
+
+      <!-- Scheda di preparazione articolo -->
+      <div id="itemOptionsModal" class="modal-shell" hidden>
+        <div class="modal-backdrop" data-close-modal="1"></div>
+        <div class="modal-card item-options-modal" role="dialog" aria-modal="true" aria-labelledby="itemOptionsTitle">
+          <button class="modal-close" type="button" data-close-modal="1" aria-label="Chiudi">✕</button>
+          <div class="eyebrow">Preparazione</div>
+          <div class="item-options-heading">
+            <h2 id="itemOptionsTitle">Personalizza articolo</h2>
+            <strong class="mono" id="itemOptionsPrice">€ 0,00</strong>
+          </div>
+          <form id="itemOptionsForm" class="stack" style="margin-top:16px">
+            <div class="item-option-groups" id="itemOptionGroups"></div>
+            <label class="field">
+              <span class="field-label">Nota per questo articolo</span>
+              <textarea class="input" id="itemNote" maxlength="240" rows="2" placeholder="Es. senza cipolla, ben cotto"></textarea>
+            </label>
+            <div class="actions">
+              <button class="btn btn-primary" type="submit" id="confirmItemOptionsBtn">Aggiungi alla comanda</button>
+              <button class="btn btn-secondary" type="button" data-close-modal="1">Annulla</button>
+            </div>
+          </form>
         </div>
       </div>
 

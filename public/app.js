@@ -526,6 +526,14 @@ async function initCassa(signal) {
   const suspendedCartsCount = document.querySelector("#suspendedCartsCount");
   const suspendedCartsModal = document.querySelector("#suspendedCartsModal");
   const suspendedCartsList = document.querySelector("#suspendedCartsList");
+  const orderNoteEl = document.querySelector("#orderNote");
+  const itemOptionsModal = document.querySelector("#itemOptionsModal");
+  const itemOptionsForm = document.querySelector("#itemOptionsForm");
+  const itemOptionsTitle = document.querySelector("#itemOptionsTitle");
+  const itemOptionsPrice = document.querySelector("#itemOptionsPrice");
+  const itemOptionGroups = document.querySelector("#itemOptionGroups");
+  const itemNoteEl = document.querySelector("#itemNote");
+  const confirmItemOptionsBtn = document.querySelector("#confirmItemOptionsBtn");
 
   // Barra turno
   const sessionBar = document.querySelector("#sessionBar");
@@ -646,6 +654,7 @@ async function initCassa(signal) {
   const CART_DRAFT_KEY = "eventorder-current-cart-v1";
   let cartPersistenceReady = false;
   let suspendedCarts = [];
+  let itemEditor = null;
   let isPrinting = false;
   // Un tentativo dall'esito incerto conserva chiave e payload esatti: riaprire
   // la modale non puo' trasformare un retry in una seconda vendita.
@@ -672,8 +681,55 @@ async function initCassa(signal) {
 
   function cartTotal() {
     let total = 0;
-    for (const it of cart.values()) total += it.qty * it.product.price_cents;
+    for (const it of cart.values()) total += it.qty * it.unit_price_cents;
     return total;
+  }
+
+  function buildCartItem(product, qty, selectedIds = [], note = null) {
+    const normalizedIds = [...new Set(selectedIds.map(Number))].sort((a, b) => a - b);
+    const selectedSet = new Set(normalizedIds);
+    const groups = product.option_groups || [];
+    const known = new Set(groups.flatMap(group => group.options.map(option => option.id)));
+    if (normalizedIds.some(id => !known.has(id))) return { error: "Opzione non più disponibile" };
+    const selectedOptions = [];
+    for (const group of groups) {
+      const selected = group.options.filter(option => selectedSet.has(option.id));
+      if (group.required && selected.length === 0) return { error: `Scegli un'opzione per ${group.name}` };
+      if (group.selection_type === "single" && selected.length > 1) return { error: `Scegli una sola opzione per ${group.name}` };
+      for (const option of selected) {
+        selectedOptions.push({
+          group_id: group.id,
+          group_name: group.name,
+          value_id: option.id,
+          name: option.name,
+          price_delta_cents: option.price_delta_cents,
+        });
+      }
+    }
+    const cleanNote = String(note || "").trim().slice(0, 240) || null;
+    const unitPrice = product.price_cents
+      + selectedOptions.reduce((sum, option) => sum + option.price_delta_cents, 0);
+    if (!Number.isSafeInteger(unitPrice) || unitPrice < 0) return { error: "Prezzo finale non valido" };
+    const key = JSON.stringify([product.id, normalizedIds, cleanNote]);
+    return {
+      key,
+      item: {
+        product,
+        qty,
+        selected_option_value_ids: normalizedIds,
+        selected_options: selectedOptions,
+        note: cleanNote,
+        unit_price_cents: unitPrice,
+      },
+    };
+  }
+
+  function cartQtyForProduct(productId, exceptKey = null) {
+    let qty = 0;
+    for (const [key, item] of cart) {
+      if (key !== exceptKey && item.product.id === productId) qty += item.qty;
+    }
+    return qty;
   }
 
   function persistCurrentCart() {
@@ -686,7 +742,13 @@ async function initCassa(signal) {
       localStorage.setItem(CART_DRAFT_KEY, JSON.stringify({
         session_id: session?.id ?? null,
         saved_at: new Date().toISOString(),
-        items: Array.from(cart.values()).map(it => ({ product_id: it.product.id, qty: it.qty })),
+        note: orderNoteEl?.value.trim() || null,
+        items: Array.from(cart.values()).map(it => ({
+          product_id: it.product.id,
+          qty: it.qty,
+          selected_option_value_ids: it.selected_option_value_ids,
+          note: it.note,
+        })),
       }));
     } catch {
       // Lo storage locale può essere disabilitato: il POS resta utilizzabile.
@@ -710,19 +772,29 @@ async function initCassa(signal) {
     const byId = new Map(products.map(product => [product.id, product]));
     let recovered = 0;
     const skipped = [];
+    const usedStock = new Map();
+    if (orderNoteEl) orderNoteEl.value = String(draft.note || "").slice(0, 500);
     for (const item of draft.items) {
       const product = byId.get(item?.product_id);
       if (!product || !Number.isSafeInteger(item?.qty) || item.qty <= 0 || !productAvailable(product)) {
         skipped.push(product?.name || `Prodotto #${item?.product_id || "?"}`);
         continue;
       }
-      const qty = product.stock == null ? item.qty : Math.min(item.qty, product.stock);
+      const built = buildCartItem(product, item.qty, item.selected_option_value_ids || [], item.note);
+      if (built.error) {
+        skipped.push(product.name);
+        continue;
+      }
+      const alreadyUsed = usedStock.get(product.id) || 0;
+      const qty = product.stock == null ? item.qty : Math.min(item.qty, Math.max(0, product.stock - alreadyUsed));
       if (qty <= 0) {
         skipped.push(product.name);
         continue;
       }
       if (qty !== item.qty) skipped.push(product.name);
-      cart.set(product.id, { product, qty });
+      built.item.qty = qty;
+      cart.set(built.key, built.item);
+      usedStock.set(product.id, alreadyUsed + qty);
       recovered += qty;
     }
     return { recovered: recovered > 0, skipped: [...new Set(skipped)] };
@@ -735,20 +807,33 @@ async function initCassa(signal) {
     const removed = [];
     const unavailable = [];
 
-    for (const [id, item] of cart) {
-      const current = byId.get(id);
+    const reconciled = new Map();
+    const requestedStock = new Map();
+    for (const [key, item] of cart) {
+      const current = byId.get(item.product.id);
       if (!current) {
         removed.push(item.product.name);
-        cart.delete(id);
         continue;
       }
-      if (current.price_cents !== item.product.price_cents) {
-        priceChanges.push({ name: current.name, from: item.product.price_cents, to: current.price_cents });
+      const built = buildCartItem(current, item.qty, item.selected_option_value_ids, item.note);
+      if (built.error) {
+        removed.push(`${current.name} (${built.error})`);
+        continue;
       }
-      cart.set(id, { product: current, qty: item.qty });
-      if (!productAvailable(current) || (current.stock != null && item.qty > current.stock)) {
+      if (built.item.unit_price_cents !== item.unit_price_cents) {
+        priceChanges.push({ name: current.name, from: item.unit_price_cents, to: built.item.unit_price_cents });
+      }
+      reconciled.set(built.key, built.item);
+      requestedStock.set(current.id, (requestedStock.get(current.id) || 0) + item.qty);
+      if (!productAvailable(current)) {
         unavailable.push(current.name);
       }
+    }
+    cart.clear();
+    for (const [key, item] of reconciled) cart.set(key, item);
+    for (const [productId, qty] of requestedStock) {
+      const product = byId.get(productId);
+      if (product?.stock != null && qty > product.stock) unavailable.push(product.name);
     }
     return { oldTotal, newTotal: cartTotal(), priceChanges, removed, unavailable };
   }
@@ -964,9 +1049,12 @@ async function initCassa(signal) {
       if (available && p.stock != null) {
         stockTag = ` • <span class="stock-tag${p.stock <= 5 ? " low" : ""}">${p.stock} rimasti</span>`;
       }
+      const optionsTag = p.option_groups?.length
+        ? ` • <span class="stock-tag">${p.option_groups.length} ${p.option_groups.length === 1 ? "scelta" : "scelte"}</span>`
+        : "";
       b.innerHTML = `
         <div class="product-card-title">${escapeHtml(p.name)}${available ? "" : ' <span class="soldout-tag">Esaurito</span>'}</div>
-        <div class="product-card-meta">${escapeHtml(p.category)} • <span class="product-price">${euro(p.price_cents)}</span>${stockTag}</div>
+        <div class="product-card-meta">${escapeHtml(p.category)} • <span class="product-price">${euro(p.price_cents)}</span>${stockTag}${optionsTag}</div>
       `;
 
       // Long-press su una card disponibile: segna il prodotto come esaurito.
@@ -1013,7 +1101,7 @@ async function initCassa(signal) {
 
       b.onclick = async () => {
         if (suppressClick) { suppressClick = false; return; }
-        if (available) return addProduct(p);
+        if (available) return p.option_groups?.length ? openItemEditor(p) : addProduct(p);
         if (p.sold_out) {
           const ok = await uiConfirm(`Rimettere "${p.name}" disponibile in cassa?`, "Di nuovo disponibile");
           if (ok) await setSoldOut(p, false);
@@ -1030,8 +1118,8 @@ async function initCassa(signal) {
     let total = 0;
     let itemCount = 0;
 
-    for (const [id, it] of cart.entries()) {
-      const line = it.qty * it.product.price_cents;
+    for (const [key, it] of cart.entries()) {
+      const line = it.qty * it.unit_price_cents;
       total += line;
       itemCount += it.qty;
 
@@ -1042,14 +1130,22 @@ async function initCassa(signal) {
           <div class="cart-item-title">
             <b>${it.qty}x</b> ${escapeHtml(it.product.name)}
           </div>
-          <div class="small">${euro(it.product.price_cents)} cad.</div>
+          <div class="small">${euro(it.unit_price_cents)} cad.</div>
+          <div class="cart-item-details">
+            ${(it.selected_options || []).map(option => `<span>${escapeHtml(option.group_name)}: ${escapeHtml(option.name)}</span>`).join("")}
+            ${it.note ? `<span>Nota: ${escapeHtml(it.note)}</span>` : ""}
+          </div>
         </div>
         <div class="qtyBtns">
-          <button class="qtyBtn" data-dec="${id}">-</button>
-          <button class="qtyBtn" data-inc="${id}">+</button>
+          <button class="qtyBtn" data-dec type="button">-</button>
+          <button class="qtyBtn" data-inc type="button">+</button>
+          <button class="btn btn-secondary cart-detail-btn" data-edit-line type="button">Dettagli</button>
           <div class="line-total">${euro(line)}</div>
         </div>
       `;
+      row.querySelector("[data-dec]").dataset.dec = key;
+      row.querySelector("[data-inc]").dataset.inc = key;
+      row.querySelector("[data-edit-line]").dataset.editLine = key;
       cartEl.appendChild(row);
     }
 
@@ -1075,44 +1171,110 @@ async function initCassa(signal) {
 
   function addProduct(p) {
     if (guardPendingCheckout()) return;
-    const cur = cart.get(p.id);
+    const built = buildCartItem(p, 1, [], null);
+    if (built.error) return void uiAlert(built.error);
+    const cur = cart.get(built.key);
     const nextQty = (cur?.qty || 0) + 1;
-    if (p.stock != null && nextQty > p.stock) {
+    if (p.stock != null && cartQtyForProduct(p.id) + 1 > p.stock) {
       showToast(`Disponibili solo ${p.stock} di "${p.name}"`);
       return;
     }
-    cart.set(p.id, { product: p, qty: nextQty });
+    cart.set(built.key, { ...(cur || built.item), qty: nextQty });
     renderCart();
   }
 
-  function decProduct(id) {
+  function decProduct(key) {
     if (guardPendingCheckout()) return;
-    const cur = cart.get(id);
+    const cur = cart.get(key);
     if (!cur) return;
     const next = cur.qty - 1;
-    if (next <= 0) cart.delete(id);
-    else cart.set(id, { ...cur, qty: next });
+    if (next <= 0) cart.delete(key);
+    else cart.set(key, { ...cur, qty: next });
     renderCart();
   }
 
-  function incProduct(id) {
+  function incProduct(key) {
     if (guardPendingCheckout()) return;
-    const cur = cart.get(id);
+    const cur = cart.get(key);
     if (!cur) return;
     const p = cur.product;
-    if (p.stock != null && cur.qty + 1 > p.stock) {
+    if (p.stock != null && cartQtyForProduct(p.id) + 1 > p.stock) {
       showToast(`Disponibili solo ${p.stock} di "${p.name}"`);
       return;
     }
-    cart.set(id, { ...cur, qty: cur.qty + 1 });
+    cart.set(key, { ...cur, qty: cur.qty + 1 });
     renderCart();
   }
 
   cartEl.addEventListener("click", (e) => {
     const dec = e.target?.getAttribute?.("data-dec");
     const inc = e.target?.getAttribute?.("data-inc");
-    if (dec) decProduct(Number(dec));
-    if (inc) incProduct(Number(inc));
+    const editLine = e.target?.getAttribute?.("data-edit-line");
+    if (dec) decProduct(dec);
+    if (inc) incProduct(inc);
+    if (editLine && cart.has(editLine)) openItemEditor(cart.get(editLine).product, editLine);
+  });
+
+  function refreshItemEditorPrice() {
+    if (!itemEditor || !itemOptionsForm) return;
+    const selectedIds = [...itemOptionsForm.querySelectorAll("input[data-option-id]:checked")]
+      .map(input => Number(input.value)).filter(Boolean);
+    const built = buildCartItem(itemEditor.product, 1, selectedIds, itemNoteEl?.value);
+    if (itemOptionsPrice) itemOptionsPrice.textContent = built.error ? "—" : money(built.item.unit_price_cents);
+  }
+
+  function openItemEditor(product, lineKey = null) {
+    if (guardPendingCheckout()) return;
+    const existing = lineKey ? cart.get(lineKey) : null;
+    itemEditor = { product, lineKey, qty: existing?.qty || 1 };
+    if (itemOptionsTitle) itemOptionsTitle.textContent = product.name;
+    if (confirmItemOptionsBtn) confirmItemOptionsBtn.textContent = existing ? "Salva dettagli" : "Aggiungi alla comanda";
+    if (itemNoteEl) itemNoteEl.value = existing?.note || "";
+    if (itemOptionGroups) {
+      itemOptionGroups.innerHTML = "";
+      const selected = new Set(existing?.selected_option_value_ids || []);
+      for (const group of product.option_groups || []) {
+        const section = document.createElement("section");
+        section.className = "item-option-group";
+        const choices = [];
+        if (group.selection_type === "single" && !group.required) {
+          choices.push(`<label class="item-option-choice"><input type="radio" name="option-group-${group.id}" data-option-id value="" ${group.options.some(option => selected.has(option.id)) ? "" : "checked"}><span>Nessuna</span></label>`);
+        }
+        for (const option of group.options) {
+          const type = group.selection_type === "single" ? "radio" : "checkbox";
+          const delta = option.price_delta_cents === 0 ? "" : `${option.price_delta_cents > 0 ? "+" : ""}${money(option.price_delta_cents)}`;
+          choices.push(`<label class="item-option-choice"><input type="${type}" name="option-group-${group.id}" data-option-id value="${option.id}" ${selected.has(option.id) ? "checked" : ""}><span><b>${escapeHtml(option.name)}</b><small>${escapeHtml(delta)}</small></span></label>`);
+        }
+        section.innerHTML = `<div class="item-option-group-head"><b>${escapeHtml(group.name)}</b><span>${group.required ? "Obbligatoria" : "Facoltativa"} · ${group.selection_type === "single" ? "una scelta" : "più scelte"}</span></div><div class="item-option-choices">${choices.join("")}</div>`;
+        itemOptionGroups.appendChild(section);
+      }
+    }
+    refreshItemEditorPrice();
+    openModal(itemOptionsModal);
+  }
+
+  itemOptionsForm?.addEventListener("change", refreshItemEditorPrice);
+  itemNoteEl?.addEventListener("input", refreshItemEditorPrice);
+  itemOptionsForm?.addEventListener("submit", async event => {
+    event.preventDefault();
+    if (!itemEditor) return;
+    const selectedIds = [...itemOptionsForm.querySelectorAll("input[data-option-id]:checked")]
+      .map(input => Number(input.value)).filter(Boolean);
+    const built = buildCartItem(itemEditor.product, itemEditor.qty, selectedIds, itemNoteEl?.value);
+    if (built.error) return uiAlert(built.error);
+    const existingAtTarget = cart.get(built.key);
+    const otherQty = cartQtyForProduct(itemEditor.product.id, itemEditor.lineKey);
+    const mergedQty = existingAtTarget && built.key !== itemEditor.lineKey
+      ? existingAtTarget.qty + itemEditor.qty
+      : itemEditor.qty;
+    if (itemEditor.product.stock != null && otherQty + mergedQty > itemEditor.product.stock) {
+      return uiAlert(`Disponibili solo ${itemEditor.product.stock} di "${itemEditor.product.name}".`);
+    }
+    if (itemEditor.lineKey) cart.delete(itemEditor.lineKey);
+    cart.set(built.key, { ...built.item, qty: mergedQty });
+    itemEditor = null;
+    closeModal(itemOptionsModal);
+    renderCart();
   });
 
   function applySearch() {
@@ -1126,9 +1288,10 @@ async function initCassa(signal) {
     renderProducts();
   }
   searchEl?.addEventListener("input", applySearch);
+  orderNoteEl?.addEventListener("input", persistCurrentCart);
 
   function suspendedCartTotal(entry) {
-    return entry.items.reduce((sum, item) => sum + item.qty * item.price_cents, 0);
+    return entry.items.reduce((sum, item) => sum + item.qty * (item.expected_unit_price_cents ?? item.price_cents), 0);
   }
 
   function suspendedItemAvailable(item) {
@@ -1154,7 +1317,10 @@ async function initCassa(signal) {
       const when = entry.created_at
         ? new Date(`${entry.created_at}Z`).toLocaleString(APP_CONFIG.locale, { dateStyle: "short", timeStyle: "short" })
         : "—";
-      const summary = entry.items.map(item => `${item.qty}x ${escapeHtml(item.name)}`).join(" · ");
+      const summary = entry.items.map(item => {
+        const options = (item.selected_options || []).map(option => option.name).join(", ");
+        return `${item.qty}x ${escapeHtml(item.name)}${options ? ` (${escapeHtml(options)})` : ""}`;
+      }).join(" · ");
       ticket.innerHTML = `
         <div class="suspended-ticket-head">
           <div>
@@ -1201,10 +1367,18 @@ async function initCassa(signal) {
         method: "POST",
         body: JSON.stringify({
           label,
-          items: Array.from(cart.values()).map(item => ({ product_id: item.product.id, qty: item.qty })),
+          note: orderNoteEl?.value.trim() || null,
+          items: Array.from(cart.values()).map(item => ({
+            product_id: item.product.id,
+            qty: item.qty,
+            selected_option_value_ids: item.selected_option_value_ids,
+            expected_unit_price_cents: item.unit_price_cents,
+            note: item.note,
+          })),
         }),
       });
       cart.clear();
+      if (orderNoteEl) orderNoteEl.value = "";
       renderCart();
       await refreshSuspendedCarts();
       showToast("Comanda sospesa");
@@ -1235,9 +1409,19 @@ async function initCassa(signal) {
       try {
         await loadFreshProducts();
         const byId = new Map(products.map(product => [product.id, product]));
-        const restored = entry.items.map(item => ({ item, product: byId.get(item.product_id) }));
-        const invalid = restored.filter(({ item, product }) => (
-          !product || !productAvailable(product) || (product.stock != null && item.qty > product.stock)
+        const restored = entry.items.map(item => {
+          const product = byId.get(item.product_id);
+          const selectedIds = (item.selected_options || []).map(option => option.value_id);
+          const built = product ? buildCartItem(product, item.qty, selectedIds, item.note) : { error: "Prodotto non disponibile" };
+          return { item, product, built };
+        });
+        const requested = new Map();
+        for (const { item, product } of restored) {
+          if (product) requested.set(product.id, (requested.get(product.id) || 0) + item.qty);
+        }
+        const invalid = restored.filter(({ product, built }) => (
+          !product || built.error || !productAvailable(product)
+          || (product.stock != null && (requested.get(product.id) || 0) > product.stock)
         ));
         if (invalid.length > 0) {
           await refreshSuspendedCarts();
@@ -1247,9 +1431,10 @@ async function initCassa(signal) {
           );
           return;
         }
-        for (const { item, product } of restored) {
-          cart.set(product.id, { product, qty: item.qty });
+        for (const { built } of restored) {
+          cart.set(built.key, built.item);
         }
+        if (orderNoteEl) orderNoteEl.value = entry.note || "";
         renderCart();
         await api(`/api/carts/${id}`, { method: "DELETE" });
         closeModal(suspendedCartsModal);
@@ -1446,8 +1631,11 @@ async function initCassa(signal) {
         items: Array.from(cart.values()).map(it => ({
           product_id: it.product.id,
           qty: it.qty,
-          expected_unit_price_cents: it.product.price_cents,
+          expected_unit_price_cents: it.unit_price_cents,
+          selected_option_value_ids: it.selected_option_value_ids,
+          note: it.note,
         })),
+        note: orderNoteEl?.value.trim() || null,
         payment_method: payMethod,
         discount: discountBody(),
       };
@@ -1474,6 +1662,7 @@ async function initCassa(signal) {
         body: checkoutAttempt.payload,
       });
       cart.clear();
+      if (orderNoteEl) orderNoteEl.value = "";
       checkoutAttempt = null;
       setCheckoutControlsLocked(false);
       closeModal(paymentModal);
@@ -1488,6 +1677,7 @@ async function initCassa(signal) {
       if (err.data?.sale_recorded) {
         const saleNumber = String(err.data.sale_number || "").padStart(4, "0");
         cart.clear();
+        if (orderNoteEl) orderNoteEl.value = "";
         checkoutAttempt = null;
         setCheckoutControlsLocked(false);
         closeModal(paymentModal);
@@ -1538,7 +1728,7 @@ async function initCassa(signal) {
   });
 
   // chiusura generica delle modali (backdrop, pulsanti "Annulla", Esc)
-  for (const modal of [openSessionModal, paymentModal, closeSessionModal, movementModal, suspendedCartsModal]) {
+  for (const modal of [openSessionModal, paymentModal, closeSessionModal, movementModal, suspendedCartsModal, itemOptionsModal]) {
     modal?.addEventListener("click", (e) => {
       if (e.target?.getAttribute?.("data-close-modal") === "1") closeModal(modal);
     });
@@ -1546,7 +1736,7 @@ async function initCassa(signal) {
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     const top = topOpenModal();
-    if ([openSessionModal, paymentModal, closeSessionModal, movementModal, suspendedCartsModal].includes(top)) {
+    if ([openSessionModal, paymentModal, closeSessionModal, movementModal, suspendedCartsModal, itemOptionsModal].includes(top)) {
       closeModal(top);
     }
   }, { signal });
@@ -1557,6 +1747,7 @@ async function initCassa(signal) {
     const ok = await uiConfirm("Vuoi svuotare il carrello corrente?", "Svuota carrello");
     if (!ok) return;
     cart.clear();
+    if (orderNoteEl) orderNoteEl.value = "";
     renderCart();
     showToast("Carrello svuotato");
   });
@@ -1596,6 +1787,8 @@ async function initProdotti(signal) {
   const closeModalBtn = document.querySelector("#closeEditModalBtn");
   const cancelModalBtn = document.querySelector("#cancelEditModalBtn");
   const deleteBtn = document.querySelector("#deleteProductBtn");
+  const createOptionsRoot = document.querySelector("#createOptionsEditor");
+  const editOptionsRoot = document.querySelector("#editOptionsEditor");
 
   if (!table || !form) return;
 
@@ -1653,10 +1846,95 @@ async function initProdotti(signal) {
     return cents;
   }
 
+  function setupOptionsEditor(root) {
+    const list = root?.querySelector("[data-option-groups]");
+    if (!root || !list) return { reset() {}, set() {}, read() { return { groups: [] }; } };
+
+    function optionRow(option = {}) {
+      const row = document.createElement("div");
+      row.className = "option-value-row";
+      if (option.id) row.dataset.optionId = String(option.id);
+      row.innerHTML = `
+        <label class="field"><span class="field-label">Scelta</span><input class="input" data-option-name maxlength="80" placeholder="Es. Grande" value="${escapeHtml(option.name || "")}"></label>
+        <label class="field"><span class="field-label">Variazione €</span><input class="input mono" data-option-price type="number" step="0.01" value="${(Number(option.price_delta_cents || 0) / 100).toFixed(2)}"></label>
+        <button class="btn btn-ghost btn-compact" type="button" data-remove-option>Rimuovi</button>`;
+      return row;
+    }
+
+    function addGroup(group = {}) {
+      const card = document.createElement("div");
+      card.className = "option-group-card";
+      if (group.id) card.dataset.groupId = String(group.id);
+      card.innerHTML = `
+        <div class="option-group-row">
+          <label class="field"><span class="field-label">Nome gruppo</span><input class="input" data-group-name maxlength="80" placeholder="Es. Formato" value="${escapeHtml(group.name || "")}"></label>
+          <label class="field"><span class="field-label">Tipo</span><select class="input" data-group-type><option value="single">Scelta singola</option><option value="multiple">Scelta multipla</option></select></label>
+          <label class="toggle"><input type="checkbox" data-group-required><span>Obbligatoria</span></label>
+          <button class="btn btn-ghost btn-compact" type="button" data-remove-group>Rimuovi gruppo</button>
+        </div>
+        <div class="option-values-list" data-option-values></div>
+        <button class="btn btn-secondary btn-compact" type="button" data-add-option>Aggiungi scelta</button>`;
+      card.querySelector("[data-group-type]").value = group.selection_type || "single";
+      card.querySelector("[data-group-required]").checked = Boolean(group.required);
+      const values = card.querySelector("[data-option-values]");
+      const options = group.options?.length ? group.options : [{}, {}];
+      for (const option of options) values.appendChild(optionRow(option));
+      list.appendChild(card);
+    }
+
+    root.addEventListener("click", event => {
+      if (event.target.closest("[data-add-option-group]")) addGroup();
+      const removeGroup = event.target.closest("[data-remove-group]");
+      if (removeGroup) removeGroup.closest(".option-group-card")?.remove();
+      const addOption = event.target.closest("[data-add-option]");
+      if (addOption) addOption.closest(".option-group-card")?.querySelector("[data-option-values]")?.appendChild(optionRow());
+      const removeOption = event.target.closest("[data-remove-option]");
+      if (removeOption) removeOption.closest(".option-value-row")?.remove();
+    });
+
+    return {
+      reset() { list.innerHTML = ""; },
+      set(groups = []) { list.innerHTML = ""; groups.forEach(addGroup); },
+      read() {
+        const groups = [];
+        for (const [groupIndex, card] of [...list.querySelectorAll(".option-group-card")].entries()) {
+          const name = card.querySelector("[data-group-name]").value.trim();
+          if (!name) return { error: `Inserisci il nome del gruppo ${groupIndex + 1}.` };
+          const options = [];
+          for (const [optionIndex, row] of [...card.querySelectorAll(".option-value-row")].entries()) {
+            const optionName = row.querySelector("[data-option-name]").value.trim();
+            const rawPrice = row.querySelector("[data-option-price]").value.trim() || "0";
+            const price = Number(rawPrice.replace(",", "."));
+            if (!optionName) return { error: `Inserisci il nome della scelta ${optionIndex + 1} in ${name}.` };
+            if (!Number.isFinite(price)) return { error: `Variazione prezzo non valida in ${name}.` };
+            options.push({
+              ...(row.dataset.optionId ? { id: Number(row.dataset.optionId) } : {}),
+              name: optionName,
+              price_delta_cents: Math.round(price * 100),
+            });
+          }
+          if (options.length === 0) return { error: `Aggiungi almeno una scelta al gruppo ${name}.` };
+          groups.push({
+            ...(card.dataset.groupId ? { id: Number(card.dataset.groupId) } : {}),
+            name,
+            selection_type: card.querySelector("[data-group-type]").value,
+            required: card.querySelector("[data-group-required]").checked ? 1 : 0,
+            options,
+          });
+        }
+        return { groups };
+      },
+    };
+  }
+
+  const createOptionsEditor = setupOptionsEditor(createOptionsRoot);
+  const editOptionsEditor = setupOptionsEditor(editOptionsRoot);
+
   function resetCreateForm() {
     form.reset();
     sortEl.value = "0";
     activeEl.checked = true;
+    createOptionsEditor.reset();
   }
 
   function openCreateForm() {
@@ -1682,6 +1960,7 @@ async function initProdotti(signal) {
     if (editStockEl) editStockEl.value = product.stock == null ? "" : String(product.stock);
     if (editCostEl) editCostEl.value = product.cost_cents == null ? "" : (Number(product.cost_cents) / 100).toFixed(2);
     if (editSoldOutEl) editSoldOutEl.checked = !!product.sold_out;
+    editOptionsEditor.set(product.option_groups || []);
     openModal(modalEl);
     setTimeout(() => editNameEl.focus(), 0);
   }
@@ -1690,6 +1969,7 @@ async function initProdotti(signal) {
     if (!modalEl || !editForm) return;
     closeModal(modalEl);
     editForm.reset();
+    editOptionsEditor.reset();
   }
 
   function statusPill(p) {
@@ -1705,7 +1985,7 @@ async function initProdotti(signal) {
       <tr>
         <td data-label="Sposta"><span class="table-handle" aria-hidden="true">⋮⋮</span></td>
         <td data-label="Stato">${statusPill(p)}</td>
-        <td data-label="Nome"><b>${escapeHtml(p.name)}</b></td>
+        <td data-label="Nome"><b>${escapeHtml(p.name)}</b>${p.option_groups?.length ? `<div class="small">${p.option_groups.length} ${p.option_groups.length === 1 ? "gruppo opzioni" : "gruppi opzioni"}</div>` : ""}</td>
         <td data-label="Categoria">${escapeHtml(p.category)}</td>
         <td data-label="Prezzo">${euro(p.price_cents)}</td>
         <td data-label="Scorte">${p.stock == null ? "—" : p.stock}</td>
@@ -1825,14 +2105,19 @@ async function initProdotti(signal) {
     const active = activeEl.checked ? 1 : 0;
     const stock = stockFromInput(stockEl?.value);
     const cost_cents = costFromInput(costEl?.value);
+    const optionGroups = createOptionsEditor.read();
 
     if (!name) return uiAlert("Inserisci un nome prodotto.");
     if (price_cents === null) return uiAlert("Prezzo non valido.");
     if (stock === undefined) return uiAlert("Scorte non valide: intero >= 0 o vuoto.");
     if (cost_cents === undefined) return uiAlert("Costo non valido: importo in euro o vuoto.");
+    if (optionGroups.error) return uiAlert(optionGroups.error);
 
     try {
-      await api("/api/products", { method: "POST", body: JSON.stringify({ name, category, price_cents, sort_order, active, stock, cost_cents }) });
+      await api("/api/products", { method: "POST", body: JSON.stringify({
+        name, category, price_cents, sort_order, active, stock, cost_cents,
+        option_groups: optionGroups.groups,
+      }) });
       showToast("Prodotto creato");
       await refresh();
       closeCreateForm();
@@ -1853,17 +2138,22 @@ async function initProdotti(signal) {
     const sold_out = editSoldOutEl?.checked ? 1 : 0;
     const stock = stockFromInput(editStockEl?.value);
     const cost_cents = costFromInput(editCostEl?.value);
+    const optionGroups = editOptionsEditor.read();
 
     if (!id) return uiAlert("Prodotto non valido.");
     if (!name) return uiAlert("Inserisci un nome prodotto.");
     if (price_cents === null) return uiAlert("Prezzo non valido.");
     if (stock === undefined) return uiAlert("Scorte non valide: intero >= 0 o vuoto.");
     if (cost_cents === undefined) return uiAlert("Costo non valido: importo in euro o vuoto.");
+    if (optionGroups.error) return uiAlert(optionGroups.error);
 
     try {
       await api(`/api/products/${encodeURIComponent(id)}`, {
         method: "PATCH",
-        body: JSON.stringify({ name, category, price_cents, sort_order, active, sold_out, stock, cost_cents })
+        body: JSON.stringify({
+          name, category, price_cents, sort_order, active, sold_out, stock, cost_cents,
+          option_groups: optionGroups.groups,
+        })
       });
       showToast("Prodotto aggiornato");
       closeEditModal();
@@ -2301,7 +2591,10 @@ async function initSales() {
   }
 
   function saleCard(sale) {
-    const items = (sale.items || []).map(it => `${it.qty}× ${escapeHtml(it.name)}`).join(", ");
+    const items = (sale.items || []).map(it => {
+      const options = (it.options || []).map(option => option.name).join(", ");
+      return `${it.qty}× ${escapeHtml(it.name)}${options ? ` (${escapeHtml(options)})` : ""}${it.note ? ` — ${escapeHtml(it.note)}` : ""}`;
+    }).join("<br>");
     const when = new Date(sale.created_at + "Z").toLocaleString(APP_CONFIG.locale);
     const num = String(sale.sale_number).padStart(4, "0");
     const printWarning = !sale.voided && sale.print_status !== "printed"
@@ -2318,6 +2611,7 @@ async function initSales() {
           </div>
           <div class="small">${when}</div>
           <div class="small sale-items">${items || "—"}</div>
+          ${sale.note ? `<div class="small sale-void-reason">Nota comanda: ${escapeHtml(sale.note)}</div>` : ""}
           ${sale.voided && sale.void_reason ? `<div class="small sale-void-reason">Motivo: ${escapeHtml(sale.void_reason)}</div>` : ""}
         </div>
         <div class="sale-side">

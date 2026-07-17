@@ -1624,3 +1624,179 @@ test("comande sospese: persistono nel turno e proteggono chiusura ed eliminazion
     harness.cleanup();
   }
 });
+
+test("varianti, modificatori e note restano coerenti tra catalogo, comande, vendita e storico", async () => {
+  const printed = [];
+  const harness = createHarness({ printTicket: async payload => printed.push(payload) });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const post = (url, body) => request({
+        method: "POST",
+        url,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const patch = (url, body) => request({
+        method: "PATCH",
+        url,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      const created = await post("/api/products", {
+        name: "Panino configurabile",
+        price_cents: 500,
+        stock: 5,
+        option_groups: [
+          {
+            name: "Formato",
+            selection_type: "single",
+            required: 1,
+            options: [
+              { name: "Normale", price_delta_cents: 0 },
+              { name: "Grande", price_delta_cents: 200 },
+            ],
+          },
+          {
+            name: "Extra",
+            selection_type: "multiple",
+            required: 0,
+            options: [{ name: "Formaggio", price_delta_cents: 100 }],
+          },
+        ],
+      });
+      assert.equal(created.status, 200);
+      const productId = created.json().id;
+
+      const catalog = (await request({ url: "/api/products/all" })).json();
+      const product = catalog.find(entry => entry.id === productId);
+      const format = product.option_groups.find(group => group.name === "Formato");
+      const extras = product.option_groups.find(group => group.name === "Extra");
+      const normale = format.options.find(option => option.name === "Normale");
+      const grande = format.options.find(option => option.name === "Grande");
+      const formaggio = extras.options[0];
+
+      const stableUpdate = await patch(`/api/products/${productId}`, {
+        category: "Cucina",
+        option_groups: product.option_groups,
+      });
+      assert.equal(stableUpdate.status, 200);
+      const afterUpdate = (await request({ url: "/api/products/all" })).json()
+        .find(entry => entry.id === productId);
+      assert.deepEqual(
+        afterUpdate.option_groups.map(group => [group.id, group.options.map(option => option.id)]),
+        product.option_groups.map(group => [group.id, group.options.map(option => option.id)])
+      );
+
+      const swappedGroups = afterUpdate.option_groups.map(group => ({
+        ...group,
+        name: group.id === format.id ? "Extra" : "Formato",
+        options: group.options.map(option => ({
+          ...option,
+          name: option.id === normale.id ? "Grande"
+            : option.id === grande.id ? "Normale" : option.name,
+        })),
+      }));
+      assert.equal((await patch(`/api/products/${productId}`, {
+        option_groups: swappedGroups,
+      })).status, 200);
+      assert.equal((await patch(`/api/products/${productId}`, {
+        option_groups: product.option_groups,
+      })).status, 200);
+
+      const invalidReparent = await patch(`/api/products/${productId}`, {
+        option_groups: [{
+          name: "Nuovo gruppo",
+          selection_type: "single",
+          required: 0,
+          options: [{ ...normale }],
+        }],
+      });
+      assert.equal(invalidReparent.status, 400);
+
+      assert.equal((await post("/api/sessions/open", {
+        opening_float_cents: 0,
+        operator: "Ada",
+      })).status, 200);
+
+      const missingRequired = await post("/api/sales/print", {
+        items: [{ product_id: productId, qty: 1, expected_unit_price_cents: 500 }],
+        payment_method: "card",
+      });
+      assert.equal(missingRequired.status, 409);
+      assert.match(missingRequired.json().error, /Formato/);
+
+      const suspended = await post("/api/carts", {
+        label: "Tavolo 4",
+        note: "Portare insieme",
+        items: [{
+          product_id: productId,
+          qty: 1,
+          selected_option_value_ids: [grande.id],
+          expected_unit_price_cents: 700,
+          note: "Ben cotto",
+        }],
+      });
+      assert.equal(suspended.status, 201);
+      assert.equal(suspended.json().cart.note, "Portare insieme");
+      assert.equal(suspended.json().cart.items[0].note, "Ben cotto");
+      assert.equal(suspended.json().cart.items[0].expected_unit_price_cents, 700);
+      assert.equal(suspended.json().cart.items[0].selected_options[0].name, "Grande");
+      assert.equal(await request({
+        method: "DELETE",
+        url: `/api/carts/${suspended.json().cart.id}`,
+      }).then(response => response.status), 200);
+
+      const sale = await post("/api/sales/print", {
+        payment_method: "card",
+        note: "Tavolo 4",
+        items: [
+          {
+            product_id: productId,
+            qty: 2,
+            selected_option_value_ids: [grande.id],
+            expected_unit_price_cents: 700,
+            note: "Ben cotto",
+          },
+          {
+            product_id: productId,
+            qty: 1,
+            selected_option_value_ids: [normale.id, formaggio.id],
+            expected_unit_price_cents: 600,
+          },
+        ],
+      });
+      assert.equal(sale.status, 200);
+      assert.equal(sale.json().total_cents, 2000);
+      assert.equal(printed.length, 1);
+      assert.equal(printed[0].orderNote, "Tavolo 4");
+      assert.equal(printed[0].items[0].note, "Ben cotto");
+      assert.deepEqual(printed[0].items[0].options.map(option => option.name), ["Grande"]);
+
+      const currentProduct = (await request({ url: "/api/products/all" })).json()
+        .find(entry => entry.id === productId);
+      assert.equal(currentProduct.stock, 2);
+
+      const renamedGroups = currentProduct.option_groups.map(group => ({
+        ...group,
+        options: group.options.map(option => option.id === grande.id
+          ? { ...option, name: "Maxi", price_delta_cents: 250 }
+          : option),
+      }));
+      assert.equal((await patch(`/api/products/${productId}`, {
+        option_groups: renamedGroups,
+      })).status, 200);
+
+      const history = (await request({ url: "/api/sales?limit=10" })).json();
+      const savedSale = history.find(entry => entry.sale_number === sale.json().sale_number);
+      assert.equal(savedSale.note, "Tavolo 4");
+      assert.equal(savedSale.items[0].base_unit_price_cents, 500);
+      assert.equal(savedSale.items[0].unit_price_cents, 700);
+      assert.equal(savedSale.items[0].note, "Ben cotto");
+      assert.deepEqual(savedSale.items[0].options.map(option => option.name), ["Grande"]);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});

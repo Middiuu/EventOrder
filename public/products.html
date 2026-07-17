@@ -52,6 +52,13 @@
                 <input class="input mono" name="stock" type="number" step="1" min="0" placeholder="Non tracciate" />
               </label>
             </div>
+            <section class="option-editor" id="createOptionsEditor">
+              <div class="option-editor-head">
+                <div><b>Varianti e modificatori</b><span>Formato, cottura, extra o altre scelte.</span></div>
+                <button class="btn btn-secondary btn-compact" type="button" data-add-option-group>Aggiungi gruppo</button>
+              </div>
+              <div class="option-group-list" data-option-groups></div>
+            </section>
             <div class="product-form-footer">
               <label class="toggle">
                 <input type="checkbox" name="active" checked />
@@ -127,6 +134,13 @@
                 <input class="input mono" name="stock" type="number" step="1" min="0" placeholder="Non tracciate" />
               </label>
             </div>
+            <section class="option-editor" id="editOptionsEditor">
+              <div class="option-editor-head">
+                <div><b>Varianti e modificatori</b><span>Le vendite passate conserveranno le scelte originali.</span></div>
+                <button class="btn btn-secondary btn-compact" type="button" data-add-option-group>Aggiungi gruppo</button>
+              </div>
+              <div class="option-group-list" data-option-groups></div>
+            </section>
             <div class="product-form-footer">
               <div class="stack" style="gap:8px">
                 <label class="toggle">

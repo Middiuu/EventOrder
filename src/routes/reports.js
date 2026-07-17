@@ -107,7 +107,7 @@ function loadScopedSales(scope, { includeVoided = false } = {}) {
   const voidedFilter = includeVoided ? "" : "AND s.voided = 0";
   const sales = db.prepare(`
     SELECT s.id, s.sale_number, s.total_cents, s.discount_cents, s.payment_method,
-           s.operator, s.session_id, s.voided,
+           s.operator, s.session_id, s.note, s.voided,
            datetime(s.created_at, 'localtime') AS created_local
     FROM sales s
     WHERE ${scope.where} ${voidedFilter}
@@ -120,7 +120,8 @@ function loadScopedSales(scope, { includeVoided = false } = {}) {
     const placeholders = ids.map(() => "?").join(",");
     const items = db.prepare(`
       SELECT id, sale_id, qty, unit_price_cents, line_total_cents,
-             product_name, product_category, product_cost_cents
+             product_name, product_category, product_cost_cents,
+             options_json, note
       FROM sale_items
       WHERE sale_id IN (${placeholders})
       ORDER BY id ASC
@@ -358,6 +359,9 @@ router.get("/items.csv", (req, res) => {
     "voided",
     "product_name",
     "category",
+    "options",
+    "item_note",
+    "order_note",
     "qty",
     "unit_price_eur",
     "line_gross_eur",
@@ -381,6 +385,12 @@ router.get("/items.csv", (req, res) => {
         sale.voided ? "1" : "0",
         it.product_name,
         it.product_category,
+        (() => {
+          try { return JSON.parse(it.options_json || "[]").map(option => `${option.group_name}: ${option.name}`).join(" | "); }
+          catch { return ""; }
+        })(),
+        it.note || "",
+        sale.note || "",
         String(it.qty),
         centsToEuroString(it.unit_price_cents),
         centsToEuroString(it.line_total_cents),
@@ -407,7 +417,8 @@ router.get("/transactions.csv", (req, res) => {
       s.discount_cents,
       s.total_cents,
       s.voided,
-      s.session_id
+      s.session_id,
+      s.note
     FROM sales s
     WHERE ${scope.where}
     ORDER BY s.sale_number ASC
@@ -423,6 +434,7 @@ router.get("/transactions.csv", (req, res) => {
     "total_eur",
     "voided",
     "session_id",
+    "order_note",
   ].join(sep);
 
   const lines = [header];
@@ -436,6 +448,7 @@ router.get("/transactions.csv", (req, res) => {
       centsToEuroString(r.total_cents),
       r.voided ? "1" : "0",
       r.session_id == null ? "" : String(r.session_id),
+      r.note || "",
     ].map(csvEscape).join(sep));
   }
 

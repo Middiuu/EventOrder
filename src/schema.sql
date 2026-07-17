@@ -29,6 +29,28 @@ CREATE TABLE IF NOT EXISTS cash_sessions (
   note TEXT
 );
 
+-- Gruppi di scelta configurabili per prodotto (es. Formato, Cottura, Extra).
+CREATE TABLE IF NOT EXISTS product_option_groups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL,
+  name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 80),
+  selection_type TEXT NOT NULL DEFAULT 'single' CHECK(selection_type IN ('single', 'multiple')),
+  required INTEGER NOT NULL DEFAULT 0 CHECK(required IN (0, 1)),
+  sort_order INTEGER NOT NULL DEFAULT 0 CHECK(typeof(sort_order) = 'integer'),
+  active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+  FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS product_option_values (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  group_id INTEGER NOT NULL,
+  name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 80),
+  price_delta_cents INTEGER NOT NULL DEFAULT 0 CHECK(typeof(price_delta_cents) = 'integer'),
+  sort_order INTEGER NOT NULL DEFAULT 0 CHECK(typeof(sort_order) = 'integer'),
+  active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0, 1)),
+  FOREIGN KEY (group_id) REFERENCES product_option_groups(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS sales (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   sale_number INTEGER NOT NULL,
@@ -45,6 +67,7 @@ CREATE TABLE IF NOT EXISTS sales (
   change_cents INTEGER CHECK(change_cents IS NULL OR (typeof(change_cents) = 'integer' AND change_cents >= 0)),
   operator TEXT,
   session_id INTEGER,
+  note TEXT,
   void_reason TEXT,
   voided_at TEXT,
   void_operator TEXT,
@@ -73,6 +96,7 @@ CREATE TABLE IF NOT EXISTS sale_items (
   product_id INTEGER NOT NULL,
   qty INTEGER NOT NULL CHECK(typeof(qty) = 'integer' AND qty > 0),
   unit_price_cents INTEGER NOT NULL CHECK(typeof(unit_price_cents) = 'integer' AND unit_price_cents >= 0),
+  base_unit_price_cents INTEGER NOT NULL DEFAULT 0 CHECK(typeof(base_unit_price_cents) = 'integer' AND base_unit_price_cents >= 0),
   line_total_cents INTEGER NOT NULL CHECK(typeof(line_total_cents) = 'integer' AND line_total_cents >= 0),
   product_name TEXT NOT NULL DEFAULT '',
   product_category TEXT NOT NULL DEFAULT 'Generale',
@@ -80,6 +104,8 @@ CREATE TABLE IF NOT EXISTS sale_items (
   -- Quantità effettivamente sottratta dalle scorte alla vendita. È zero se
   -- per il prodotto le scorte non erano tracciate in quel momento.
   stock_decremented_qty INTEGER NOT NULL DEFAULT 0 CHECK(typeof(stock_decremented_qty) = 'integer' AND stock_decremented_qty >= 0),
+  options_json TEXT NOT NULL DEFAULT '[]',
+  note TEXT,
   FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
   FOREIGN KEY (product_id) REFERENCES products(id)
 );
@@ -91,15 +117,20 @@ CREATE TABLE IF NOT EXISTS suspended_carts (
   session_id INTEGER NOT NULL,
   label TEXT NOT NULL CHECK(length(trim(label)) BETWEEN 1 AND 80),
   operator TEXT,
+  note TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (session_id) REFERENCES cash_sessions(id)
 );
 
 CREATE TABLE IF NOT EXISTS suspended_cart_items (
+  line_key TEXT NOT NULL DEFAULT '',
   cart_id INTEGER NOT NULL,
   product_id INTEGER NOT NULL,
   qty INTEGER NOT NULL CHECK(typeof(qty) = 'integer' AND qty > 0),
-  PRIMARY KEY (cart_id, product_id),
+  selected_options_json TEXT NOT NULL DEFAULT '[]',
+  note TEXT,
+  expected_unit_price_cents INTEGER CHECK(expected_unit_price_cents IS NULL OR (typeof(expected_unit_price_cents) = 'integer' AND expected_unit_price_cents >= 0)),
+  PRIMARY KEY (cart_id, product_id, line_key),
   FOREIGN KEY (cart_id) REFERENCES suspended_carts(id) ON DELETE CASCADE,
   FOREIGN KEY (product_id) REFERENCES products(id)
 );
@@ -125,6 +156,12 @@ CREATE INDEX IF NOT EXISTS idx_sales_voided ON sales(voided, created_at);
 CREATE INDEX IF NOT EXISTS idx_sales_print_status ON sales(print_status, created_at);
 CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id);
 CREATE INDEX IF NOT EXISTS idx_sale_items_product_id ON sale_items(product_id);
+CREATE INDEX IF NOT EXISTS idx_product_option_groups_product ON product_option_groups(product_id, sort_order, id);
+CREATE INDEX IF NOT EXISTS idx_product_option_values_group ON product_option_values(group_id, sort_order, id);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_product_option_groups_name
+ON product_option_groups(product_id, lower(trim(name)));
+CREATE UNIQUE INDEX IF NOT EXISTS ux_product_option_values_name
+ON product_option_values(group_id, lower(trim(name)));
 CREATE INDEX IF NOT EXISTS idx_suspended_carts_session ON suspended_carts(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_suspended_cart_items_product ON suspended_cart_items(product_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_sales_sale_number ON sales(sale_number);

@@ -23,7 +23,7 @@ function parseSqliteUtc(value) {
   return new Date(text);
 }
 
-function buildTicketText({ saleNumber, createdAt, items, subtotalCents, discountCents, discountType, discountValue, totalCents, paymentMethod, cashReceivedCents, changeCents, operator }) {
+function buildTicketText({ saleNumber, createdAt, items, subtotalCents, discountCents, discountType, discountValue, totalCents, paymentMethod, cashReceivedCents, changeCents, operator, orderNote }) {
   const lines = [];
   lines.push(config.BUSINESS_NAME.toUpperCase());
   lines.push(parseSqliteUtc(createdAt).toLocaleString(config.LOCALE));
@@ -34,6 +34,18 @@ function buildTicketText({ saleNumber, createdAt, items, subtotalCents, discount
   for (const it of items) {
     const qty = `${it.qty}x`.padEnd(3);
     lines.push(`${qty} ${it.name}`);
+    for (const option of it.options || []) {
+      const delta = option.price_delta_cents
+        ? ` (${option.price_delta_cents > 0 ? "+" : ""}${formatMoney(option.price_delta_cents)})`
+        : "";
+      lines.push(`    ${option.group_name}: ${option.name}${delta}`);
+    }
+    if (it.note) lines.push(`    Nota: ${it.note}`);
+  }
+
+  if (orderNote) {
+    lines.push("");
+    lines.push(`NOTA: ${orderNote}`);
   }
 
   lines.push("--------------------------");

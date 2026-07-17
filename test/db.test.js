@@ -26,9 +26,11 @@ test("initDb crea schema, seed iniziale e contatore vendite", () => {
 
     assert.equal(productCount, 4);
     assert.equal(saleCounter.int_value, 0);
-    assert.equal(db.pragma("user_version", { simple: true }), 7);
+    assert.equal(db.pragma("user_version", { simple: true }), 8);
     assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='suspended_carts'").get());
     assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='suspended_cart_items'").get());
+    assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='product_option_groups'").get());
+    assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='product_option_values'").get());
     assert.equal(db.pragma("journal_mode", { simple: true }), "wal");
     assert.equal(db.pragma("synchronous", { simple: true }), 2);
     assert.equal(db.pragma("busy_timeout", { simple: true }), DB_BUSY_TIMEOUT_MS);
@@ -113,17 +115,23 @@ test("migrazione legacy aggiunge e valorizza gli snapshot prodotto prima di crea
     dbModule.initDb();
 
     const item = dbModule.db.prepare(`
-      SELECT product_name, product_category, stock_decremented_qty FROM sale_items WHERE id=1
+      SELECT product_name, product_category, stock_decremented_qty,
+             base_unit_price_cents, options_json, note
+      FROM sale_items WHERE id=1
     `).get();
     assert.deepEqual(item, {
       product_name: "Nome storico",
       product_category: "Cibo",
       stock_decremented_qty: 0,
+      base_unit_price_cents: 500,
+      options_json: "[]",
+      note: null,
     });
-    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 7);
+    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 8);
     assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "session_id"));
     assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "client_request_id"));
     assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "request_fingerprint"));
+    assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "note"));
     assert.match(
       dbModule.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='products'").get().sql,
       /CHECK\s*\(/i
@@ -173,7 +181,7 @@ test("migrazione v4 preserva dati, sequenze, snapshot e applica i constraint can
     dbModule.initDb();
     const migrated = dbModule.db;
 
-    assert.equal(migrated.pragma("user_version", { simple: true }), 7);
+    assert.equal(migrated.pragma("user_version", { simple: true }), 8);
     assert.equal(migrated.pragma("foreign_keys", { simple: true }), 1);
     assert.deepEqual(migrated.pragma("foreign_key_check"), []);
     assert.deepEqual(
@@ -271,7 +279,7 @@ test("una migrazione incompatibile fa rollback e lascia intatte le tabelle legac
     const dbModule = loadDbModule(dbPath);
     assert.throws(
       () => dbModule.initDb(),
-      /Migrazione schema v7 non riuscita: CHECK constraint failed/
+      /Migrazione schema v8 non riuscita: CHECK constraint failed/
     );
     assert.equal(dbModule.db.pragma("user_version", { simple: true }), 4);
     assert.equal(

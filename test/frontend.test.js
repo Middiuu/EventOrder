@@ -26,10 +26,13 @@ test("la cassa conserva il carrello, riconcilia i prezzi e gestisce le comande s
   const checkoutHtml = fs.readFileSync(path.join(__dirname, "..", "public", "cassa.html"), "utf8");
 
   assert.match(appSource, /eventorder-current-cart-v1/);
-  assert.match(appSource, /expected_unit_price_cents: it\.product\.price_cents/);
+  assert.match(appSource, /expected_unit_price_cents: it\.unit_price_cents/);
   assert.match(appSource, /reconcileCartWithCatalog\(\)/);
   assert.match(appSource, /api\("\/api\/carts"\)/);
   assert.match(checkoutHtml, /id="suspendCartBtn"/);
   assert.match(checkoutHtml, /id="suspendedCartsModal"[^>]*hidden/);
   assert.match(checkoutHtml, /aria-labelledby="suspendedCartsTitle"/);
+  assert.match(checkoutHtml, /id="itemOptionsModal"[^>]*hidden/);
+  assert.match(checkoutHtml, /id="orderNote"/);
+  assert.match(appSource, /selected_option_value_ids/);
 });

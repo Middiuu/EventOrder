@@ -16,6 +16,7 @@ const {
   localYmdToUtcSql,
   parseLocalYmd,
 } = require("../validation");
+const { loadOptionCatalog, resolveSelectedOptions } = require("../product-options");
 
 const PAYMENT_METHODS = new Set(["cash", "card", "other"]);
 const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9._:-]{8,120}$/;
@@ -29,6 +30,7 @@ function idempotencyFingerprint(sessionId, normalized, paymentMethod, body) {
     items: normalized,
     payment_method: paymentMethod,
     cash_received_cents: body?.cash_received_cents ?? null,
+    note: body?.note ?? null,
     discount,
   });
   return crypto.createHash("sha256").update(canonical).digest("hex");
@@ -92,6 +94,7 @@ function loadItems(saleIds) {
   const placeholders = saleIds.map(() => "?").join(",");
   const rows = db.prepare(`
     SELECT si.sale_id, si.product_id, si.qty, si.unit_price_cents,
+           si.base_unit_price_cents, si.options_json, si.note,
            si.line_total_cents, si.product_name AS name,
            si.product_category AS category
     FROM sale_items si
@@ -101,6 +104,8 @@ function loadItems(saleIds) {
 
   const map = new Map();
   for (const r of rows) {
+    try { r.options = JSON.parse(r.options_json || "[]"); } catch { r.options = []; }
+    delete r.options_json;
     if (!map.has(r.sale_id)) map.set(r.sale_id, []);
     map.get(r.sale_id).push(r);
   }
@@ -245,7 +250,7 @@ function createSalesRouter({ printTicket }) {
     const sale = db.prepare(`
       SELECT id, sale_number, created_at, total_cents, discount_cents,
              discount_type, discount_value, payment_method,
-             cash_received_cents, change_cents, operator, session_id, voided
+             cash_received_cents, change_cents, operator, session_id, note, voided
       FROM sales WHERE id=?
     `).get(saleId);
     if (!sale) return null;
@@ -265,6 +270,7 @@ function createSalesRouter({ printTicket }) {
         cashReceivedCents: sale.cash_received_cents,
         changeCents: sale.change_cents,
         operator: sale.operator,
+        orderNote: sale.note,
       },
     };
   }
@@ -279,24 +285,49 @@ function createSalesRouter({ printTicket }) {
     }
 
     if (items.length > 100) return res.status(400).json({ error: "Troppi articoli nel carrello" });
-    const normalized = items.map(it => ({
-      product_id: it?.product_id,
-      qty: it?.qty,
-      expected_unit_price_cents: it?.expected_unit_price_cents,
-    }));
+    const normalized = items.map(it => {
+      const rawNote = it?.note;
+      const note = rawNote == null || String(rawNote).trim() === "" ? null : cleanText(rawNote, 240);
+      return {
+        product_id: it?.product_id,
+        qty: it?.qty,
+        expected_unit_price_cents: it?.expected_unit_price_cents,
+        selected_option_value_ids: Array.isArray(it?.selected_option_value_ids)
+          ? [...it.selected_option_value_ids].sort((a, b) => a - b)
+          : [],
+        note,
+        invalid_note: note === null && rawNote != null && String(rawNote).trim() !== "",
+      };
+    });
     const invalidItem = normalized.some(it =>
       !Number.isSafeInteger(it.product_id) || it.product_id <= 0
       || !Number.isSafeInteger(it.qty) || it.qty <= 0 || it.qty > MAX_QTY
       || (it.expected_unit_price_cents !== undefined
         && !isValidCents(it.expected_unit_price_cents, MAX_PRODUCT_PRICE_CENTS))
+      || it.invalid_note
+      || it.selected_option_value_ids.length > 50
+      || it.selected_option_value_ids.some(id => !Number.isSafeInteger(id) || id <= 0)
+      || new Set(it.selected_option_value_ids).size !== it.selected_option_value_ids.length
     );
     if (invalidItem) {
       return res.status(400).json({ error: `Ogni articolo deve avere id valido e quantita' tra 1 e ${MAX_QTY}` });
     }
+    for (const item of normalized) delete item.invalid_note;
 
-    const ids = normalized.map(i => i.product_id);
-    if (new Set(ids).size !== ids.length) {
-      return res.status(400).json({ error: "Lo stesso prodotto compare piu' volte nel carrello" });
+    const signatures = normalized.map(item => JSON.stringify([
+      item.product_id, item.selected_option_value_ids, item.note,
+    ]));
+    if (new Set(signatures).size !== signatures.length) {
+      return res.status(400).json({ error: "La stessa riga compare piu' volte nel carrello" });
+    }
+    const ids = [...new Set(normalized.map(i => i.product_id))];
+
+    const rawOrderNote = req.body?.note;
+    const orderNote = rawOrderNote == null || String(rawOrderNote).trim() === ""
+      ? null
+      : cleanText(rawOrderNote, 500);
+    if (orderNote === null && rawOrderNote != null && String(rawOrderNote).trim() !== "") {
+      return res.status(400).json({ error: "Nota comanda non valida (massimo 500 caratteri)" });
     }
 
     const rawIdempotencyKey = req.get("Idempotency-Key");
@@ -332,42 +363,60 @@ function createSalesRouter({ printTicket }) {
     `).all(...ids);
 
     const map = new Map(products.map(p => [p.id, p]));
+    const optionCatalog = loadOptionCatalog(ids);
+    const stockRequested = new Map();
     for (const it of normalized) {
       const p = map.get(it.product_id);
       if (!p) {
         return res.status(400).json({ error: `Prodotto non valido o non attivo: ${it.product_id}` });
       }
-      if (it.expected_unit_price_cents !== undefined && it.expected_unit_price_cents !== p.price_cents) {
-        return res.status(409).json({
-          error: `Il prezzo di ${p.name} e' cambiato da ${it.expected_unit_price_cents} a ${p.price_cents} centesimi. Verifica il nuovo totale.`,
-          code: "PRICE_CHANGED",
-          product_id: p.id,
-          current_price_cents: p.price_cents,
-        });
-      }
       if (p.sold_out) {
         return res.status(409).json({ error: `Prodotto esaurito: ${p.name}` });
       }
-      if (p.stock != null && p.stock < it.qty) {
-        return res.status(409).json({ error: `Scorte insufficienti per ${p.name}: disponibili ${p.stock}` });
+      stockRequested.set(p.id, (stockRequested.get(p.id) || 0) + it.qty);
+    }
+    for (const [productId, qty] of stockRequested) {
+      const product = map.get(productId);
+      if (product.stock != null && product.stock < qty) {
+        return res.status(409).json({ error: `Scorte insufficienti per ${product.name}: disponibili ${product.stock}` });
       }
     }
 
-    const computedItems = normalized.map(it => {
+    const computedItems = [];
+    for (const it of normalized) {
       const p = map.get(it.product_id);
-      const unit = p.price_cents;
+      const resolved = resolveSelectedOptions(it, optionCatalog.get(p.id) || []);
+      if (resolved.error) return res.status(409).json({ error: resolved.error, code: "CATALOG_CHANGED" });
+      const optionDelta = resolved.selected.reduce((sum, option) => sum + option.price_delta_cents, 0);
+      const unit = p.price_cents + optionDelta;
+      if (!isValidCents(unit, MAX_PRODUCT_PRICE_CENTS)) {
+        return res.status(400).json({ error: `Prezzo finale non valido per ${p.name}` });
+      }
+      if (it.expected_unit_price_cents !== undefined && it.expected_unit_price_cents !== unit) {
+        return res.status(409).json({
+          error: `Il prezzo di ${p.name} e' cambiato. Verifica il nuovo totale.`,
+          code: "PRICE_CHANGED",
+          product_id: p.id,
+          current_price_cents: unit,
+        });
+      }
       const line = unit * it.qty;
-      return {
+      computedItems.push({
         product_id: p.id,
         name: p.name,
         category: p.category,
         qty: it.qty,
+        base_unit_price_cents: p.price_cents,
         unit_price_cents: unit,
         line_total_cents: line,
         cost_cents: p.cost_cents,
         stock_decremented_qty: p.stock == null ? 0 : it.qty,
-      };
-    });
+        options: resolved.selected,
+        options_json: JSON.stringify(resolved.selected),
+        note: it.note,
+        selected_option_value_ids: it.selected_option_value_ids,
+      });
+    }
 
     const subtotalCents = computedItems.reduce((a, b) => a + b.line_total_cents, 0);
     if (!isValidCents(subtotalCents, MAX_MONEY_CENTS)) {
@@ -429,9 +478,20 @@ function createSalesRouter({ printTicket }) {
         WHERE active=1 AND id IN (${placeholders})
       `).all(...ids);
       const currentById = new Map(currentProducts.map(product => [product.id, product]));
+      const currentOptionCatalog = loadOptionCatalog(ids);
       for (const item of computedItems) {
         const current = currentById.get(item.product_id);
-        if (!current || current.price_cents !== item.unit_price_cents) {
+        const resolved = current
+          ? resolveSelectedOptions(
+            { selected_option_value_ids: item.selected_option_value_ids },
+            currentOptionCatalog.get(item.product_id) || []
+          )
+          : { error: "Prodotto non disponibile" };
+        const currentUnit = current && !resolved.error
+          ? current.price_cents + resolved.selected.reduce((sum, option) => sum + option.price_delta_cents, 0)
+          : null;
+        if (!current || resolved.error || currentUnit !== item.unit_price_cents
+          || JSON.stringify(resolved.selected || []) !== item.options_json) {
           const err = conflictError(
             current
               ? `Il prezzo di ${current.name} e' cambiato. Verifica il nuovo totale.`
@@ -439,10 +499,11 @@ function createSalesRouter({ printTicket }) {
           );
           err.code = current ? "PRICE_CHANGED" : "CATALOG_CHANGED";
           err.productId = item.product_id;
-          err.currentPriceCents = current?.price_cents;
+          err.currentPriceCents = currentUnit;
           throw err;
         }
-        if (current.sold_out || (current.stock != null && current.stock < item.qty)) {
+        const requestedQty = stockRequested.get(item.product_id);
+        if (current.sold_out || (current.stock != null && current.stock < requestedQty)) {
           const err = conflictError(
             current.sold_out
               ? `Prodotto esaurito: ${current.name}`
@@ -460,25 +521,27 @@ function createSalesRouter({ printTicket }) {
         INSERT INTO sales
           (sale_number, client_request_id, request_fingerprint,
            total_cents, discount_cents, discount_type, discount_value,
-           payment_method, cash_received_cents, change_cents, operator, session_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           payment_method, cash_received_cents, change_cents, operator, session_id, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(saleNumber, clientRequestId, requestFingerprint,
              totalCents, discountCents, discountType, discountValue,
-             paymentMethod, cashReceivedCents, changeCents, session.operator, session.id);
+             paymentMethod, cashReceivedCents, changeCents, session.operator, session.id, orderNote);
 
       const saleId = saleInfo.lastInsertRowid;
 
       const insItem = db.prepare(`
         INSERT INTO sale_items
-          (sale_id, product_id, qty, unit_price_cents, line_total_cents,
-           product_name, product_category, product_cost_cents, stock_decremented_qty)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (sale_id, product_id, qty, unit_price_cents, base_unit_price_cents, line_total_cents,
+           product_name, product_category, product_cost_cents, stock_decremented_qty,
+           options_json, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const it of computedItems) {
         insItem.run(
-          saleId, it.product_id, it.qty, it.unit_price_cents, it.line_total_cents,
-          it.name, it.category, it.cost_cents, it.stock_decremented_qty
+          saleId, it.product_id, it.qty, it.unit_price_cents, it.base_unit_price_cents,
+          it.line_total_cents, it.name, it.category, it.cost_cents,
+          it.stock_decremented_qty, it.options_json, it.note
         );
       }
 
@@ -486,8 +549,8 @@ function createSalesRouter({ printTicket }) {
       const decStock = db.prepare(`
         UPDATE products SET stock = stock - ? WHERE id = ? AND stock IS NOT NULL
       `);
-      for (const it of computedItems) {
-        decStock.run(it.qty, it.product_id);
+      for (const [productId, qty] of stockRequested) {
+        decStock.run(qty, productId);
       }
 
       const sale = db.prepare("SELECT id, sale_number, total_cents, created_at FROM sales WHERE id=?").get(saleId);
@@ -521,6 +584,7 @@ function createSalesRouter({ printTicket }) {
       cashReceivedCents,
       changeCents,
       operator: session.operator,
+      orderNote,
     });
     if (!printed.ok) {
       return res.status(502).json({
