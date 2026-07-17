@@ -26,7 +26,9 @@ test("initDb crea schema, seed iniziale e contatore vendite", () => {
 
     assert.equal(productCount, 4);
     assert.equal(saleCounter.int_value, 0);
-    assert.equal(db.pragma("user_version", { simple: true }), 6);
+    assert.equal(db.pragma("user_version", { simple: true }), 7);
+    assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='suspended_carts'").get());
+    assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='suspended_cart_items'").get());
     assert.equal(db.pragma("journal_mode", { simple: true }), "wal");
     assert.equal(db.pragma("synchronous", { simple: true }), 2);
     assert.equal(db.pragma("busy_timeout", { simple: true }), DB_BUSY_TIMEOUT_MS);
@@ -118,7 +120,7 @@ test("migrazione legacy aggiunge e valorizza gli snapshot prodotto prima di crea
       product_category: "Cibo",
       stock_decremented_qty: 0,
     });
-    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 6);
+    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 7);
     assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "session_id"));
     assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "client_request_id"));
     assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "request_fingerprint"));
@@ -171,7 +173,7 @@ test("migrazione v4 preserva dati, sequenze, snapshot e applica i constraint can
     dbModule.initDb();
     const migrated = dbModule.db;
 
-    assert.equal(migrated.pragma("user_version", { simple: true }), 6);
+    assert.equal(migrated.pragma("user_version", { simple: true }), 7);
     assert.equal(migrated.pragma("foreign_keys", { simple: true }), 1);
     assert.deepEqual(migrated.pragma("foreign_key_check"), []);
     assert.deepEqual(
@@ -269,7 +271,7 @@ test("una migrazione incompatibile fa rollback e lascia intatte le tabelle legac
     const dbModule = loadDbModule(dbPath);
     assert.throws(
       () => dbModule.initDb(),
-      /Migrazione schema v6 non riuscita: CHECK constraint failed/
+      /Migrazione schema v7 non riuscita: CHECK constraint failed/
     );
     assert.equal(dbModule.db.pragma("user_version", { simple: true }), 4);
     assert.equal(

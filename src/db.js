@@ -7,7 +7,7 @@ const DB_PATH = process.env.POS_DB_PATH
   ? path.resolve(process.env.POS_DB_PATH)
   : path.join(__dirname, "..", "pos.sqlite");
 const SCHEMA_PATH = path.join(__dirname, "schema.sql");
-const DB_SCHEMA_VERSION = 6;
+const DB_SCHEMA_VERSION = 7;
 const DB_BUSY_TIMEOUT_MS = 5000;
 const RESTORE_MARKER_PATH = `${DB_PATH}.restore-state.json`;
 const DB_SIDECAR_PATHS = [`${DB_PATH}-wal`, `${DB_PATH}-shm`];
@@ -190,10 +190,14 @@ const CANONICAL_TABLES = [
   "sales",
   "app_state",
   "sale_items",
+  "suspended_carts",
+  "suspended_cart_items",
   "cash_movements",
 ];
 
 const DROP_TABLE_ORDER = [
+  "suspended_cart_items",
+  "suspended_carts",
   "cash_movements",
   "sale_items",
   "sales",

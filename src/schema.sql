@@ -84,6 +84,26 @@ CREATE TABLE IF NOT EXISTS sale_items (
   FOREIGN KEY (product_id) REFERENCES products(id)
 );
 
+-- Comande accantonate durante un turno: persistono nel database e nei backup,
+-- ma non modificano scorte o contanti finche' non vengono incassate.
+CREATE TABLE IF NOT EXISTS suspended_carts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL,
+  label TEXT NOT NULL CHECK(length(trim(label)) BETWEEN 1 AND 80),
+  operator TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (session_id) REFERENCES cash_sessions(id)
+);
+
+CREATE TABLE IF NOT EXISTS suspended_cart_items (
+  cart_id INTEGER NOT NULL,
+  product_id INTEGER NOT NULL,
+  qty INTEGER NOT NULL CHECK(typeof(qty) = 'integer' AND qty > 0),
+  PRIMARY KEY (cart_id, product_id),
+  FOREIGN KEY (cart_id) REFERENCES suspended_carts(id) ON DELETE CASCADE,
+  FOREIGN KEY (product_id) REFERENCES products(id)
+);
+
 -- Movimenti di cassa a turno aperto (prelievi di sicurezza, aggiunta monete):
 -- entrano nel calcolo dei contanti attesi alla chiusura.
 CREATE TABLE IF NOT EXISTS cash_movements (
@@ -104,6 +124,9 @@ CREATE INDEX IF NOT EXISTS idx_sales_session ON sales(session_id);
 CREATE INDEX IF NOT EXISTS idx_sales_voided ON sales(voided, created_at);
 CREATE INDEX IF NOT EXISTS idx_sales_print_status ON sales(print_status, created_at);
 CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id);
+CREATE INDEX IF NOT EXISTS idx_sale_items_product_id ON sale_items(product_id);
+CREATE INDEX IF NOT EXISTS idx_suspended_carts_session ON suspended_carts(session_id, id);
+CREATE INDEX IF NOT EXISTS idx_suspended_cart_items_product ON suspended_cart_items(product_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_sales_sale_number ON sales(sale_number);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_sales_client_request_id
 ON sales(client_request_id) WHERE client_request_id IS NOT NULL;

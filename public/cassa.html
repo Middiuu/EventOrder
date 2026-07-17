@@ -64,6 +64,12 @@
             </div>
             <div class="actions actions-vertical">
               <button class="btn btn-primary" id="printBtn" disabled type="button">Incassa e stampa</button>
+              <div class="cart-secondary-actions">
+                <button class="btn btn-secondary btn-compact" id="suspendCartBtn" disabled type="button">Sospendi</button>
+                <button class="btn btn-secondary btn-compact" id="suspendedCartsBtn" disabled type="button">
+                  Sospese <span class="count-badge" id="suspendedCartsCount">0</span>
+                </button>
+              </div>
               <button class="btn btn-ghost" id="clearBtn" type="button">Svuota comanda</button>
             </div>
             <p class="helper-text" id="cartHelper">La stampa registra la vendita e genera il ticket della comanda corrente.</p>
@@ -158,6 +164,21 @@
 
           <div class="actions">
             <button class="btn btn-primary" id="confirmPayBtn" type="button">Conferma e stampa</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Modale comande sospese -->
+      <div id="suspendedCartsModal" class="modal-shell" hidden>
+        <div class="modal-backdrop" data-close-modal="1"></div>
+        <div class="modal-card suspended-carts-modal" role="dialog" aria-modal="true" aria-labelledby="suspendedCartsTitle">
+          <button class="modal-close" type="button" data-close-modal="1" aria-label="Chiudi">✕</button>
+          <div class="eyebrow">Servizio</div>
+          <h2 id="suspendedCartsTitle">Comande sospese</h2>
+          <p class="dialog-message">Riprendi una comanda quando il cliente torna al banco.</p>
+          <div class="suspended-carts-list" id="suspendedCartsList"></div>
+          <div class="actions">
+            <button class="btn btn-secondary" type="button" data-close-modal="1">Chiudi</button>
           </div>
         </div>
       </div>

@@ -221,6 +221,14 @@ router.delete("/:id", (req, res) => {
       error: "Il prodotto compare in vendite registrate: disattivalo per toglierlo dalla cassa",
     });
   }
+  const suspended = db.prepare(
+    "SELECT 1 FROM suspended_cart_items WHERE product_id=? LIMIT 1"
+  ).get(id);
+  if (suspended) {
+    return res.status(409).json({
+      error: "Il prodotto compare in una comanda sospesa: riprendila o eliminala prima di cancellarlo",
+    });
+  }
 
   db.prepare("DELETE FROM products WHERE id=?").run(id);
   res.json({ ok: true });

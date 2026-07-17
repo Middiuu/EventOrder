@@ -1515,3 +1515,112 @@ test("stampa pendente: blocca movimenti, chiusura e storni concorrenti", async (
     harness.cleanup();
   }
 });
+
+test("coerenza prezzi: un cambio concorrente blocca la vendita prima di scrivere o scalare scorte", async () => {
+  const harness = createHarness({ printTicket: async () => {} });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const post = (url, body) => request({
+        method: "POST",
+        url,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const created = await post("/api/products", {
+        name: "Prezzo concorrente",
+        price_cents: 500,
+        stock: 5,
+      });
+      const productId = created.json().id;
+      await post("/api/sessions/open", { opening_float_cents: 0 });
+
+      assert.equal((await request({
+        method: "PATCH",
+        url: `/api/products/${productId}`,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ price_cents: 650 }),
+      })).status, 200);
+
+      const stale = await post("/api/sales/print", {
+        items: [{ product_id: productId, qty: 2, expected_unit_price_cents: 500 }],
+        payment_method: "card",
+      });
+      assert.equal(stale.status, 409);
+      assert.equal(stale.json().code, "PRICE_CHANGED");
+      assert.equal(stale.json().current_price_cents, 650);
+
+      const afterBlock = (await request({ url: "/api/products/all" })).json()
+        .find(product => product.id === productId);
+      assert.equal(afterBlock.stock, 5);
+      assert.equal((await request({ url: "/api/sales?limit=10" })).json().length, 0);
+
+      const current = await post("/api/sales/print", {
+        items: [{ product_id: productId, qty: 2, expected_unit_price_cents: 650 }],
+        payment_method: "card",
+      });
+      assert.equal(current.status, 200);
+      assert.equal(current.json().total_cents, 1300);
+      const afterSale = (await request({ url: "/api/products/all" })).json()
+        .find(product => product.id === productId);
+      assert.equal(afterSale.stock, 3);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("comande sospese: persistono nel turno e proteggono chiusura ed eliminazione prodotto", async () => {
+  const harness = createHarness();
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const post = (url, body) => request({
+        method: "POST",
+        url,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const created = await post("/api/products", {
+        name: "Prodotto sospeso",
+        price_cents: 800,
+        stock: 3,
+      });
+      const productId = created.json().id;
+      await post("/api/sessions/open", { opening_float_cents: 0, operator: "Ada" });
+
+      const suspended = await post("/api/carts", {
+        label: "Tavolo 7",
+        items: [{ product_id: productId, qty: 2 }],
+      });
+      assert.equal(suspended.status, 201);
+      assert.equal(suspended.json().cart.label, "Tavolo 7");
+      assert.equal(suspended.json().cart.items[0].qty, 2);
+
+      await request({
+        method: "PATCH",
+        url: `/api/products/${productId}`,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ price_cents: 900 }),
+      });
+      const list = await request({ url: "/api/carts" });
+      assert.equal(list.status, 200);
+      assert.equal(list.json().carts.length, 1);
+      assert.equal(list.json().carts[0].items[0].price_cents, 900);
+
+      const blockedDelete = await request({ method: "DELETE", url: `/api/products/${productId}` });
+      assert.equal(blockedDelete.status, 409);
+      assert.match(blockedDelete.json().error, /comanda sospesa/i);
+      const blockedClose = await post("/api/sessions/close", { counted_cash_cents: 0 });
+      assert.equal(blockedClose.status, 409);
+      assert.match(blockedClose.json().error, /comand.*sospes/i);
+
+      const cartId = list.json().carts[0].id;
+      assert.equal((await request({ method: "DELETE", url: `/api/carts/${cartId}` })).status, 200);
+      assert.equal((await request({ method: "DELETE", url: `/api/products/${productId}` })).status, 200);
+      assert.equal((await post("/api/sessions/close", { counted_cash_cents: 0 })).status, 200);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});

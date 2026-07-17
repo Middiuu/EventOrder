@@ -521,6 +521,11 @@ async function initCassa(signal) {
   const mobileCartBar = document.querySelector("#mobileCartBar");
   const mobileCartCount = document.querySelector("#mobileCartCount");
   const mobileCartTotal = document.querySelector("#mobileCartTotal");
+  const suspendCartBtn = document.querySelector("#suspendCartBtn");
+  const suspendedCartsBtn = document.querySelector("#suspendedCartsBtn");
+  const suspendedCartsCount = document.querySelector("#suspendedCartsCount");
+  const suspendedCartsModal = document.querySelector("#suspendedCartsModal");
+  const suspendedCartsList = document.querySelector("#suspendedCartsList");
 
   // Barra turno
   const sessionBar = document.querySelector("#sessionBar");
@@ -623,18 +628,24 @@ async function initCassa(signal) {
     return `eo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   }
 
-  // Ricarica il catalogo (scorte e stato esaurito cambiano durante il servizio)
-  async function reloadProducts() {
-    try {
-      products = await api("/api/products");
-    } catch {
-      // in caso di errore si continua con l'elenco già caricato
-    }
+  async function loadFreshProducts() {
+    products = await api("/api/products");
     renderCategoryFilters();
     applySearch();
+    return products;
+  }
+
+  // Ricarica best-effort per gli aggiornamenti non critici del catalogo.
+  async function reloadProducts() {
+    try { await loadFreshProducts(); } catch {
+      // in caso di errore si continua con l'elenco già caricato
+    }
   }
 
   const cart = new Map();
+  const CART_DRAFT_KEY = "eventorder-current-cart-v1";
+  let cartPersistenceReady = false;
+  let suspendedCarts = [];
   let isPrinting = false;
   // Un tentativo dall'esito incerto conserva chiave e payload esatti: riaprire
   // la modale non puo' trasformare un retry in una seconda vendita.
@@ -663,6 +674,83 @@ async function initCassa(signal) {
     let total = 0;
     for (const it of cart.values()) total += it.qty * it.product.price_cents;
     return total;
+  }
+
+  function persistCurrentCart() {
+    if (!cartPersistenceReady) return;
+    try {
+      if (cart.size === 0) {
+        localStorage.removeItem(CART_DRAFT_KEY);
+        return;
+      }
+      localStorage.setItem(CART_DRAFT_KEY, JSON.stringify({
+        session_id: session?.id ?? null,
+        saved_at: new Date().toISOString(),
+        items: Array.from(cart.values()).map(it => ({ product_id: it.product.id, qty: it.qty })),
+      }));
+    } catch {
+      // Lo storage locale può essere disabilitato: il POS resta utilizzabile.
+    }
+  }
+
+  function recoverCurrentCart() {
+    let draft;
+    try {
+      draft = JSON.parse(localStorage.getItem(CART_DRAFT_KEY) || "null");
+    } catch {
+      try { localStorage.removeItem(CART_DRAFT_KEY); } catch {}
+      return { recovered: false, skipped: [] };
+    }
+    if (!draft || !Array.isArray(draft.items)) return { recovered: false, skipped: [] };
+    if (draft.session_id != null && draft.session_id !== session?.id) {
+      try { localStorage.removeItem(CART_DRAFT_KEY); } catch {}
+      return { recovered: false, skipped: [] };
+    }
+
+    const byId = new Map(products.map(product => [product.id, product]));
+    let recovered = 0;
+    const skipped = [];
+    for (const item of draft.items) {
+      const product = byId.get(item?.product_id);
+      if (!product || !Number.isSafeInteger(item?.qty) || item.qty <= 0 || !productAvailable(product)) {
+        skipped.push(product?.name || `Prodotto #${item?.product_id || "?"}`);
+        continue;
+      }
+      const qty = product.stock == null ? item.qty : Math.min(item.qty, product.stock);
+      if (qty <= 0) {
+        skipped.push(product.name);
+        continue;
+      }
+      if (qty !== item.qty) skipped.push(product.name);
+      cart.set(product.id, { product, qty });
+      recovered += qty;
+    }
+    return { recovered: recovered > 0, skipped: [...new Set(skipped)] };
+  }
+
+  function reconcileCartWithCatalog() {
+    const byId = new Map(products.map(product => [product.id, product]));
+    const oldTotal = cartTotal();
+    const priceChanges = [];
+    const removed = [];
+    const unavailable = [];
+
+    for (const [id, item] of cart) {
+      const current = byId.get(id);
+      if (!current) {
+        removed.push(item.product.name);
+        cart.delete(id);
+        continue;
+      }
+      if (current.price_cents !== item.product.price_cents) {
+        priceChanges.push({ name: current.name, from: item.product.price_cents, to: current.price_cents });
+      }
+      cart.set(id, { product: current, qty: item.qty });
+      if (!productAvailable(current) || (current.stock != null && item.qty > current.stock)) {
+        unavailable.push(current.name);
+      }
+    }
+    return { oldTotal, newTotal: cartTotal(), priceChanges, removed, unavailable };
   }
 
   // ---- Turno di cassa
@@ -696,6 +784,7 @@ async function initCassa(signal) {
     }
     renderSession();
     renderCart();
+    await refreshSuspendedCarts();
   }
 
   function populateOperators() {
@@ -766,6 +855,10 @@ async function initCassa(signal) {
   }
 
   closeSessionBtn?.addEventListener("click", () => {
+    if (cart.size > 0) {
+      void uiAlert("Sospendi o svuota la comanda corrente prima di chiudere la cassa.");
+      return;
+    }
     if (closeSessionForm) closeSessionForm.counted_eur.value = "";
     renderCloseSummary();
     openModal(closeSessionModal);
@@ -971,10 +1064,13 @@ async function initCassa(signal) {
     const empty = cart.size === 0;
     if (printBtn) printBtn.disabled = empty || isPrinting || !session;
     if (clearBtn) clearBtn.disabled = empty || isPrinting;
+    if (suspendCartBtn) suspendCartBtn.disabled = empty || isPrinting || !session || Boolean(checkoutAttempt);
+    if (suspendedCartsBtn) suspendedCartsBtn.disabled = !session || isPrinting;
     if (mobileCartBar) {
       mobileCartBar.disabled = empty;
       mobileCartBar.setAttribute("aria-label", empty ? "Comanda vuota" : `Vedi la comanda, totale ${euro(total)}`);
     }
+    persistCurrentCart();
   }
 
   function addProduct(p) {
@@ -1030,6 +1126,151 @@ async function initCassa(signal) {
     renderProducts();
   }
   searchEl?.addEventListener("input", applySearch);
+
+  function suspendedCartTotal(entry) {
+    return entry.items.reduce((sum, item) => sum + item.qty * item.price_cents, 0);
+  }
+
+  function suspendedItemAvailable(item) {
+    return item.active === 1 && !item.sold_out && !(item.stock != null && item.qty > item.stock);
+  }
+
+  function renderSuspendedCarts() {
+    if (suspendedCartsCount) suspendedCartsCount.textContent = suspendedCarts.length;
+    if (!suspendedCartsList) return;
+    suspendedCartsList.innerHTML = "";
+    if (suspendedCarts.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "suspended-empty";
+      empty.textContent = "Nessuna comanda sospesa in questo turno.";
+      suspendedCartsList.appendChild(empty);
+      return;
+    }
+
+    for (const entry of suspendedCarts) {
+      const unavailable = entry.items.filter(item => !suspendedItemAvailable(item));
+      const ticket = document.createElement("article");
+      ticket.className = "suspended-ticket";
+      const when = entry.created_at
+        ? new Date(`${entry.created_at}Z`).toLocaleString(APP_CONFIG.locale, { dateStyle: "short", timeStyle: "short" })
+        : "—";
+      const summary = entry.items.map(item => `${item.qty}x ${escapeHtml(item.name)}`).join(" · ");
+      ticket.innerHTML = `
+        <div class="suspended-ticket-head">
+          <div>
+            <div class="suspended-ticket-title">${escapeHtml(entry.label)}</div>
+            <div class="suspended-ticket-meta">${escapeHtml(when)}${entry.operator ? ` · ${escapeHtml(entry.operator)}` : ""}</div>
+          </div>
+          <div class="suspended-ticket-total">${money(suspendedCartTotal(entry))}</div>
+        </div>
+        <div class="suspended-ticket-items">${summary || "Comanda vuota"}</div>
+        ${unavailable.length > 0 ? `<div class="small diff-minus">Da verificare: ${unavailable.map(item => escapeHtml(item.name)).join(", ")}</div>` : ""}
+        <div class="suspended-ticket-actions">
+          <button class="btn btn-primary btn-compact" type="button" data-resume-cart="${entry.id}">Riprendi</button>
+          <button class="btn btn-secondary btn-compact" type="button" data-delete-cart="${entry.id}">Elimina</button>
+        </div>`;
+      suspendedCartsList.appendChild(ticket);
+    }
+  }
+
+  async function refreshSuspendedCarts() {
+    if (!session) {
+      suspendedCarts = [];
+      renderSuspendedCarts();
+      return;
+    }
+    try {
+      const data = await api("/api/carts");
+      suspendedCarts = Array.isArray(data.carts) ? data.carts : [];
+      renderSuspendedCarts();
+    } catch {
+      // Il conteggio precedente resta visibile se l'aggiornamento non riesce.
+    }
+  }
+
+  suspendCartBtn?.addEventListener("click", async () => {
+    if (!session || cart.size === 0 || guardPendingCheckout()) return;
+    const label = await uiPrompt(
+      "Sospendi comanda",
+      "Nome o riferimento",
+      `Comanda ${suspendedCarts.length + 1}`
+    );
+    if (label === null) return;
+    try {
+      await api("/api/carts", {
+        method: "POST",
+        body: JSON.stringify({
+          label,
+          items: Array.from(cart.values()).map(item => ({ product_id: item.product.id, qty: item.qty })),
+        }),
+      });
+      cart.clear();
+      renderCart();
+      await refreshSuspendedCarts();
+      showToast("Comanda sospesa");
+    } catch (err) {
+      await uiError(err);
+    }
+  });
+
+  suspendedCartsBtn?.addEventListener("click", async () => {
+    if (!session) return;
+    await refreshSuspendedCarts();
+    openModal(suspendedCartsModal);
+  });
+
+  suspendedCartsList?.addEventListener("click", async (event) => {
+    const resumeId = Number(event.target?.getAttribute?.("data-resume-cart"));
+    const deleteId = Number(event.target?.getAttribute?.("data-delete-cart"));
+    const id = resumeId || deleteId;
+    if (!id) return;
+    const entry = suspendedCarts.find(candidate => candidate.id === id);
+    if (!entry) return;
+
+    if (resumeId) {
+      if (cart.size > 0) {
+        await uiAlert("Sospendi o svuota prima la comanda corrente.");
+        return;
+      }
+      try {
+        await loadFreshProducts();
+        const byId = new Map(products.map(product => [product.id, product]));
+        const restored = entry.items.map(item => ({ item, product: byId.get(item.product_id) }));
+        const invalid = restored.filter(({ item, product }) => (
+          !product || !productAvailable(product) || (product.stock != null && item.qty > product.stock)
+        ));
+        if (invalid.length > 0) {
+          await refreshSuspendedCarts();
+          await uiAlert(
+            `Non è possibile riprendere la comanda. Verifica: ${invalid.map(({ item }) => item.name).join(", ")}.`,
+            "Disponibilità cambiata"
+          );
+          return;
+        }
+        for (const { item, product } of restored) {
+          cart.set(product.id, { product, qty: item.qty });
+        }
+        renderCart();
+        await api(`/api/carts/${id}`, { method: "DELETE" });
+        closeModal(suspendedCartsModal);
+        await refreshSuspendedCarts();
+        showToast(`Comanda ripresa • ${entry.label}`);
+      } catch (err) {
+        await uiError(err);
+      }
+      return;
+    }
+
+    const confirmed = await uiConfirm(`Eliminare la comanda sospesa "${entry.label}"?`, "Elimina comanda");
+    if (!confirmed) return;
+    try {
+      await api(`/api/carts/${id}`, { method: "DELETE" });
+      await refreshSuspendedCarts();
+      showToast("Comanda eliminata");
+    } catch (err) {
+      await uiError(err);
+    }
+  });
 
   // ---- Sconto / omaggio
   function currentDiscountCents() {
@@ -1148,8 +1389,44 @@ async function initCassa(signal) {
     updatePayChange();
   });
 
-  printBtn?.addEventListener("click", () => {
+  printBtn?.addEventListener("click", async () => {
     if (!session || cart.size === 0) return;
+    if (!checkoutAttempt) {
+      try {
+        if (printBtn) printBtn.disabled = true;
+        await loadFreshProducts();
+        const reconciliation = reconcileCartWithCatalog();
+        renderCart();
+        if (reconciliation.removed.length > 0) {
+          await uiAlert(
+            `Rimossi dal carrello perché non più nel catalogo: ${reconciliation.removed.join(", ")}. Controlla la comanda prima di continuare.`,
+            "Catalogo aggiornato"
+          );
+          return;
+        }
+        if (reconciliation.unavailable.length > 0) {
+          await uiAlert(
+            `Disponibilità insufficiente per: ${reconciliation.unavailable.join(", ")}. Aggiorna la comanda prima di incassare.`,
+            "Disponibilità cambiata"
+          );
+          return;
+        }
+        if (reconciliation.priceChanges.length > 0) {
+          const details = reconciliation.priceChanges
+            .map(change => `${change.name}: ${money(change.from)} → ${money(change.to)}`)
+            .join("; ");
+          await uiAlert(
+            `${details}. Il totale passa da ${money(reconciliation.oldTotal)} a ${money(reconciliation.newTotal)}.`,
+            "Prezzi aggiornati"
+          );
+        }
+      } catch (err) {
+        await uiError(err);
+        return;
+      } finally {
+        renderCart();
+      }
+    }
     if (!checkoutAttempt) {
       if (cashReceivedEl) cashReceivedEl.value = "";
       setDiscount("none");
@@ -1166,7 +1443,11 @@ async function initCassa(signal) {
     const total = payableTotal();
     if (!checkoutAttempt) {
       const body = {
-        items: Array.from(cart.values()).map(it => ({ product_id: it.product.id, qty: it.qty })),
+        items: Array.from(cart.values()).map(it => ({
+          product_id: it.product.id,
+          qty: it.qty,
+          expected_unit_price_cents: it.product.price_cents,
+        })),
         payment_method: payMethod,
         discount: discountBody(),
       };
@@ -1217,6 +1498,25 @@ async function initCassa(signal) {
         await reloadProducts();
         return;
       }
+      if (err.data?.code === "PRICE_CHANGED" || err.data?.code === "CATALOG_CHANGED") {
+        checkoutAttempt = null;
+        setCheckoutControlsLocked(false);
+        try {
+          await loadFreshProducts();
+          const reconciliation = reconcileCartWithCatalog();
+          renderCart();
+          refreshPayment();
+          await uiAlert(
+            err.data.code === "PRICE_CHANGED"
+              ? `Un prezzo è cambiato durante l'incasso. Il totale aggiornato è ${money(reconciliation.newTotal)}: verificalo prima di confermare di nuovo.`
+              : `${err.message}. Verifica la comanda prima di confermare di nuovo.`,
+            err.data.code === "PRICE_CHANGED" ? "Prezzo aggiornato" : "Catalogo aggiornato"
+          );
+        } catch (refreshError) {
+          await uiError(refreshError);
+        }
+        return;
+      }
       const uncertain = err.status === undefined || err.data?.retryable === true;
       if (uncertain) {
         setCheckoutControlsLocked(true);
@@ -1238,7 +1538,7 @@ async function initCassa(signal) {
   });
 
   // chiusura generica delle modali (backdrop, pulsanti "Annulla", Esc)
-  for (const modal of [openSessionModal, paymentModal, closeSessionModal, movementModal]) {
+  for (const modal of [openSessionModal, paymentModal, closeSessionModal, movementModal, suspendedCartsModal]) {
     modal?.addEventListener("click", (e) => {
       if (e.target?.getAttribute?.("data-close-modal") === "1") closeModal(modal);
     });
@@ -1246,7 +1546,7 @@ async function initCassa(signal) {
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     const top = topOpenModal();
-    if ([openSessionModal, paymentModal, closeSessionModal, movementModal].includes(top)) {
+    if ([openSessionModal, paymentModal, closeSessionModal, movementModal, suspendedCartsModal].includes(top)) {
       closeModal(top);
     }
   }, { signal });
@@ -1269,6 +1569,16 @@ async function initCassa(signal) {
   applySearch();
   renderCart();
   await refreshSession();
+  const recovery = recoverCurrentCart();
+  cartPersistenceReady = true;
+  renderCart();
+  if (recovery.recovered) showToast("Comanda recuperata");
+  if (recovery.skipped.length > 0) {
+    void uiAlert(
+      `Alcuni articoli non sono stati recuperati o sono stati ridotti alla disponibilità attuale: ${recovery.skipped.join(", ")}.`,
+      "Recupero parziale"
+    );
+  }
 }
 
 // --------------------

@@ -251,6 +251,14 @@ router.post("/close", (req, res) => {
   if (hasPendingSaleForSession(open.id)) {
     return res.status(409).json({ error: "Attendi la conclusione della stampa prima di chiudere la cassa" });
   }
+  const suspendedCount = db.prepare(
+    "SELECT COUNT(*) AS count FROM suspended_carts WHERE session_id = ?"
+  ).get(open.id).count;
+  if (suspendedCount > 0) {
+    return res.status(409).json({
+      error: `Ci sono ${suspendedCount} comand${suspendedCount === 1 ? "a sospesa" : "e sospese"}: riprendile o eliminale prima di chiudere la cassa`,
+    });
+  }
 
   const countedCents = req.body?.counted_cash_cents;
   if (!isValidCents(countedCents, MAX_MONEY_CENTS)) {

@@ -9,6 +9,7 @@ const {
 } = require("../pending-sales");
 const {
   MAX_MONEY_CENTS,
+  MAX_PRODUCT_PRICE_CENTS,
   MAX_QTY,
   cleanText,
   isValidCents,
@@ -278,10 +279,16 @@ function createSalesRouter({ printTicket }) {
     }
 
     if (items.length > 100) return res.status(400).json({ error: "Troppi articoli nel carrello" });
-    const normalized = items.map(it => ({ product_id: it?.product_id, qty: it?.qty }));
+    const normalized = items.map(it => ({
+      product_id: it?.product_id,
+      qty: it?.qty,
+      expected_unit_price_cents: it?.expected_unit_price_cents,
+    }));
     const invalidItem = normalized.some(it =>
       !Number.isSafeInteger(it.product_id) || it.product_id <= 0
       || !Number.isSafeInteger(it.qty) || it.qty <= 0 || it.qty > MAX_QTY
+      || (it.expected_unit_price_cents !== undefined
+        && !isValidCents(it.expected_unit_price_cents, MAX_PRODUCT_PRICE_CENTS))
     );
     if (invalidItem) {
       return res.status(400).json({ error: `Ogni articolo deve avere id valido e quantita' tra 1 e ${MAX_QTY}` });
@@ -329,6 +336,14 @@ function createSalesRouter({ printTicket }) {
       const p = map.get(it.product_id);
       if (!p) {
         return res.status(400).json({ error: `Prodotto non valido o non attivo: ${it.product_id}` });
+      }
+      if (it.expected_unit_price_cents !== undefined && it.expected_unit_price_cents !== p.price_cents) {
+        return res.status(409).json({
+          error: `Il prezzo di ${p.name} e' cambiato da ${it.expected_unit_price_cents} a ${p.price_cents} centesimi. Verifica il nuovo totale.`,
+          code: "PRICE_CHANGED",
+          product_id: p.id,
+          current_price_cents: p.price_cents,
+        });
       }
       if (p.sold_out) {
         return res.status(409).json({ error: `Prodotto esaurito: ${p.name}` });
@@ -406,6 +421,39 @@ function createSalesRouter({ printTicket }) {
     }
 
     const tx = db.transaction(() => {
+      // La transazione IMMEDIATE acquisisce il lock di scrittura prima di
+      // ricontrollare i prezzi: nessun altro processo può cambiarli tra
+      // verifica, creazione della vendita e decremento scorte.
+      const currentProducts = db.prepare(`
+        SELECT id, name, price_cents, sold_out, stock FROM products
+        WHERE active=1 AND id IN (${placeholders})
+      `).all(...ids);
+      const currentById = new Map(currentProducts.map(product => [product.id, product]));
+      for (const item of computedItems) {
+        const current = currentById.get(item.product_id);
+        if (!current || current.price_cents !== item.unit_price_cents) {
+          const err = conflictError(
+            current
+              ? `Il prezzo di ${current.name} e' cambiato. Verifica il nuovo totale.`
+              : `Il prodotto ${item.name} non e' piu' disponibile. Verifica la comanda.`
+          );
+          err.code = current ? "PRICE_CHANGED" : "CATALOG_CHANGED";
+          err.productId = item.product_id;
+          err.currentPriceCents = current?.price_cents;
+          throw err;
+        }
+        if (current.sold_out || (current.stock != null && current.stock < item.qty)) {
+          const err = conflictError(
+            current.sold_out
+              ? `Prodotto esaurito: ${current.name}`
+              : `Scorte insufficienti per ${current.name}: disponibili ${current.stock}`
+          );
+          err.code = "CATALOG_CHANGED";
+          err.productId = item.product_id;
+          throw err;
+        }
+      }
+
       const saleNumber = getNextSaleNumber();
 
       const saleInfo = db.prepare(`
@@ -446,7 +494,20 @@ function createSalesRouter({ printTicket }) {
       return { saleId, saleNumber: sale.sale_number, createdAt: sale.created_at };
     });
 
-    const result = tx();
+    let result;
+    try {
+      result = tx.immediate();
+    } catch (err) {
+      if (err.code === "PRICE_CHANGED" || err.code === "CATALOG_CHANGED") {
+        return res.status(409).json({
+          error: err.publicMessage,
+          code: err.code,
+          product_id: err.productId,
+          current_price_cents: err.currentPriceCents,
+        });
+      }
+      throw err;
+    }
     const printed = await attemptSalePrint(result.saleId, session.id, {
       saleNumber: result.saleNumber,
       createdAt: result.createdAt,
