@@ -34,7 +34,7 @@ function createApp(options = {}) {
   app.use(authMiddleware);
 
   // Un restore acquisisce un lock esclusivo prima di leggere il file caricato:
-  // le richieste di scrittura successive vengono respinte fino alla conclusione.
+  // tutte le route DB successive vengono respinte fino alla conclusione.
   app.use("/api", maintenanceMiddleware);
 
   app.use("/api/products", products);

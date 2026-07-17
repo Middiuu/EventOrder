@@ -11,7 +11,12 @@ const { localYmdToUtcSql, parseLocalYmd } = require("../validation");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
-const { beginRestore, endRestore } = require("../maintenance");
+const {
+  beginBackup,
+  endBackup,
+  beginRestore,
+  endRestore,
+} = require("../maintenance");
 
 const router = express.Router();
 
@@ -473,6 +478,12 @@ async function createDatabaseBackup(kind = "backup") {
 
 // --- Backup DB (copia consistente e download)
 router.get("/backup", async (req, res, next) => {
+  if (!beginBackup()) {
+    res.setHeader("Retry-After", "2");
+    return res.status(503).json({
+      error: "Backup o ripristino del database in corso. Riprova tra pochi secondi.",
+    });
+  }
   try {
     const { backupName, backupPath } = await createDatabaseBackup();
 
@@ -484,6 +495,8 @@ router.get("/backup", async (req, res, next) => {
     res.send(data);
   } catch (err) {
     next(err);
+  } finally {
+    endBackup();
   }
 });
 
@@ -501,7 +514,9 @@ function requireRestoreConfirmation(req, res, next) {
 
 function acquireRestoreLock(req, res, next) {
   if (!beginRestore()) {
-    return res.status(409).json({ error: "Un altro ripristino e' gia' in corso" });
+    return res.status(409).json({
+      error: "Attendi la conclusione del backup o ripristino gia' in corso",
+    });
   }
   let released = false;
   const release = () => {

@@ -1,7 +1,18 @@
 let restoreInProgress = false;
+let backupInProgress = false;
+
+function beginBackup() {
+  if (restoreInProgress || backupInProgress) return false;
+  backupInProgress = true;
+  return true;
+}
+
+function endBackup() {
+  backupInProgress = false;
+}
 
 function beginRestore() {
-  if (restoreInProgress) return false;
+  if (restoreInProgress || backupInProgress) return false;
   restoreInProgress = true;
   return true;
 }
@@ -10,16 +21,21 @@ function endRestore() {
   restoreInProgress = false;
 }
 
-// Durante un restore le letture possono continuare, ma nessuna seconda
-// operazione deve modificare il database che sta per essere sostituito.
+// Durante un restore nessuna route che usa il DB puo' proseguire: anche una
+// lettura o un backup online potrebbero conservare la vecchia connessione
+// mentre restoreDatabaseFromFile la chiude e la sostituisce.
 function maintenanceMiddleware(req, res, next) {
-  if (!restoreInProgress || req.method === "GET" || req.method === "HEAD") {
-    return next();
-  }
+  if (!restoreInProgress) return next();
   res.setHeader("Retry-After", "2");
   return res.status(503).json({
     error: "Ripristino del database in corso. Riprova tra pochi secondi.",
   });
 }
 
-module.exports = { beginRestore, endRestore, maintenanceMiddleware };
+module.exports = {
+  beginBackup,
+  endBackup,
+  beginRestore,
+  endRestore,
+  maintenanceMiddleware,
+};

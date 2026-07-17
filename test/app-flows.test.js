@@ -358,7 +358,7 @@ test("restore backup: valida il file, blocca il turno aperto e sostituisce il DB
   }
 });
 
-test("la manutenzione di restore blocca le scritture API e consente le letture", async () => {
+test("la manutenzione di restore blocca tutte le route che usano il database", async () => {
   const harness = createHarness();
 
   try {
@@ -367,7 +367,12 @@ test("la manutenzione di restore blocca le scritture API e consente le letture",
       assert.equal(maintenance.beginRestore(), true);
       try {
         const read = await request({ url: "/api/products" });
-        assert.equal(read.status, 200);
+        assert.equal(read.status, 503);
+        assert.equal(read.headers["retry-after"], "2");
+
+        // La configurazione pubblica non usa il DB e resta disponibile.
+        const config = await request({ url: "/api/config" });
+        assert.equal(config.status, 200);
 
         const write = await request({
           method: "POST",
@@ -391,6 +396,58 @@ test("la manutenzione di restore blocca le scritture API e consente le letture",
       assert.equal(after.status, 200);
     });
   } finally {
+    harness.cleanup();
+  }
+});
+
+test("un restore non puo' iniziare mentre un backup e' in corso", async () => {
+  const Database = require("better-sqlite3");
+  const originalBackup = Database.prototype.backup;
+  let signalStarted;
+  let releaseBackup;
+  const backupStarted = new Promise(resolve => { signalStarted = resolve; });
+  const backupCanFinish = new Promise(resolve => { releaseBackup = resolve; });
+
+  Database.prototype.backup = async function delayedBackup(...args) {
+    signalStarted();
+    await backupCanFinish;
+    return originalBackup.apply(this, args);
+  };
+
+  const harness = createHarness();
+  try {
+    await harness.withServer(async ({ request }) => {
+      const backupRequest = request({ url: "/api/reports/backup" });
+      await backupStarted;
+
+      try {
+        const secondBackup = await request({ url: "/api/reports/backup" });
+        assert.equal(secondBackup.status, 503);
+        assert.equal(secondBackup.headers["retry-after"], "2");
+        assert.match(secondBackup.json().error, /backup o ripristino/i);
+
+        const restore = await request({
+          method: "POST",
+          url: "/api/reports/restore",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "X-EventOrder-Restore": "RESTORE",
+          },
+          body: Buffer.from("contenuto irrilevante: il lock precede il parser"),
+        });
+        assert.equal(restore.status, 409);
+        assert.match(restore.json().error, /backup o ripristino/i);
+      } finally {
+        // Evita di lasciare la richiesta appesa anche se un'asserzione fallisce.
+        releaseBackup();
+      }
+
+      const backup = await backupRequest;
+      assert.equal(backup.status, 200);
+    });
+  } finally {
+    releaseBackup();
+    Database.prototype.backup = originalBackup;
     harness.cleanup();
   }
 });
