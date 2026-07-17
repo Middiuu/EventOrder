@@ -5,6 +5,7 @@ const products = require("./routes/products");
 const createSalesRouter = require("./routes/sales");
 const reports = require("./routes/reports");
 const sessions = require("./routes/sessions");
+const shell = require("./routes/shell");
 const printer = require("./printer");
 const { publicConfig } = require("./config");
 const { authMiddleware, isAuthenticated, loginHandler, logoutHandler } = require("./auth");
@@ -44,6 +45,7 @@ function createApp(options = {}) {
   app.use("/api/sales", createSalesRouter({ printTicket }));
   app.use("/api/sessions", sessions);
   app.use("/api/reports", reports);
+  app.use("/api/shell", shell);
 
   // Espone sotto /vendor solo i pacchetti usati dal frontend, non tutto node_modules
   const vendorPackages = ["chart.js", "sortablejs", "@fontsource/onest", "@fontsource/jetbrains-mono"];

@@ -147,17 +147,22 @@ function updateSessionCard(session) {
 
 // Carica dati per la shell (turno + conteggi nav), best-effort
 async function refreshShellData() {
-  try {
-    const data = await api("/api/sessions/current");
-    updateSessionCard(data.session || null);
-  } catch { updateSessionCard(null); }
-  try {
-    const setCount = (k, v) => { const el = document.querySelector(`[data-count="${k}"]`); if (el) el.textContent = v; };
-    const products = await api("/api/products/all");
-    setCount("prodotti", products.filter(p => p.active).length);
-    const sales = await api("/api/sales?limit=500");
-    setCount("vendite", sales.filter(s => !s.voided).length);
-  } catch {}
+  const setCount = (key, value) => {
+    const el = document.querySelector(`[data-count="${key}"]`);
+    if (el) el.textContent = value;
+  };
+  const [sessionResult, summaryResult] = await Promise.allSettled([
+    api("/api/sessions/current"),
+    api("/api/shell/summary"),
+  ]);
+
+  updateSessionCard(sessionResult.status === "fulfilled"
+    ? sessionResult.value.session || null
+    : null);
+  if (summaryResult.status === "fulfilled") {
+    setCount("prodotti", summaryResult.value.active_products);
+    setCount("vendite", summaryResult.value.valid_sales);
+  }
 }
 
 // ---- Navigazione client-side: niente reload/flash tra le sezioni

@@ -535,6 +535,61 @@ test("GET /api/config espone branding, valuta e locale al frontend", async () =>
   }
 });
 
+test("riepilogo shell conta dal DB senza caricare catalogo o limitare le vendite a 500", async () => {
+  const harness = createHarness();
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const initial = await request({ url: "/api/shell/summary" });
+      assert.equal(initial.status, 200);
+      assert.deepEqual(initial.json(), {
+        active_products: 4,
+        valid_sales: 0,
+      });
+
+      assert.equal((await request({
+        method: "POST",
+        url: "/api/products",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Attivo nel badge", price_cents: 100, active: 1 }),
+      })).status, 200);
+      assert.equal((await request({
+        method: "POST",
+        url: "/api/products",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Fuori dal badge", price_cents: 100, active: 0 }),
+      })).status, 200);
+
+      // Il vecchio frontend richiedeva /api/sales?limit=500: con 501 vendite
+      // il badge risultava inevitabilmente troncato.
+      const { db } = require("../src/db");
+      const insertSale = db.prepare(`
+        INSERT INTO sales (sale_number, total_cents, voided)
+        VALUES (?, 100, 0)
+      `);
+      db.transaction(() => {
+        for (let saleNumber = 1; saleNumber <= 501; saleNumber += 1) {
+          insertSale.run(saleNumber);
+        }
+      })();
+
+      const populated = await request({ url: "/api/shell/summary" });
+      assert.deepEqual(populated.json(), {
+        active_products: 5,
+        valid_sales: 501,
+      });
+
+      db.prepare("UPDATE sales SET voided=1 WHERE sale_number=501").run();
+      assert.deepEqual((await request({ url: "/api/shell/summary" })).json(), {
+        active_products: 5,
+        valid_sales: 500,
+      });
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test("POST /api/products/reorder aggiorna sort_order in modo atomico", async () => {
   const harness = createHarness();
 
