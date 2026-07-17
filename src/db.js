@@ -7,7 +7,7 @@ const DB_PATH = process.env.POS_DB_PATH
   ? path.resolve(process.env.POS_DB_PATH)
   : path.join(__dirname, "..", "pos.sqlite");
 const SCHEMA_PATH = path.join(__dirname, "schema.sql");
-const DB_SCHEMA_VERSION = 5;
+const DB_SCHEMA_VERSION = 6;
 const RESTORE_MARKER_PATH = `${DB_PATH}.restore-state.json`;
 
 function fsyncDirectory(dirPath) {
@@ -214,7 +214,7 @@ function restoreLegacySequences(sequences) {
 }
 
 // SQLite non consente di aggiungere CHECK e FOREIGN KEY a una tabella con
-// ALTER TABLE. Per i DB precedenti alla v5 ricreiamo quindi tutte le tabelle
+// ALTER TABLE. Per i DB precedenti alla versione corrente ricreiamo tutte le tabelle
 // applicative dalla definizione canonica di schema.sql, copiamo i dati e
 // sostituiamo gli originali in un'unica transazione.
 function migrateLegacySchema(schema, previousVersion) {
@@ -230,7 +230,7 @@ function migrateLegacySchema(schema, previousVersion) {
     const migrate = db.transaction(() => {
       const legacySequences = readLegacySequences();
       for (const table of CANONICAL_TABLES) {
-        const replacement = `__eventorder_v5_${table}`;
+        const replacement = `__eventorder_migrate_${table}`;
         if (tableExistsIn(db, replacement)) {
           throw new Error(`Tabella temporanea inattesa: ${replacement}`);
         }
@@ -240,18 +240,18 @@ function migrateLegacySchema(schema, previousVersion) {
 
       // I database precedenti conservavano nome e categoria solo nei prodotti.
       db.exec(`
-        UPDATE __eventorder_v5_sale_items
+        UPDATE __eventorder_migrate_sale_items
         SET product_category = COALESCE(
-          (SELECT category FROM __eventorder_v5_products
-           WHERE id = __eventorder_v5_sale_items.product_id),
+          (SELECT category FROM __eventorder_migrate_products
+           WHERE id = __eventorder_migrate_sale_items.product_id),
           'Generale'
         )
         WHERE product_name = '';
 
-        UPDATE __eventorder_v5_sale_items
+        UPDATE __eventorder_migrate_sale_items
         SET product_name = COALESCE(
-          (SELECT name FROM __eventorder_v5_products
-           WHERE id = __eventorder_v5_sale_items.product_id),
+          (SELECT name FROM __eventorder_migrate_products
+           WHERE id = __eventorder_migrate_sale_items.product_id),
           ''
         )
         WHERE product_name = '';
@@ -260,18 +260,41 @@ function migrateLegacySchema(schema, previousVersion) {
       if (previousVersion < 3) {
         // Le sole vendite legacy ancora stornabili appartengono al turno aperto.
         db.exec(`
-          UPDATE __eventorder_v5_sale_items
+          UPDATE __eventorder_migrate_sale_items
           SET stock_decremented_qty = qty
           WHERE stock_decremented_qty = 0
             AND product_id IN (
-              SELECT id FROM __eventorder_v5_products WHERE stock IS NOT NULL
+              SELECT id FROM __eventorder_migrate_products WHERE stock IS NOT NULL
             )
             AND sale_id IN (
               SELECT s.id
-              FROM __eventorder_v5_sales s
-              JOIN __eventorder_v5_cash_sessions cs ON cs.id = s.session_id
+              FROM __eventorder_migrate_sales s
+              JOIN __eventorder_migrate_cash_sessions cs ON cs.id = s.session_id
               WHERE s.voided = 0 AND cs.closed_at IS NULL
             )
+        `);
+      }
+
+      if (previousVersion < 6) {
+        // Nel vecchio flusso una vendita rimaneva valida solo dopo il successo
+        // della stampa. Le vendite storiche valide sono quindi considerate
+        // stampate; gli annulli automatici per errore stampante restano failed.
+        db.exec(`
+          UPDATE __eventorder_migrate_sales
+          SET print_status = CASE
+                WHEN voided = 1 AND void_reason = 'Stampa non riuscita' THEN 'failed'
+                ELSE 'printed'
+              END,
+              print_attempts = 1,
+              last_print_error = CASE
+                WHEN voided = 1 AND void_reason = 'Stampa non riuscita' THEN void_reason
+                ELSE NULL
+              END,
+              last_print_attempt_at = created_at,
+              last_printed_at = CASE
+                WHEN voided = 1 AND void_reason = 'Stampa non riuscita' THEN NULL
+                ELSE created_at
+              END
         `);
       }
 
@@ -282,7 +305,7 @@ function migrateLegacySchema(schema, previousVersion) {
       }
       for (const table of CANONICAL_TABLES) {
         db.exec(`
-          ALTER TABLE ${quoteIdentifier(`__eventorder_v5_${table}`)}
+          ALTER TABLE ${quoteIdentifier(`__eventorder_migrate_${table}`)}
           RENAME TO ${quoteIdentifier(table)}
         `);
       }
@@ -301,7 +324,7 @@ function migrateLegacySchema(schema, previousVersion) {
 
     migrate();
   } catch (err) {
-    throw new Error(`Migrazione schema v5 non riuscita: ${err.message}`, { cause: err });
+    throw new Error(`Migrazione schema v${DB_SCHEMA_VERSION} non riuscita: ${err.message}`, { cause: err });
   } finally {
     db.pragma("foreign_keys = ON");
     if (db.pragma("foreign_keys", { simple: true }) !== 1) {

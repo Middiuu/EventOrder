@@ -260,6 +260,71 @@ test("idempotenza incasso: un retry restituisce la stessa vendita senza ristampa
   }
 });
 
+test("ripresa dopo crash: una stampa persistita come pending richiede una ristampa esplicita", async () => {
+  const printed = [];
+  const harness = createHarness({ printTicket: async payload => printed.push(payload) });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const product = (await request({ url: "/api/products" })).json()[0];
+      assert.equal((await request({
+        method: "POST",
+        url: "/api/sessions/open",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opening_float_cents: 0, operator: "Anna" }),
+      })).status, 200);
+
+      const key = "checkout-crash-recovery-0001";
+      const body = JSON.stringify({
+        items: [{ product_id: product.id, qty: 1 }],
+        payment_method: "card",
+      });
+      const send = () => request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+        body,
+      });
+
+      const first = await send();
+      assert.equal(first.status, 200);
+      assert.equal(printed.length, 1);
+
+      // Simula il dato lasciato da un processo terminato durante la stampa:
+      // la vendita e' gia' contabilizzata, ma l'esito non e' noto.
+      const { db } = require("../src/db");
+      db.prepare(`
+        UPDATE sales
+        SET print_status = 'pending', last_printed_at = NULL
+        WHERE sale_number = ?
+      `).run(first.json().sale_number);
+
+      const retry = await send();
+      assert.equal(retry.status, 409);
+      assert.equal(retry.json().sale_recorded, true);
+      assert.equal(retry.json().print_status, "pending");
+      assert.equal(retry.json().sale_number, first.json().sale_number);
+      assert.equal(printed.length, 1);
+
+      const sales = (await request({ url: "/api/sales?limit=50" })).json();
+      assert.equal(sales.length, 1);
+      assert.equal(sales[0].print_status, "pending");
+      assert.equal(sales[0].can_reprint, true);
+
+      const reprint = await request({
+        method: "POST",
+        url: `/api/sales/${sales[0].id}/reprint`,
+      });
+      assert.equal(reprint.status, 200);
+      assert.equal(reprint.json().print_status, "printed");
+      assert.equal(reprint.json().print_attempts, 2);
+      assert.equal(printed.length, 2);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test("restore backup: valida il file, blocca il turno aperto e sostituisce il DB senza riavvio", async () => {
   const harness = createHarness({ printTicket: async () => {} });
 
@@ -776,10 +841,13 @@ test("sconto percentuale e omaggio applicati correttamente", async () => {
   }
 });
 
-test("errore stampa annulla automaticamente la vendita", async () => {
+test("errore stampa conserva la vendita e consente una ristampa esplicita", async () => {
+  let printCalls = 0;
+  let printerOffline = true;
   const harness = createHarness({
     printTicket: async () => {
-      throw new Error("Stampante offline");
+      printCalls += 1;
+      if (printerOffline) throw new Error("Stampante offline\ncon dettaglio");
     },
   });
 
@@ -795,22 +863,75 @@ test("errore stampa annulla automaticamente la vendita", async () => {
         body: JSON.stringify({ opening_float_cents: 0 }),
       });
 
+      const saleBody = JSON.stringify({
+        items: [{ product_id: product.id, qty: 1 }],
+      });
+      const saleHeaders = {
+        "Content-Type": "application/json",
+        "Idempotency-Key": "print-failure-preserved-0001",
+      };
       const saleRes = await request({
         method: "POST",
         url: "/api/sales/print",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          items: [{ product_id: product.id, qty: 1 }],
-        }),
+        headers: saleHeaders,
+        body: saleBody,
       });
 
       assert.equal(saleRes.status, 502);
-      assert.match(saleRes.json().error, /annullata automaticamente/);
+      assert.equal(saleRes.json().sale_recorded, true);
+      assert.equal(saleRes.json().print_status, "failed");
+      assert.match(saleRes.json().error, /registrata/);
+      assert.equal(printCalls, 1);
 
       const todayRes = await request({ url: "/api/reports/today" });
       const today = todayRes.json();
-      assert.equal(today.summary.sales_count, 0);
-      assert.equal(today.summary.revenue_cents, 0);
+      assert.equal(today.summary.sales_count, 1);
+      assert.equal(today.summary.revenue_cents, product.price_cents);
+
+      const sale = (await request({ url: "/api/sales?limit=1" })).json()[0];
+      assert.equal(sale.voided, 0);
+      assert.equal(sale.print_status, "failed");
+      assert.equal(sale.print_attempts, 1);
+      assert.equal(sale.last_print_error, "Stampante offline con dettaglio");
+      assert.equal(sale.can_reprint, true);
+
+      // Un retry dell'incasso non crea vendite e non ristampa implicitamente.
+      const retry = await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: saleHeaders,
+        body: saleBody,
+      });
+      assert.equal(retry.status, 409);
+      assert.equal(retry.json().sale_recorded, true);
+      assert.equal(retry.json().print_status, "failed");
+      assert.equal(printCalls, 1);
+
+      printerOffline = false;
+      const reprint = await request({
+        method: "POST",
+        url: `/api/sales/${sale.id}/reprint`,
+      });
+      assert.equal(reprint.status, 200);
+      assert.equal(reprint.json().print_status, "printed");
+      assert.equal(reprint.json().print_attempts, 2);
+      assert.equal(printCalls, 2);
+
+      const printedSale = (await request({ url: `/api/sales/${sale.id}` })).json();
+      assert.equal(printedSale.print_status, "printed");
+      assert.equal(printedSale.last_print_error, null);
+      assert.ok(printedSale.last_printed_at);
+
+      assert.equal((await request({
+        method: "POST",
+        url: `/api/sales/${sale.id}/void`,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "Test ristampa annullata" }),
+      })).status, 200);
+      assert.equal((await request({
+        method: "POST",
+        url: `/api/sales/${sale.id}/reprint`,
+      })).status, 409);
     });
   } finally {
     harness.cleanup();
@@ -1173,7 +1294,7 @@ test("esaurito e scorte: vendita bloccata, decremento e ripristino su storno", a
       });
       assert.equal((await sellSeeded()).status, 200);
 
-      // stampa fallita: la vendita si annulla e le scorte tornano indietro
+      // stampa fallita: la vendita resta valida e le scorte restano decrementate
       failPrint = true;
       const printFail = await request({
         method: "POST",
@@ -1182,7 +1303,8 @@ test("esaurito e scorte: vendita bloccata, decremento e ripristino su storno", a
         body: JSON.stringify({ items: [{ product_id: tortaId, qty: 1 }] }),
       });
       assert.equal(printFail.status, 502);
-      assert.equal((await getProduct(tortaId)).stock, 2);
+      assert.equal(printFail.json().sale_recorded, true);
+      assert.equal((await getProduct(tortaId)).stock, 1);
       failPrint = false;
 
       // stock null = non tracciate: vendite senza limite di quantita'
@@ -1329,7 +1451,9 @@ test("stampa pendente: blocca movimenti, chiusura e storni concorrenti", async (
 
       const updated = (await request({ url: "/api/products/all" })).json()
         .find(p => p.id === product.id);
-      assert.equal(updated.stock, 5);
+      assert.equal(updated.stock, 4);
+      const current = (await request({ url: "/api/sessions/current" })).json();
+      assert.equal(current.session.totals.expectedCashCents, product.price_cents);
       assert.equal((await post("/api/sessions/close", { counted_cash_cents: 0 })).status, 200);
     });
   } finally {

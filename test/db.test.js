@@ -26,7 +26,7 @@ test("initDb crea schema, seed iniziale e contatore vendite", () => {
 
     assert.equal(productCount, 4);
     assert.equal(saleCounter.int_value, 0);
-    assert.equal(db.pragma("user_version", { simple: true }), 5);
+    assert.equal(db.pragma("user_version", { simple: true }), 6);
 
     db.close();
   } finally {
@@ -115,7 +115,7 @@ test("migrazione legacy aggiunge e valorizza gli snapshot prodotto prima di crea
       product_category: "Cibo",
       stock_decremented_qty: 0,
     });
-    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 5);
+    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 6);
     assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "session_id"));
     assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "client_request_id"));
     assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "request_fingerprint"));
@@ -168,7 +168,7 @@ test("migrazione v4 preserva dati, sequenze, snapshot e applica i constraint can
     dbModule.initDb();
     const migrated = dbModule.db;
 
-    assert.equal(migrated.pragma("user_version", { simple: true }), 5);
+    assert.equal(migrated.pragma("user_version", { simple: true }), 6);
     assert.equal(migrated.pragma("foreign_keys", { simple: true }), 1);
     assert.deepEqual(migrated.pragma("foreign_key_check"), []);
     assert.deepEqual(
@@ -186,6 +186,20 @@ test("migrazione v4 preserva dati, sequenze, snapshot e applica i constraint can
     );
     assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM cash_movements").get().count, 1);
     assert.equal(migrated.prepare("SELECT int_value FROM app_state WHERE key='sale_number'").get().int_value, 42);
+    assert.deepEqual(
+      migrated.prepare(`
+        SELECT print_status, print_attempts, last_print_error,
+               last_print_attempt_at, last_printed_at
+        FROM sales WHERE id = 11
+      `).get(),
+      {
+        print_status: "printed",
+        print_attempts: 1,
+        last_print_error: null,
+        last_print_attempt_at: migrated.prepare("SELECT created_at FROM sales WHERE id=11").get().created_at,
+        last_printed_at: migrated.prepare("SELECT created_at FROM sales WHERE id=11").get().created_at,
+      }
+    );
 
     // Una seconda inizializzazione non ricopia i dati e non altera le sequenze.
     dbModule.initDb();
@@ -252,7 +266,7 @@ test("una migrazione incompatibile fa rollback e lascia intatte le tabelle legac
     const dbModule = loadDbModule(dbPath);
     assert.throws(
       () => dbModule.initDb(),
-      /Migrazione schema v5 non riuscita: CHECK constraint failed/
+      /Migrazione schema v6 non riuscita: CHECK constraint failed/
     );
     assert.equal(dbModule.db.pragma("user_version", { simple: true }), 4);
     assert.equal(
@@ -266,7 +280,7 @@ test("una migrazione incompatibile fa rollback e lascia intatte le tabelle legac
     assert.equal(
       dbModule.db.prepare(`
         SELECT COUNT(*) AS count FROM sqlite_master
-        WHERE type='table' AND name LIKE '__eventorder_v5_%'
+        WHERE type='table' AND name LIKE '__eventorder_migrate_%'
       `).get().count,
       0
     );

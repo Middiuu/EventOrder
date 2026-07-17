@@ -36,7 +36,8 @@ function idempotencyFingerprint(sessionId, normalized, paymentMethod, body) {
 function replayExistingSale(res, clientRequestId, fingerprint) {
   const sale = db.prepare(`
     SELECT id, sale_number, total_cents, discount_cents, payment_method,
-           change_cents, request_fingerprint, voided, void_reason
+           change_cents, request_fingerprint, voided, void_reason,
+           print_status, print_attempts
     FROM sales WHERE client_request_id = ?
   `).get(clientRequestId);
   if (!sale) return false;
@@ -57,6 +58,19 @@ function replayExistingSale(res, clientRequestId, fingerprint) {
       error: `La vendita #${String(sale.sale_number).padStart(4, "0")} associata a questo tentativo e' stata annullata. Avvia un nuovo incasso.`,
     });
   }
+  if (sale.print_status === "pending" || sale.print_status === "failed") {
+    const uncertain = sale.print_status === "pending";
+    return res.status(409).json({
+      error: uncertain
+        ? `Vendita #${String(sale.sale_number).padStart(4, "0")} registrata, ma esito stampa incerto. Verifica la stampante e usa Ristampa dallo storico.`
+        : `Vendita #${String(sale.sale_number).padStart(4, "0")} registrata, ma stampa non riuscita. Usa Ristampa dallo storico.`,
+      sale_recorded: true,
+      sale_number: sale.sale_number,
+      total_cents: sale.total_cents,
+      print_status: sale.print_status,
+      print_attempts: sale.print_attempts,
+    });
+  }
 
   return res.json({
     ok: true,
@@ -67,6 +81,8 @@ function replayExistingSale(res, clientRequestId, fingerprint) {
     discount_cents: sale.discount_cents,
     payment_method: sale.payment_method,
     change_cents: sale.change_cents,
+    print_status: sale.print_status,
+    print_attempts: sale.print_attempts,
   });
 }
 
@@ -95,6 +111,47 @@ function conflictError(message) {
   err.status = 409;
   err.publicMessage = message;
   return err;
+}
+
+function printableError(err) {
+  const message = String(err?.message || err || "Errore stampante")
+    .replace(/[\r\n\t]+/g, " ")
+    .trim();
+  return (message || "Errore stampante").slice(0, 500);
+}
+
+function beginPrintAttempt(saleId) {
+  db.prepare(`
+    UPDATE sales
+    SET print_status='pending', print_attempts=print_attempts+1,
+        last_print_error=NULL, last_print_attempt_at=datetime('now')
+    WHERE id=? AND voided=0
+  `).run(saleId);
+}
+
+function completePrintAttempt(saleId) {
+  db.prepare(`
+    UPDATE sales
+    SET print_status='printed', last_print_error=NULL,
+        last_printed_at=datetime('now')
+    WHERE id=? AND voided=0
+  `).run(saleId);
+}
+
+function failPrintAttempt(saleId, message) {
+  db.prepare(`
+    UPDATE sales
+    SET print_status='failed', last_print_error=?
+    WHERE id=? AND voided=0
+  `).run(message, saleId);
+}
+
+function printState(saleId) {
+  return db.prepare(`
+    SELECT print_status, print_attempts, last_print_error,
+           last_print_attempt_at, last_printed_at
+    FROM sales WHERE id=?
+  `).get(saleId);
 }
 
 function expectedCashForSession(sessionId) {
@@ -165,6 +222,51 @@ function voidSale(saleId, reason, operator, protectExpectedCash = true) {
 
 function createSalesRouter({ printTicket }) {
   const router = express.Router();
+
+  async function attemptSalePrint(saleId, sessionId, payload) {
+    markSalePending(saleId, sessionId);
+    try {
+      beginPrintAttempt(saleId);
+      await printTicket(payload);
+      completePrintAttempt(saleId);
+      return { ok: true, state: printState(saleId) };
+    } catch (err) {
+      const message = printableError(err);
+      console.error(`Stampa vendita #${payload.saleNumber} non riuscita: ${message}`);
+      failPrintAttempt(saleId, message);
+      return { ok: false, message, state: printState(saleId) };
+    } finally {
+      unmarkSalePending(saleId);
+    }
+  }
+
+  function loadPrintPayload(saleId) {
+    const sale = db.prepare(`
+      SELECT id, sale_number, created_at, total_cents, discount_cents,
+             discount_type, discount_value, payment_method,
+             cash_received_cents, change_cents, operator, session_id, voided
+      FROM sales WHERE id=?
+    `).get(saleId);
+    if (!sale) return null;
+    const items = loadItems([saleId]).get(saleId) || [];
+    return {
+      sale,
+      payload: {
+        saleNumber: sale.sale_number,
+        createdAt: sale.created_at,
+        items,
+        subtotalCents: sale.total_cents + sale.discount_cents,
+        discountCents: sale.discount_cents,
+        discountType: sale.discount_type,
+        discountValue: sale.discount_value,
+        totalCents: sale.total_cents,
+        paymentMethod: sale.payment_method,
+        cashReceivedCents: sale.cash_received_cents,
+        changeCents: sale.change_cents,
+        operator: sale.operator,
+      },
+    };
+  }
 
   router.post("/print", async (req, res) => {
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
@@ -345,33 +447,29 @@ function createSalesRouter({ printTicket }) {
     });
 
     const result = tx();
-    markSalePending(result.saleId, session.id);
-
-    try {
-      await printTicket({
-        saleNumber: result.saleNumber,
-        createdAt: result.createdAt,
-        items: computedItems,
-        subtotalCents,
-        discountCents,
-        discountType,
-        discountValue,
-        totalCents,
-        paymentMethod,
-        cashReceivedCents,
-        changeCents,
-        operator: session.operator,
-      });
-    } catch (err) {
-      console.error(`Stampa vendita #${result.saleNumber} non riuscita: ${err?.message || String(err)}`);
-      // Durante la stampa movimenti, chiusura e storni manuali sono bloccati:
-      // l'annullo automatico può quindi ripristinare in sicurezza la vendita.
-      voidSale(result.saleId, "Stampa non riuscita", session.operator, false);
+    const printed = await attemptSalePrint(result.saleId, session.id, {
+      saleNumber: result.saleNumber,
+      createdAt: result.createdAt,
+      items: computedItems,
+      subtotalCents,
+      discountCents,
+      discountType,
+      discountValue,
+      totalCents,
+      paymentMethod,
+      cashReceivedCents,
+      changeCents,
+      operator: session.operator,
+    });
+    if (!printed.ok) {
       return res.status(502).json({
-        error: `Stampa non riuscita. Vendita #${String(result.saleNumber).padStart(4, "0")} annullata automaticamente.`,
+        error: `Vendita #${String(result.saleNumber).padStart(4, "0")} registrata, ma stampa non riuscita. Usa Ristampa dallo storico Vendite.`,
+        sale_recorded: true,
+        sale_number: result.saleNumber,
+        total_cents: totalCents,
+        print_status: printed.state.print_status,
+        print_attempts: printed.state.print_attempts,
       });
-    } finally {
-      unmarkSalePending(result.saleId);
     }
 
     res.json({
@@ -382,6 +480,8 @@ function createSalesRouter({ printTicket }) {
       discount_cents: discountCents,
       payment_method: paymentMethod,
       change_cents: changeCents,
+      print_status: printed.state.print_status,
+      print_attempts: printed.state.print_attempts,
     });
   });
 
@@ -473,6 +573,7 @@ function createSalesRouter({ printTicket }) {
     res.json(rows.map(r => ({
       ...r,
       can_void: !r.voided && r.session_id === openSession?.id,
+      can_reprint: !r.voided && !isSalePending(r.id),
       items: itemsBySale.get(r.id) || [],
     })));
   });
@@ -485,7 +586,52 @@ function createSalesRouter({ printTicket }) {
     if (!sale) return res.status(404).json({ error: "Vendita non trovata" });
     const items = loadItems([id]).get(id) || [];
     const openSession = getOpenSession();
-    res.json({ ...sale, can_void: !sale.voided && sale.session_id === openSession?.id, items });
+    res.json({
+      ...sale,
+      can_void: !sale.voided && sale.session_id === openSession?.id,
+      can_reprint: !sale.voided && !isSalePending(sale.id),
+      items,
+    });
+  });
+
+  // Ristampa esplicita e idempotente rispetto alla vendita: non crea una
+  // seconda vendita, ma registra ogni nuovo tentativo sul record esistente.
+  router.post("/:id/reprint", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      return res.status(400).json({ error: "Id non valido" });
+    }
+    if (isSalePending(id)) {
+      return res.status(409).json({ error: "Una stampa di questa vendita e' gia' in corso" });
+    }
+
+    const loaded = loadPrintPayload(id);
+    if (!loaded) return res.status(404).json({ error: "Vendita non trovata" });
+    if (loaded.sale.voided) {
+      return res.status(409).json({ error: "Non puoi ristampare una vendita annullata" });
+    }
+
+    const printed = await attemptSalePrint(
+      loaded.sale.id,
+      loaded.sale.session_id,
+      loaded.payload
+    );
+    if (!printed.ok) {
+      return res.status(502).json({
+        error: `Ristampa della vendita #${String(loaded.sale.sale_number).padStart(4, "0")} non riuscita. La vendita resta registrata.`,
+        sale_recorded: true,
+        sale_number: loaded.sale.sale_number,
+        print_status: printed.state.print_status,
+        print_attempts: printed.state.print_attempts,
+      });
+    }
+
+    res.json({
+      ok: true,
+      sale_number: loaded.sale.sale_number,
+      print_status: printed.state.print_status,
+      print_attempts: printed.state.print_attempts,
+    });
   });
 
   // Storno di una vendita specifica con motivo

@@ -976,6 +976,19 @@ async function initCassa(signal) {
       await refreshShellData();
       await reloadProducts();
     } catch (err) {
+      if (err.data?.sale_recorded) {
+        const saleNumber = String(err.data.sale_number || "").padStart(4, "0");
+        cart.clear();
+        checkoutAttempt = null;
+        setCheckoutControlsLocked(false);
+        closeModal(paymentModal);
+        showToast(`Vendita #${saleNumber} registrata • stampa da ripetere`);
+        alert(err.message);
+        await refreshSession();
+        await refreshShellData();
+        await reloadProducts();
+        return;
+      }
       const uncertain = err.status === undefined || err.data?.retryable === true;
       if (uncertain) {
         setCheckoutControlsLocked(true);
@@ -1743,12 +1756,16 @@ async function initSales() {
     const items = (sale.items || []).map(it => `${it.qty}× ${escapeHtml(it.name)}`).join(", ");
     const when = new Date(sale.created_at + "Z").toLocaleString(APP_CONFIG.locale);
     const num = String(sale.sale_number).padStart(4, "0");
+    const printWarning = !sale.voided && sale.print_status !== "printed"
+      ? `<span class="status-pill ${sale.print_status === "failed" ? "is-soldout" : "is-inactive"}">${sale.print_status === "failed" ? "Stampa fallita" : "Stampa da verificare"}</span>`
+      : "";
     return `
       <div class="surface-card sale-row ${sale.voided ? "is-voided" : ""}">
         <div class="sale-main">
           <div class="sale-head">
             <b>#${num}</b>
             <span class="status-pill ${sale.voided ? "is-inactive" : "is-active"}">${sale.voided ? "Annullata" : PAY_LABEL[sale.payment_method] || sale.payment_method}</span>
+            ${printWarning}
             ${sale.operator ? `<span class="small">${escapeHtml(sale.operator)}</span>` : ""}
           </div>
           <div class="small">${when}</div>
@@ -1757,6 +1774,7 @@ async function initSales() {
         </div>
         <div class="sale-side">
           <div class="line-total">${euro(sale.total_cents)}</div>
+          ${sale.can_reprint ? `<button class="btn btn-secondary btn-compact" data-reprint="${sale.id}" data-sale-number="${num}" type="button">Ristampa</button>` : ""}
           ${sale.can_void ? `<button class="btn btn-secondary btn-compact" data-void="${sale.id}" type="button">Annulla</button>` : ""}
         </div>
       </div>
@@ -1804,6 +1822,28 @@ async function initSales() {
   }
 
   listEl.addEventListener("click", async (e) => {
+    const reprintId = e.target?.getAttribute?.("data-reprint");
+    if (reprintId) {
+      const saleNumber = e.target.getAttribute("data-sale-number") || "";
+      const confirmed = await uiConfirm(
+        `Ristampare il ticket #${saleNumber}?`,
+        "Ristampa ticket"
+      );
+      if (!confirmed) return;
+      e.target.disabled = true;
+      try {
+        const result = await api(`/api/sales/${encodeURIComponent(reprintId)}/reprint`, {
+          method: "POST",
+        });
+        showToast(`Ticket #${String(result.sale_number).padStart(4, "0")} ristampato`);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        await refresh().catch(err => alert(err.message));
+      }
+      return;
+    }
+
     const id = e.target?.getAttribute?.("data-void");
     if (!id) return;
     const reason = await uiPrompt("Annulla vendita", "Motivo dell'annullo (opzionale)", "");

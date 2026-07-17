@@ -48,6 +48,15 @@ CREATE TABLE IF NOT EXISTS sales (
   void_reason TEXT,
   voided_at TEXT,
   void_operator TEXT,
+  -- Stato persistente della stampa: la vendita resta valida anche quando la
+  -- stampante non risponde e puo' essere ristampata dallo storico.
+  print_status TEXT NOT NULL DEFAULT 'pending'
+    CHECK(print_status IN ('pending', 'printed', 'failed')),
+  print_attempts INTEGER NOT NULL DEFAULT 0
+    CHECK(typeof(print_attempts) = 'integer' AND print_attempts >= 0),
+  last_print_error TEXT,
+  last_print_attempt_at TEXT,
+  last_printed_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   voided INTEGER NOT NULL DEFAULT 0 CHECK(voided IN (0, 1)),
   FOREIGN KEY (session_id) REFERENCES cash_sessions(id)
@@ -93,6 +102,7 @@ CREATE INDEX IF NOT EXISTS idx_cash_movements_session ON cash_movements(session_
 CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);
 CREATE INDEX IF NOT EXISTS idx_sales_session ON sales(session_id);
 CREATE INDEX IF NOT EXISTS idx_sales_voided ON sales(voided, created_at);
+CREATE INDEX IF NOT EXISTS idx_sales_print_status ON sales(print_status, created_at);
 CREATE INDEX IF NOT EXISTS idx_sale_items_sale_id ON sale_items(sale_id);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_sales_sale_number ON sales(sale_number);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_sales_client_request_id
