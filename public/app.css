@@ -270,7 +270,7 @@ select.input { appearance:none; -webkit-appearance:none; }
 
 .category-rail {
   display:flex; gap:8px; overflow-x:auto;
-  margin:-4px 0 18px; padding:2px 2px 7px;
+  margin:-4px 0 8px; padding:2px 2px 7px;
   overscroll-behavior-inline:contain; scrollbar-width:thin;
 }
 .category-filter {
@@ -291,6 +291,22 @@ select.input { appearance:none; -webkit-appearance:none; }
   font:600 .7rem var(--mono);
 }
 .category-filter.is-active .category-filter-count { background:var(--accent); color:#fff; }
+.catalog-gesture-hint {
+  display:flex; align-items:center; gap:8px; min-height:28px;
+  margin:0 2px 14px; color:var(--muted); font-size:.78rem; line-height:1.35;
+}
+.hold-indicator {
+  position:relative; flex:0 0 auto; width:18px; height:18px;
+  border:1px solid var(--accent-border); border-radius:50%; background:var(--accent-soft);
+}
+.hold-indicator::after {
+  content:""; position:absolute; inset:5px; border-radius:50%; background:var(--accent-ink);
+}
+.catalog-keyboard-hint { display:none; align-items:center; gap:4px; margin-left:auto; white-space:nowrap; }
+.catalog-keyboard-hint kbd {
+  padding:2px 6px; border:1px solid var(--border); border-bottom-width:2px;
+  border-radius:6px; background:var(--surface-2); color:var(--ink-2); font:600 .66rem var(--mono);
+}
 .catalog-empty {
   grid-column:1 / -1; display:grid; place-items:center; min-height:150px;
   padding:24px; border:1px dashed var(--field-border); border-radius:var(--r);
@@ -298,12 +314,20 @@ select.input { appearance:none; -webkit-appearance:none; }
 }
 
 .product-card {
+  position:relative; overflow:hidden;
   text-align:left;
   display:flex; flex-direction:column; gap:8px;
   min-height:120px; padding:16px;
   background:var(--surface); border:1px solid var(--border); border-radius:var(--r);
   transition:border-color .15s ease, transform .12s ease, box-shadow .15s ease;
 }
+.product-card::after {
+  content:""; position:absolute; right:0; bottom:0; left:0; height:4px;
+  background:linear-gradient(90deg,var(--accent),var(--danger));
+  opacity:0; transform:scaleX(0); transform-origin:left center;
+}
+.product-card.is-holding::after { opacity:1; animation:holdToSoldOut .65s linear forwards; }
+@keyframes holdToSoldOut { to { transform:scaleX(1); } }
 .product-card:hover { border-color:var(--accent-border); transform:translateY(-1px); box-shadow:var(--sh); }
 .product-card:active { transform:scale(.99); }
 .product-card-cat { text-transform:uppercase; letter-spacing:.12em; font-size:.64rem; font-weight:700; color:var(--faint); }
@@ -386,8 +410,15 @@ select.input { appearance:none; -webkit-appearance:none; }
 
 /* Dialog generico */
 .dialog-card { width:min(420px, calc(100vw - 32px)); }
+.dialog-card.is-alert { padding-left:28px; }
+.dialog-card.is-alert::before {
+  content:""; position:absolute; top:22px; bottom:22px; left:0; width:4px;
+  border-radius:0 999px 999px 0; background:var(--warn);
+}
+.dialog-card.is-danger::before { background:var(--danger); }
+.dialog-card.is-success::before { background:var(--ok); }
 .dialog-title { margin-bottom:6px; font-size:1.2rem; }
-.dialog-message { margin-bottom:16px; color:var(--muted); line-height:1.5; }
+.dialog-message { margin-bottom:16px; color:var(--muted); line-height:1.5; white-space:pre-line; }
 .dialog-input-field { margin-bottom:4px; }
 
 /* ============ Tabella prodotti ============ */
@@ -621,6 +652,7 @@ select.input { appearance:none; -webkit-appearance:none; }
   .product-form-footer { align-items:stretch; flex-direction:column; }
   .product-form-actions { width:100%; }
   .product-modal-card { padding:20px; }
+  .catalog-keyboard-hint { display:none !important; }
   .products-grid { grid-template-columns:repeat(auto-fill, minmax(140px,1fr)); }
   .report-controls { grid-template-columns:1fr; }
   .report-scope-controls, .report-export-grid { grid-template-columns:1fr; }
@@ -649,6 +681,10 @@ select.input { appearance:none; -webkit-appearance:none; }
   .category-filter { min-height:48px; }
   .qtyBtn { width:44px; height:44px; }
   .side-nav a { min-height:48px; }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .catalog-keyboard-hint { display:inline-flex; }
 }
 
 @media (prefers-reduced-motion: reduce) {

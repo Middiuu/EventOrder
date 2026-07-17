@@ -433,9 +433,9 @@ function ensureDialog() {
   el.hidden = true;
   el.innerHTML = `
     <div class="modal-backdrop" data-dlg="cancel"></div>
-    <div class="modal-card dialog-card" role="dialog" aria-modal="true" aria-labelledby="appDialogTitle">
+    <div class="modal-card dialog-card" role="dialog" aria-modal="true" aria-labelledby="appDialogTitle" aria-describedby="appDialogMessage">
       <h2 id="appDialogTitle" class="dialog-title"></h2>
-      <p class="dialog-message"></p>
+      <p id="appDialogMessage" class="dialog-message"></p>
       <label class="field dialog-input-field" hidden>
         <span class="field-label dialog-input-label"></span>
         <input class="input dialog-input" type="text" />
@@ -449,9 +449,13 @@ function ensureDialog() {
   return el;
 }
 
-function openDialog({ title, message, input, okLabel } = {}) {
+function openDialog({ title, message, input, okLabel, cancelable = true, tone } = {}) {
   return new Promise((resolve) => {
     const el = ensureDialog();
+    const card = el.querySelector(".dialog-card");
+    card.classList.remove("is-alert", "is-warning", "is-danger", "is-success");
+    if (tone) card.classList.add("is-alert", `is-${tone}`);
+    card.setAttribute("role", tone ? "alertdialog" : "dialog");
     el.querySelector(".dialog-title").textContent = title || "";
     const msgEl = el.querySelector(".dialog-message");
     msgEl.textContent = message || "";
@@ -466,7 +470,9 @@ function openDialog({ title, message, input, okLabel } = {}) {
       field.hidden = true;
     }
     const ok = el.querySelector(".dialog-ok");
+    const cancel = el.querySelector('[data-dlg="cancel"]:not(.modal-backdrop)');
     ok.textContent = okLabel || "Conferma";
+    cancel.hidden = !cancelable;
     openModal(el);
 
     function cleanup(result) {
@@ -477,10 +483,12 @@ function openDialog({ title, message, input, okLabel } = {}) {
       resolve(result);
     }
     const onOk = () => cleanup(input ? inputEl.value : true);
-    const onCancel = (e) => { if (e.target?.getAttribute?.("data-dlg") === "cancel") cleanup(input ? null : false); };
+    const onCancel = (e) => {
+      if (cancelable && e.target?.getAttribute?.("data-dlg") === "cancel") cleanup(input ? null : false);
+    };
     const onKey = (e) => {
       if (!isTopModal(el)) return;
-      if (e.key === "Escape") cleanup(input ? null : false);
+      if (e.key === "Escape") cleanup(cancelable ? (input ? null : false) : true);
       else if (e.key === "Enter") { e.preventDefault(); onOk(); }
     };
     ok.addEventListener("click", onOk);
@@ -492,6 +500,10 @@ function openDialog({ title, message, input, okLabel } = {}) {
 
 const uiConfirm = (message, title = "Conferma") => openDialog({ title, message });
 const uiPrompt = (title, label, value = "") => openDialog({ title, input: { label, value } });
+const uiAlert = (message, title = "Attenzione", tone = "warning") => (
+  openDialog({ title, message, okLabel: "Chiudi", cancelable: false, tone })
+);
+const uiError = (error) => uiAlert(error?.message || String(error), "Operazione non riuscita", "danger");
 
 // --------------------
 // CASSA
@@ -709,7 +721,7 @@ async function initCassa(signal) {
   openSessionForm?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const floatCents = eurToCents(openSessionForm.float_eur.value || "0");
-    if (floatCents === null) return alert("Fondo cassa non valido.");
+    if (floatCents === null) return uiAlert("Fondo cassa non valido.");
     const operator = operatorInput && !operatorField.hidden
       ? String(operatorInput.value || "").trim() || undefined
       : undefined;
@@ -722,7 +734,7 @@ async function initCassa(signal) {
       showToast("Cassa aperta");
       await refreshSession();
     } catch (err) {
-      alert(err.message);
+      await uiError(err);
     }
   });
 
@@ -762,7 +774,7 @@ async function initCassa(signal) {
   closeSessionForm?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const counted = eurToCents(closeSessionForm.counted_eur.value);
-    if (counted === null) return alert("Inserisci i contanti contati.");
+    if (counted === null) return uiAlert("Inserisci i contanti contati.");
     try {
       const data = await api("/api/sessions/close", {
         method: "POST",
@@ -773,7 +785,7 @@ async function initCassa(signal) {
       showToast(`Cassa chiusa • differenza ${diff >= 0 ? "+" : "−"} ${money(Math.abs(diff))}`);
       await refreshSession();
     } catch (err) {
-      alert(err.message);
+      await uiError(err);
     }
   });
 
@@ -805,9 +817,9 @@ async function initCassa(signal) {
   movementForm?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const amount = eurToCents(movementForm.amount_eur.value);
-    if (!amount) return alert("Inserisci un importo maggiore di zero.");
+    if (!amount) return uiAlert("Inserisci un importo maggiore di zero.");
     const reason = String(movementForm.reason.value || "").trim();
-    if (!reason) return alert("Indica il motivo del movimento.");
+    if (!reason) return uiAlert("Indica il motivo del movimento.");
     try {
       await api("/api/sessions/movements", {
         method: "POST",
@@ -817,7 +829,7 @@ async function initCassa(signal) {
       showToast(`${movDirection === "out" ? "Prelievo" : "Versamento"} registrato • ${money(amount)}`);
       await refreshSession();
     } catch (err) {
-      alert(err.message);
+      await uiError(err);
     }
   });
 
@@ -832,7 +844,7 @@ async function initCassa(signal) {
       showToast(soldOut ? `"${p.name}" segnato esaurito` : `"${p.name}" di nuovo disponibile`);
       await reloadProducts();
     } catch (err) {
-      alert(err.message);
+      await uiError(err);
     }
   }
 
@@ -850,6 +862,10 @@ async function initCassa(signal) {
       const available = productAvailable(p);
       const b = document.createElement("button");
       b.className = "btn product-card" + (available ? "" : " is-soldout");
+      if (available) {
+        b.setAttribute("aria-describedby", "soldOutHint");
+        b.setAttribute("aria-keyshortcuts", "Shift+Enter");
+      }
 
       let stockTag = "";
       if (available && p.stock != null) {
@@ -863,20 +879,44 @@ async function initCassa(signal) {
       // Long-press su una card disponibile: segna il prodotto come esaurito.
       let pressTimer = null;
       let suppressClick = false;
-      b.addEventListener("pointerdown", () => {
-        suppressClick = false;
-        if (!available) return;
-        pressTimer = setTimeout(async () => {
-          suppressClick = true;
+      let soldOutPromptOpen = false;
+      const requestSoldOut = async () => {
+        if (soldOutPromptOpen) return;
+        soldOutPromptOpen = true;
+        try {
           const ok = await uiConfirm(`Segnare "${p.name}" come esaurito? Non sarà più vendibile finché non lo rimetti disponibile.`, "Esaurito");
           if (ok) await setSoldOut(p, true);
+        } finally {
+          soldOutPromptOpen = false;
+        }
+      };
+      const cancelPress = () => {
+        clearTimeout(pressTimer);
+        pressTimer = null;
+        b.classList.remove("is-holding");
+      };
+      b.addEventListener("pointerdown", (event) => {
+        suppressClick = false;
+        if (!available || event.button !== 0) return;
+        cancelPress();
+        b.classList.add("is-holding");
+        pressTimer = setTimeout(() => {
+          pressTimer = null;
+          b.classList.remove("is-holding");
+          suppressClick = true;
+          void requestSoldOut();
         }, 650);
       });
-      const cancelPress = () => clearTimeout(pressTimer);
       b.addEventListener("pointerup", cancelPress);
       b.addEventListener("pointerleave", cancelPress);
       b.addEventListener("pointercancel", cancelPress);
       b.addEventListener("contextmenu", (e) => e.preventDefault());
+      b.addEventListener("keydown", (event) => {
+        if (!available || event.key !== "Enter" || !event.shiftKey) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void requestSoldOut();
+      });
 
       b.onclick = async () => {
         if (suppressClick) { suppressClick = false; return; }
@@ -885,7 +925,7 @@ async function initCassa(signal) {
           const ok = await uiConfirm(`Rimettere "${p.name}" disponibile in cassa?`, "Di nuovo disponibile");
           if (ok) await setSoldOut(p, false);
         } else {
-          alert("Scorte terminate: aggiornale dalla pagina Prodotti.");
+          await uiAlert("Scorte terminate: aggiornale dalla pagina Prodotti.");
         }
       };
       grid.appendChild(b);
@@ -1135,7 +1175,7 @@ async function initCassa(signal) {
           body.cash_received_cents = 0;
         } else {
           const received = eurToCents(cashReceivedEl?.value);
-          if (received === null || received < total) return alert("Contanti ricevuti insufficienti.");
+          if (received === null || received < total) return uiAlert("Contanti ricevuti insufficienti.");
           body.cash_received_cents = received;
         }
       }
@@ -1171,7 +1211,7 @@ async function initCassa(signal) {
         setCheckoutControlsLocked(false);
         closeModal(paymentModal);
         showToast(`Vendita #${saleNumber} registrata • stampa da ripetere`);
-        alert(err.message);
+        await uiError(err);
         await refreshSession();
         await refreshShellData();
         await reloadProducts();
@@ -1180,11 +1220,15 @@ async function initCassa(signal) {
       const uncertain = err.status === undefined || err.data?.retryable === true;
       if (uncertain) {
         setCheckoutControlsLocked(true);
-        alert(`${err.message}\n\nEsito incerto: riapri l'incasso e premi di nuovo Conferma.`);
+        await uiAlert(
+          `${err.message}\n\nEsito incerto: riapri l'incasso e premi di nuovo Conferma.`,
+          "Verifica l'incasso",
+          "danger"
+        );
       } else {
         checkoutAttempt = null;
         setCheckoutControlsLocked(false);
-        alert(err.message);
+        await uiError(err);
       }
     } finally {
       isPrinting = false;
@@ -1404,7 +1448,7 @@ async function initProdotti(signal) {
             showToast("Ordine prodotti aggiornato");
             await refresh();
           } catch (err) {
-            alert(err.message);
+            await uiError(err);
             await refresh();
           }
         }
@@ -1444,7 +1488,7 @@ async function initProdotti(signal) {
       closeEditModal();
       await refresh();
     } catch (err) {
-      alert(err.message);
+      await uiError(err);
     }
   });
   searchEl?.addEventListener("input", applySearch);
@@ -1472,10 +1516,10 @@ async function initProdotti(signal) {
     const stock = stockFromInput(stockEl?.value);
     const cost_cents = costFromInput(costEl?.value);
 
-    if (!name) return alert("Inserisci un nome prodotto.");
-    if (price_cents === null) return alert("Prezzo non valido.");
-    if (stock === undefined) return alert("Scorte non valide: intero >= 0 o vuoto.");
-    if (cost_cents === undefined) return alert("Costo non valido: importo in euro o vuoto.");
+    if (!name) return uiAlert("Inserisci un nome prodotto.");
+    if (price_cents === null) return uiAlert("Prezzo non valido.");
+    if (stock === undefined) return uiAlert("Scorte non valide: intero >= 0 o vuoto.");
+    if (cost_cents === undefined) return uiAlert("Costo non valido: importo in euro o vuoto.");
 
     try {
       await api("/api/products", { method: "POST", body: JSON.stringify({ name, category, price_cents, sort_order, active, stock, cost_cents }) });
@@ -1483,7 +1527,7 @@ async function initProdotti(signal) {
       await refresh();
       closeCreateForm();
     } catch (err) {
-      alert(err.message);
+      await uiError(err);
     }
   };
 
@@ -1500,11 +1544,11 @@ async function initProdotti(signal) {
     const stock = stockFromInput(editStockEl?.value);
     const cost_cents = costFromInput(editCostEl?.value);
 
-    if (!id) return alert("Prodotto non valido.");
-    if (!name) return alert("Inserisci un nome prodotto.");
-    if (price_cents === null) return alert("Prezzo non valido.");
-    if (stock === undefined) return alert("Scorte non valide: intero >= 0 o vuoto.");
-    if (cost_cents === undefined) return alert("Costo non valido: importo in euro o vuoto.");
+    if (!id) return uiAlert("Prodotto non valido.");
+    if (!name) return uiAlert("Inserisci un nome prodotto.");
+    if (price_cents === null) return uiAlert("Prezzo non valido.");
+    if (stock === undefined) return uiAlert("Scorte non valide: intero >= 0 o vuoto.");
+    if (cost_cents === undefined) return uiAlert("Costo non valido: importo in euro o vuoto.");
 
     try {
       await api(`/api/products/${encodeURIComponent(id)}`, {
@@ -1516,7 +1560,7 @@ async function initProdotti(signal) {
       await refresh();
       resetCreateForm();
     } catch (err) {
-      alert(err.message);
+      await uiError(err);
     }
   };
 
@@ -1808,9 +1852,9 @@ async function initReport() {
 
   // onchange (assegnazione, non addEventListener): niente doppi binding
   // quando initReport viene rieseguito dal router o dal cambio tema.
-  if (fromEl) fromEl.onchange = () => render().catch(err => alert(err.message));
-  if (toEl) toEl.onchange = () => render().catch(err => alert(err.message));
-  if (sessionEl) sessionEl.onchange = () => render().catch(err => alert(err.message));
+  if (fromEl) fromEl.onchange = () => render().catch(uiError);
+  if (toEl) toEl.onchange = () => render().catch(uiError);
+  if (sessionEl) sessionEl.onchange = () => render().catch(uiError);
 
   renderClosures();
   await render();
@@ -1857,7 +1901,7 @@ async function initReportExport() {
   // Gli export usano lo stesso perimetro della dashboard (date o turno)
   function download(endpoint, name) {
     const scope = reportScopeQuery();
-    if (!scope) { alert("Seleziona entrambe le date (Da / A) o un turno."); return; }
+    if (!scope) { void uiAlert("Seleziona entrambe le date (Da / A) o un turno."); return; }
     showToast(`${name}: ${scope.label}`);
     window.location.href = `${endpoint}${scope.qs}`;
   }
@@ -1880,7 +1924,7 @@ async function initReportExport() {
       const file = restoreFile.files?.[0];
       if (!file) return;
       if (file.size > 100 * 1024 * 1024) {
-        alert("Il file supera il limite di 100 MB.");
+        await uiAlert("Il file supera il limite di 100 MB.");
         return;
       }
 
@@ -1889,7 +1933,7 @@ async function initReportExport() {
         `Scrivi RIPRISTINA per sostituire i dati correnti con ${file.name}`
       );
       if (confirmation !== "RIPRISTINA") {
-        if (confirmation !== null) alert("Conferma non corretta: ripristino annullato.");
+        if (confirmation !== null) await uiAlert("Conferma non corretta: ripristino annullato.");
         return;
       }
 
@@ -1908,10 +1952,14 @@ async function initReportExport() {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || "Ripristino non riuscito");
 
-        alert(`Ripristino completato. Backup di sicurezza creato: ${data.safety_backup}`);
+        await uiAlert(
+          `Backup di sicurezza creato: ${data.safety_backup}`,
+          "Ripristino completato",
+          "success"
+        );
         location.reload();
       } catch (err) {
-        alert(err.message);
+        await uiError(err);
         restoreBackupBtn.disabled = false;
         restoreBackupBtn.textContent = previousLabel;
       }
@@ -2027,9 +2075,9 @@ async function initSales() {
         });
         showToast(`Ticket #${String(result.sale_number).padStart(4, "0")} ristampato`);
       } catch (err) {
-        alert(err.message);
+        await uiError(err);
       } finally {
-        await refresh().catch(err => alert(err.message));
+        await refresh().catch(uiError);
       }
       return;
     }
@@ -2046,25 +2094,25 @@ async function initSales() {
       showToast("Vendita annullata");
       await refresh();
     } catch (err) {
-      alert(err.message);
+      await uiError(err);
     }
   });
 
-  refreshBtn?.addEventListener("click", () => refresh().catch(err => alert(err.message)));
+  refreshBtn?.addEventListener("click", () => refresh().catch(uiError));
   toggleFiltersBtn?.addEventListener("click", () => {
     setAdvancedFilters(toggleFiltersBtn.getAttribute("aria-expanded") !== "true");
   });
   if (filtersForm) filtersForm.onsubmit = (e) => {
     e.preventDefault();
     syncFilterSummary();
-    refresh().catch(err => alert(err.message));
+    refresh().catch(uiError);
   };
   if (filtersForm) filtersForm.onchange = syncFilterSummary;
   if (resetBtn) resetBtn.onclick = () => {
     filtersForm?.reset();
     setAdvancedFilters(false);
     syncFilterSummary();
-    refresh().catch(err => alert(err.message));
+    refresh().catch(uiError);
   };
   syncFilterSummary();
   await refresh();
@@ -2084,6 +2132,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     await refreshShellData();
   } catch (e) {
     console.error(e);
-    alert(e.message || String(e));
+    await uiError(e);
   }
 });
