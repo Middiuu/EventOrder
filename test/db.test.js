@@ -125,3 +125,83 @@ test("migrazione legacy aggiunge e valorizza gli snapshot prodotto prima di crea
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
 });
+
+test("un restore interrotto recupera automaticamente il backup di sicurezza", async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
+  const dbPath = path.join(tempDir, "pos.sqlite");
+  const backupsDir = path.join(tempDir, "backups");
+  const safetyPath = path.join(backupsDir, "eventorder-pre-restore-test.sqlite");
+
+  try {
+    fs.mkdirSync(backupsDir);
+    let dbModule = loadDbModule(dbPath);
+    dbModule.initDb();
+    dbModule.db.prepare("INSERT INTO products (name, price_cents) VALUES (?, ?)")
+      .run("Presente nel backup sicuro", 700);
+    await dbModule.db.backup(safetyPath);
+    dbModule.db.prepare("INSERT INTO products (name, price_cents) VALUES (?, ?)")
+      .run("Successivo al backup", 800);
+    dbModule.db.close();
+
+    fs.writeFileSync(dbPath, "database sostituito ma non valido");
+    fs.writeFileSync(`${dbPath}.restore-state.json`, JSON.stringify({
+      safetyBackupPath: safetyPath,
+      createdAt: new Date().toISOString(),
+    }));
+
+    dbModule = loadDbModule(dbPath);
+    dbModule.initDb();
+    const names = dbModule.db.prepare("SELECT name FROM products ORDER BY id").all().map(row => row.name);
+    assert.equal(names.includes("Presente nel backup sicuro"), true);
+    assert.equal(names.includes("Successivo al backup"), false);
+    assert.equal(fs.existsSync(`${dbPath}.restore-state.json`), false);
+    dbModule.db.close();
+  } finally {
+    delete process.env.POS_DB_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("recupera un restore legacy rimasto fra i due rename", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
+  const dbPath = path.join(tempDir, "pos.sqlite");
+  const originalPath = `${dbPath}.restore-original-test`;
+
+  try {
+    let dbModule = loadDbModule(dbPath);
+    dbModule.initDb();
+    dbModule.db.prepare("INSERT INTO products (name, price_cents) VALUES (?, ?)")
+      .run("Database originale", 900);
+    dbModule.db.close();
+    fs.renameSync(dbPath, originalPath);
+
+    dbModule = loadDbModule(dbPath);
+    dbModule.initDb();
+    const recovered = dbModule.db.prepare("SELECT 1 FROM products WHERE name = ?")
+      .get("Database originale");
+    assert.ok(recovered);
+    assert.equal(fs.existsSync(originalPath), false);
+    dbModule.db.close();
+  } finally {
+    delete process.env.POS_DB_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("nessun modulo conserva statement o transaction legati alla connessione sostituibile", () => {
+  const srcDir = path.join(__dirname, "..", "src");
+  const files = [
+    path.join(srcDir, "db.js"),
+    ...fs.readdirSync(path.join(srcDir, "routes"))
+      .filter(name => name.endsWith(".js"))
+      .map(name => path.join(srcDir, "routes", name)),
+  ];
+  const moduleScopeBinding = /^(?:const|let|var)\s+\w+\s*=\s*db\.(?:prepare|transaction)\s*\(/m;
+  const moduleScopeCall = /^db\.(?:prepare|transaction)\s*\(/m;
+
+  for (const file of files) {
+    const source = fs.readFileSync(file, "utf8");
+    assert.equal(moduleScopeBinding.test(source), false, path.relative(srcDir, file));
+    assert.equal(moduleScopeCall.test(source), false, path.relative(srcDir, file));
+  }
+});

@@ -242,7 +242,12 @@ async function api(path, opts) {
     headers: { "Content-Type": "application/json", ...headers },
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || "Errore");
+  if (!res.ok) {
+    const err = new Error(data.error || "Errore");
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
   return data;
 }
 
@@ -428,7 +433,9 @@ async function initCassa(signal) {
 
   const cart = new Map();
   let isPrinting = false;
-  let checkoutRequestId = null;
+  // Un tentativo dall'esito incerto conserva chiave e payload esatti: riaprire
+  // la modale non puo' trasformare un retry in una seconda vendita.
+  let checkoutAttempt = null;
   let session = null;
   let payMethod = "cash";
   let discType = "none"; // none | percent | amount | gift
@@ -439,6 +446,14 @@ async function initCassa(signal) {
     toastEl.textContent = msg;
     toastEl.classList.add("show");
     setTimeout(() => toastEl.classList.remove("show"), 1700);
+  }
+
+  function guardPendingCheckout() {
+    if (!checkoutAttempt) return false;
+    showToast("Concludi prima l'incasso in sospeso");
+    openModal(paymentModal);
+    setCheckoutControlsLocked(true);
+    return true;
   }
 
   function cartTotal() {
@@ -712,6 +727,7 @@ async function initCassa(signal) {
   }
 
   function addProduct(p) {
+    if (guardPendingCheckout()) return;
     const cur = cart.get(p.id);
     const nextQty = (cur?.qty || 0) + 1;
     if (p.stock != null && nextQty > p.stock) {
@@ -723,6 +739,7 @@ async function initCassa(signal) {
   }
 
   function decProduct(id) {
+    if (guardPendingCheckout()) return;
     const cur = cart.get(id);
     if (!cur) return;
     const next = cur.qty - 1;
@@ -732,6 +749,7 @@ async function initCassa(signal) {
   }
 
   function incProduct(id) {
+    if (guardPendingCheckout()) return;
     const cur = cart.get(id);
     if (!cur) return;
     const p = cur.product;
@@ -817,6 +835,16 @@ async function initCassa(signal) {
     quickCashEl.innerHTML = sorted.map(v =>
       `<button type="button" class="btn btn-secondary btn-compact quick-cash-btn" data-cash="${v}">${money(v)}</button>`
     ).join("");
+    quickCashEl.querySelectorAll("button").forEach(button => {
+      button.disabled = Boolean(checkoutAttempt);
+    });
+  }
+
+  function setCheckoutControlsLocked(locked) {
+    [...payMethodBtns, ...discOptBtns].forEach(button => { button.disabled = locked; });
+    if (discValueEl) discValueEl.disabled = locked;
+    if (cashReceivedEl) cashReceivedEl.disabled = locked;
+    quickCashEl?.querySelectorAll("button").forEach(button => { button.disabled = locked; });
   }
 
   // Aggiorna totale, riga sconto, tasti rapidi e resto in modo coerente
@@ -869,45 +897,51 @@ async function initCassa(signal) {
 
   printBtn?.addEventListener("click", () => {
     if (!session || cart.size === 0) return;
-    // Rimane invariata durante tutti i retry di questo incasso. Se la risposta
-    // si perde, il server riconosce la vendita gia' conclusa senza duplicarla.
-    checkoutRequestId = newCheckoutRequestId();
-    if (cashReceivedEl) cashReceivedEl.value = "";
-    setDiscount("none");
-    setPayMethod("cash");
-    refreshPayment();
+    if (!checkoutAttempt) {
+      if (cashReceivedEl) cashReceivedEl.value = "";
+      setDiscount("none");
+      setPayMethod("cash");
+      refreshPayment();
+    }
+    setCheckoutControlsLocked(Boolean(checkoutAttempt));
     openModal(paymentModal);
-    setTimeout(() => cashReceivedEl?.focus(), 0);
+    if (!checkoutAttempt) setTimeout(() => cashReceivedEl?.focus(), 0);
   });
 
   confirmPayBtn?.addEventListener("click", async () => {
     if (isPrinting) return;
     const total = payableTotal();
-    const body = {
-      items: Array.from(cart.values()).map(it => ({ product_id: it.product.id, qty: it.qty })),
-      payment_method: payMethod,
-      discount: discountBody(),
-    };
-    if (payMethod === "cash") {
-      if (total <= 0) {
-        body.cash_received_cents = 0;
-      } else {
-        const received = eurToCents(cashReceivedEl?.value);
-        if (received === null || received < total) return alert("Contanti ricevuti insufficienti.");
-        body.cash_received_cents = received;
+    if (!checkoutAttempt) {
+      const body = {
+        items: Array.from(cart.values()).map(it => ({ product_id: it.product.id, qty: it.qty })),
+        payment_method: payMethod,
+        discount: discountBody(),
+      };
+      if (payMethod === "cash") {
+        if (total <= 0) {
+          body.cash_received_cents = 0;
+        } else {
+          const received = eurToCents(cashReceivedEl?.value);
+          if (received === null || received < total) return alert("Contanti ricevuti insufficienti.");
+          body.cash_received_cents = received;
+        }
       }
+      checkoutAttempt = {
+        requestId: newCheckoutRequestId(),
+        payload: JSON.stringify(body),
+      };
     }
     try {
       isPrinting = true;
       confirmPayBtn.disabled = true;
-      checkoutRequestId ||= newCheckoutRequestId();
       const out = await api("/api/sales/print", {
         method: "POST",
-        headers: { "Idempotency-Key": checkoutRequestId },
-        body: JSON.stringify(body),
+        headers: { "Idempotency-Key": checkoutAttempt.requestId },
+        body: checkoutAttempt.payload,
       });
       cart.clear();
-      checkoutRequestId = null;
+      checkoutAttempt = null;
+      setCheckoutControlsLocked(false);
       closeModal(paymentModal);
       cartCard?.classList.add("flash");
       setTimeout(() => cartCard?.classList.remove("flash"), 260);
@@ -917,7 +951,15 @@ async function initCassa(signal) {
       await refreshShellData();
       await reloadProducts();
     } catch (err) {
-      alert(err.message);
+      const uncertain = err.status === undefined || err.data?.retryable === true;
+      if (uncertain) {
+        setCheckoutControlsLocked(true);
+        alert(`${err.message}\n\nEsito incerto: riapri l'incasso e premi di nuovo Conferma.`);
+      } else {
+        checkoutAttempt = null;
+        setCheckoutControlsLocked(false);
+        alert(err.message);
+      }
     } finally {
       isPrinting = false;
       renderCart();
@@ -938,10 +980,10 @@ async function initCassa(signal) {
 
   clearBtn?.addEventListener("click", async () => {
     if (cart.size === 0) return;
+    if (guardPendingCheckout()) return;
     const ok = await uiConfirm("Vuoi svuotare il carrello corrente?", "Svuota carrello");
     if (!ok) return;
     cart.clear();
-    checkoutRequestId = null;
     renderCart();
     showToast("Carrello svuotato");
   });

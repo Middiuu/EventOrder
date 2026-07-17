@@ -11,6 +11,7 @@ const { localYmdToUtcSql, parseLocalYmd } = require("../validation");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { beginRestore, endRestore } = require("../maintenance");
 
 const router = express.Router();
 
@@ -491,13 +492,33 @@ const restoreBody = express.raw({
   limit: "100mb",
 });
 
-// --- Restore guidato: file grezzo + header esplicito anti-invio accidentale.
-router.post("/restore", restoreBody, async (req, res, next) => {
+function requireRestoreConfirmation(req, res, next) {
+  if (req.get("X-EventOrder-Restore") !== "RESTORE") {
+    return res.status(400).json({ error: "Conferma di ripristino mancante" });
+  }
+  next();
+}
+
+function acquireRestoreLock(req, res, next) {
+  if (!beginRestore()) {
+    return res.status(409).json({ error: "Un altro ripristino e' gia' in corso" });
+  }
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    endRestore();
+  };
+  res.once("finish", release);
+  res.once("close", release);
+  next();
+}
+
+// Il lock precede il parser del file: anche durante un upload lento nessuna
+// nuova cassa o vendita puo' entrare nella finestra di ripristino.
+router.post("/restore", requireRestoreConfirmation, acquireRestoreLock, restoreBody, async (req, res, next) => {
   let candidatePath;
   try {
-    if (req.get("X-EventOrder-Restore") !== "RESTORE") {
-      return res.status(400).json({ error: "Conferma di ripristino mancante" });
-    }
     if (getOpenSession()) {
       return res.status(409).json({ error: "Chiudi la cassa prima di ripristinare un backup" });
     }
@@ -514,7 +535,7 @@ router.post("/restore", restoreBody, async (req, res, next) => {
     // Questo backup non e' opzionale: se non riusciamo a crearlo il restore
     // viene interrotto prima di toccare il database corrente.
     const safety = await createDatabaseBackup("pre-restore");
-    restoreDatabaseFromFile(candidatePath);
+    restoreDatabaseFromFile(candidatePath, safety.backupPath);
     candidatePath = null; // spostato atomicamente in DB_PATH
 
     res.json({

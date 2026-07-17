@@ -8,6 +8,99 @@ const DB_PATH = process.env.POS_DB_PATH
   : path.join(__dirname, "..", "pos.sqlite");
 const SCHEMA_PATH = path.join(__dirname, "schema.sql");
 const DB_SCHEMA_VERSION = 4;
+const RESTORE_MARKER_PATH = `${DB_PATH}.restore-state.json`;
+
+function fsyncDirectory(dirPath) {
+  let fd;
+  try {
+    fd = fs.openSync(dirPath, "r");
+    fs.fsyncSync(fd);
+  } catch {
+    // Alcuni filesystem non consentono fsync sulle directory. I file sono
+    // comunque sincronizzati singolarmente prima di ogni rename.
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+function verifiedSafetyBackup(safetyBackupPath) {
+  const resolved = path.resolve(String(safetyBackupPath || ""));
+  const backupsDir = path.resolve(path.dirname(DB_PATH), "backups");
+  if (path.dirname(resolved) !== backupsDir) {
+    throw new Error("Percorso del backup di sicurezza non valido");
+  }
+  const stat = fs.lstatSync(resolved);
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error("Backup di sicurezza non valido");
+  }
+  return resolved;
+}
+
+function writeRestoreMarker(safetyBackupPath) {
+  const verified = verifiedSafetyBackup(safetyBackupPath);
+  const tempPath = `${RESTORE_MARKER_PATH}.${process.pid}.tmp`;
+  const fd = fs.openSync(tempPath, "wx", 0o600);
+  try {
+    fs.writeFileSync(fd, JSON.stringify({ safetyBackupPath: verified, createdAt: new Date().toISOString() }));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tempPath, RESTORE_MARKER_PATH);
+  fsyncDirectory(path.dirname(DB_PATH));
+}
+
+function recoverFromRestoreMarker() {
+  if (!fs.existsSync(RESTORE_MARKER_PATH)) return false;
+
+  let marker;
+  try {
+    marker = JSON.parse(fs.readFileSync(RESTORE_MARKER_PATH, "utf8"));
+  } catch {
+    throw new Error(
+      `Ripristino interrotto: marker non leggibile (${RESTORE_MARKER_PATH}). Intervento manuale richiesto.`
+    );
+  }
+  const safetyBackupPath = verifiedSafetyBackup(marker.safetyBackupPath);
+  const recoveryPath = `${DB_PATH}.restore-recovery-${process.pid}-${Date.now()}`;
+  fs.copyFileSync(safetyBackupPath, recoveryPath, fs.constants.COPYFILE_EXCL);
+
+  const fd = fs.openSync(recoveryPath, "r");
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  fs.renameSync(recoveryPath, DB_PATH);
+  fs.rmSync(RESTORE_MARKER_PATH, { force: true });
+  fsyncDirectory(path.dirname(DB_PATH));
+  console.warn("Rilevato un ripristino interrotto: recuperato automaticamente il backup pre-restore.");
+  return true;
+}
+
+// Compatibilita' con la prima implementazione del restore: se un crash e'
+// avvenuto fra i due rename, recupera l'originale invece di creare un DB vuoto.
+function recoverLegacyRestoreOriginal() {
+  if (fs.existsSync(DB_PATH)) return false;
+  const dir = path.dirname(DB_PATH);
+  const prefix = `${path.basename(DB_PATH)}.restore-original-`;
+  const candidates = fs.readdirSync(dir)
+    .filter(name => name.startsWith(prefix))
+    .map(name => {
+      const candidatePath = path.join(dir, name);
+      const stat = fs.lstatSync(candidatePath);
+      return stat.isFile() && !stat.isSymbolicLink()
+        ? { candidatePath, mtimeMs: stat.mtimeMs }
+        : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  if (candidates.length === 0) return false;
+
+  fs.renameSync(candidates[0].candidatePath, DB_PATH);
+  fsyncDirectory(dir);
+  console.warn("Recuperato automaticamente un database lasciato da un restore interrotto.");
+  return true;
+}
+
+recoverFromRestoreMarker();
+recoverLegacyRestoreOriginal();
 
 function openConnection() {
   const next = new Database(DB_PATH);
@@ -18,8 +111,10 @@ function openConnection() {
 let connection = openConnection();
 
 // Le route conservano questo riferimento per tutta la vita del processo. Il
-// proxy permette di sostituire in sicurezza la connessione dopo un restore,
-// senza lasciare i moduli collegati a un Database ormai chiuso.
+// proxy permette di sostituire la connessione dopo un restore. INVARIANTE:
+// non conservare mai Statement o Transaction creati da db.prepare/db.transaction
+// a livello di modulo; vanno creati dentro la funzione che li usa, altrimenti
+// restano legati alla vecchia connessione chiusa.
 const db = new Proxy({}, {
   get(_target, property) {
     const value = connection[property];
@@ -259,18 +354,14 @@ function validateRestoreCandidate(candidatePath) {
   }
 }
 
-// Sostituzione atomica sullo stesso filesystem. Se apertura o migrazione del
-// database ripristinato falliscono, il file originale viene rimesso al suo posto.
-function restoreDatabaseFromFile(candidatePath) {
-  const token = `${process.pid}-${Date.now()}`;
-  const originalPath = `${DB_PATH}.restore-original-${token}`;
-  let originalMoved = false;
-
+// Il marker viene sincronizzato prima del rename atomico. Un errore in-process
+// o un crash provoca il recupero del backup pre-restore, mai un DB vuoto.
+function restoreDatabaseFromFile(candidatePath, safetyBackupPath) {
+  writeRestoreMarker(safetyBackupPath);
   try {
     connection.close();
-    fs.renameSync(DB_PATH, originalPath);
-    originalMoved = true;
     fs.renameSync(candidatePath, DB_PATH);
+    fsyncDirectory(path.dirname(DB_PATH));
 
     connection = openConnection();
     initDb();
@@ -280,15 +371,12 @@ function restoreDatabaseFromFile(candidatePath) {
       throw new Error("Il database ripristinato non supera il controllo delle relazioni");
     }
 
-    fs.rmSync(originalPath, { force: true });
+    fs.rmSync(RESTORE_MARKER_PATH, { force: true });
+    fsyncDirectory(path.dirname(DB_PATH));
     return;
   } catch (err) {
     try { connection.close(); } catch {}
-
-    if (originalMoved) {
-      try { fs.rmSync(DB_PATH, { force: true }); } catch {}
-      fs.renameSync(originalPath, DB_PATH);
-    }
+    recoverFromRestoreMarker();
     connection = openConnection();
     initDb();
     throw err;
@@ -302,5 +390,6 @@ module.exports = {
   getOpenSession,
   validateRestoreCandidate,
   restoreDatabaseFromFile,
+  RESTORE_MARKER_PATH,
   DB_PATH,
 };

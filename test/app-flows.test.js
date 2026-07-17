@@ -358,6 +358,43 @@ test("restore backup: valida il file, blocca il turno aperto e sostituisce il DB
   }
 });
 
+test("la manutenzione di restore blocca le scritture API e consente le letture", async () => {
+  const harness = createHarness();
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const maintenance = require("../src/maintenance");
+      assert.equal(maintenance.beginRestore(), true);
+      try {
+        const read = await request({ url: "/api/products" });
+        assert.equal(read.status, 200);
+
+        const write = await request({
+          method: "POST",
+          url: "/api/sessions/open",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ opening_float_cents: 0 }),
+        });
+        assert.equal(write.status, 503);
+        assert.equal(write.headers["retry-after"], "2");
+        assert.match(write.json().error, /Ripristino/);
+      } finally {
+        maintenance.endRestore();
+      }
+
+      const after = await request({
+        method: "POST",
+        url: "/api/sessions/open",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opening_float_cents: 0 }),
+      });
+      assert.equal(after.status, 200);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test("GET /api/config espone branding, valuta e locale al frontend", async () => {
   const harness = createHarness();
 

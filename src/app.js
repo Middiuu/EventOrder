@@ -8,6 +8,7 @@ const sessions = require("./routes/sessions");
 const printer = require("./printer");
 const { publicConfig } = require("./config");
 const { authMiddleware, loginHandler } = require("./auth");
+const { maintenanceMiddleware } = require("./maintenance");
 
 function createApp(options = {}) {
   const printTicket = options.printTicket || printer.printTicket;
@@ -31,6 +32,10 @@ function createApp(options = {}) {
 
   // Gate d'accesso opzionale con PIN (no-op se APP_PIN non e' impostato)
   app.use(authMiddleware);
+
+  // Un restore acquisisce un lock esclusivo prima di leggere il file caricato:
+  // le richieste di scrittura successive vengono respinte fino alla conclusione.
+  app.use("/api", maintenanceMiddleware);
 
   app.use("/api/products", products);
   app.use("/api/sales", createSalesRouter({ printTicket }));
