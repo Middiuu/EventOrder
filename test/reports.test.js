@@ -241,6 +241,46 @@ test("storico vendite filtrabile per numero, data, prodotto, operatore, metodo e
   }
 });
 
+test("i caratteri wildcard nei filtri storico sono cercati letteralmente", async () => {
+  const harness = createHarness({ printTicket: async () => {} });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const percentProduct = (await postJson(request, "/api/products", {
+        name: "Promo 100%", price_cents: 500,
+      })).json().id;
+      const plainProduct = (await postJson(request, "/api/products", {
+        name: "Promo 100X", price_cents: 500,
+      })).json().id;
+
+      await postJson(request, "/api/sessions/open", { opening_float_cents: 0, operator: "Ada_1" });
+      await postJson(request, "/api/sales/print", {
+        items: [{ product_id: percentProduct, qty: 1 }], payment_method: "card",
+      });
+      await postJson(request, "/api/sessions/close", { counted_cash_cents: 0 });
+
+      await postJson(request, "/api/sessions/open", { opening_float_cents: 0, operator: "AdaX1" });
+      await postJson(request, "/api/sales/print", {
+        items: [{ product_id: plainProduct, qty: 1 }], payment_method: "card",
+      });
+
+      const byProduct = (await request({
+        url: `/api/sales?product=${encodeURIComponent("Promo 100%")}`,
+      })).json();
+      const byOperator = (await request({
+        url: `/api/sales?operator=${encodeURIComponent("Ada_1")}`,
+      })).json();
+
+      assert.equal(byProduct.length, 1);
+      assert.equal(byProduct[0].items[0].name, "Promo 100%");
+      assert.equal(byOperator.length, 1);
+      assert.equal(byOperator[0].operator, "Ada_1");
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test("export: items.csv riga-per-articolo con sconto ripartito, aggregato con netto", async () => {
   const harness = createHarness({ printTicket: async () => {} });
 
@@ -261,7 +301,7 @@ test("export: items.csv riga-per-articolo con sconto ripartito, aggregato con ne
 
       const itemsCsv = await request({ url: `/api/reports/items.csv?from=${TODAY}&to=${TOMORROW}` });
       assert.equal(itemsCsv.status, 200);
-      const lines = itemsCsv.text.replace(/^﻿/, "").trim().split("\n");
+      const lines = itemsCsv.text.replace(/^\uFEFF/, "").trim().split("\n");
       assert.match(lines[0], /sale_number;datetime;operator;session_id;payment_method;voided;product_name/);
       assert.equal(lines.length, 3); // intestazione + 2 righe articolo
 

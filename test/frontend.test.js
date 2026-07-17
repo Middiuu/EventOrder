@@ -7,7 +7,7 @@ test("il frontend usa dialoghi accessibili al posto di alert, confirm e prompt n
   const source = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
 
   assert.doesNotMatch(source, /\b(?:alert|confirm|prompt)\s*\(/);
-  assert.match(source, /role\", tone \? \"alertdialog\" : \"dialog\"/);
+  assert.match(source, /role", tone \? "alertdialog" : "dialog"/);
 });
 
 test("l'azione esaurito espone istruzioni e alternativa da tastiera", () => {
@@ -35,4 +35,25 @@ test("la cassa conserva il carrello, riconcilia i prezzi e gestisce le comande s
   assert.match(checkoutHtml, /id="itemOptionsModal"[^>]*hidden/);
   assert.match(checkoutHtml, /id="orderNote"/);
   assert.match(appSource, /selected_option_value_ids/);
+});
+
+test("la CSP puo' bloccare gli script inline senza interrompere le pagine", () => {
+  const publicDir = path.join(__dirname, "..", "public");
+  const htmlFiles = fs.readdirSync(publicDir).filter(file => file.endsWith(".html"));
+
+  for (const file of htmlFiles) {
+    const source = fs.readFileSync(path.join(publicDir, file), "utf8");
+    assert.doesNotMatch(source, /<script(?![^>]*\bsrc=)[^>]*>/i, `${file} contiene uno script inline`);
+    assert.doesNotMatch(source, /\son[a-z]+\s*=/i, `${file} contiene un event handler inline`);
+    assert.match(source, /<script src="\/theme-init\.js"><\/script>/);
+  }
+});
+
+test("gli initializer di pagina sono isolati fra loro", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+
+  assert.match(source, /const initializers = \[/);
+  assert.match(source, /for \(const \[name, initialize\] of initializers\)/);
+  assert.match(source, /await initialize\(\)/);
+  assert.match(source, /Inizializzazione \$\{name\} non riuscita/);
 });

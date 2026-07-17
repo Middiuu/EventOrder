@@ -30,6 +30,9 @@ test("senza APP_PIN l'accesso e' libero e /api/config lo dichiara", async () => 
 
       const products = await request({ url: "/api/products" });
       assert.equal(products.status, 200);
+      assert.match(products.headers["content-security-policy"], /script-src 'self'/);
+      assert.match(products.headers["content-security-policy"], /script-src-attr 'none'/);
+      assert.match(products.headers["content-security-policy"], /object-src 'none'/);
 
       // il login resta un no-op
       const res = await login(request, "qualsiasi");
@@ -58,7 +61,10 @@ test("con APP_PIN: API protette, pagine reindirizzate, asset pubblici accessibil
       assert.equal(page.headers.location, "/login.html");
 
       // welcome, login e asset base restano raggiungibili
-      for (const url of ["/", "/login.html", "/app.css", "/fonts.css", "/vendor/@fontsource/onest/400.css"]) {
+      for (const url of [
+        "/", "/login.html", "/app.css", "/fonts.css", "/theme-init.js",
+        "/welcome.js", "/login.js", "/vendor/@fontsource/onest/400.css",
+      ]) {
         const res = await request({ url });
         assert.equal(res.status, 200, `atteso 200 per ${url}, ricevuto ${res.status}`);
       }

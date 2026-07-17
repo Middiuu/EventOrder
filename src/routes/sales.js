@@ -21,6 +21,10 @@ const { loadOptionCatalog, resolveSelectedOptions } = require("../product-option
 const PAYMENT_METHODS = new Set(["cash", "card", "other"]);
 const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9._:-]{8,120}$/;
 
+function escapeLikeTerm(value) {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
 function idempotencyFingerprint(sessionId, normalized, paymentMethod, body) {
   const discount = body?.discount && body.discount.type
     ? { type: String(body.discount.type), value: body.discount.value ?? null }
@@ -659,15 +663,15 @@ function createSalesRouter({ printTicket }) {
     if (req.query.operator) {
       const operator = cleanText(String(req.query.operator), 80);
       if (!operator) return res.status(400).json({ error: "Operatore non valido" });
-      where.push("operator LIKE ?");
-      params.push(`%${operator}%`);
+      where.push("operator LIKE ? ESCAPE '\\'");
+      params.push(`%${escapeLikeTerm(operator)}%`);
     }
 
     if (req.query.product) {
       const product = cleanText(String(req.query.product), 120);
       if (!product) return res.status(400).json({ error: "Prodotto non valido" });
-      where.push("EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_id = sales.id AND si.product_name LIKE ?)");
-      params.push(`%${product}%`);
+      where.push("EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_id = sales.id AND si.product_name LIKE ? ESCAPE '\\')");
+      params.push(`%${escapeLikeTerm(product)}%`);
     }
 
     if (req.query.method) {

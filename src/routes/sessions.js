@@ -97,7 +97,8 @@ function withTotalsBatch(sessions) {
   const movementsBySession = new Map();
   for (const row of movementRows) {
     if (!movementsBySession.has(row.session_id)) movementsBySession.set(row.session_id, []);
-    const { session_id: _sessionId, ...movement } = row;
+    const movement = { ...row };
+    delete movement.session_id;
     movementsBySession.get(row.session_id).push(movement);
   }
 

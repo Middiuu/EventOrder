@@ -76,6 +76,19 @@ vendita. Se vuoi, imposta le **scorte** dalla pagina Prodotti: si scalano a ogni
 vendita (gli storni le ripristinano), la card mostra i pezzi rimasti e a zero il
 prodotto si blocca da solo.
 
+### 🧩 Varianti, modificatori e note
+
+Un prodotto può avere gruppi di scelta singola o multipla, obbligatori oppure
+facoltativi: formato, cottura, gusti ed extra con variazioni di prezzo. La cassa
+mantiene il prodotto semplice a un solo tocco; apre la scheda di preparazione
+soltanto quando servono scelte. Puoi aggiungere una nota al singolo articolo e
+una nota generale alla comanda. Tutto viene conservato nello storico, nel ticket,
+negli export e nelle comande sospese anche se il catalogo cambia in seguito.
+
+<div align="center">
+<img src="docs/screenshots/varianti-note.jpg" alt="Configurazione di varianti e note nella cassa" width="760">
+</div>
+
 ### 📜 Storico vendite e storni
 
 Ogni vendita finisce nel registro. Hai sbagliato una comanda? **Annullala** con un
@@ -189,6 +202,7 @@ Con `APP_PIN` impostato, l'accesso è protetto da un **PIN-pad** touch:
 - Ogni incasso inviato dall'interfaccia usa una chiave idempotente: un retry di
   rete restituisce la vendita gia' registrata senza duplicarla o scalare di nuovo le scorte.
 - Nome e categoria dei prodotti salvati nella vendita: le rinomine future non alterano lo storico.
+- Varianti, modificatori, prezzi finali e note sono salvati come snapshot immutabili nella vendita.
 - Report e chiusura usano l'**ora locale** per attribuire correttamente le vendite a cavallo della mezzanotte.
 - Backup con copia **online consistente** di SQLite, rotazione automatica e
   ripristino verificato con backup di sicurezza preventivo.
@@ -198,7 +212,9 @@ Con `APP_PIN` impostato, l'accesso è protetto da un **PIN-pad** touch:
 ```bash
 npm run dev    # sviluppo con reload
 npm start      # avvio
-npm test       # controllo sintattico + test
+npm run lint   # analisi statica JavaScript
+npm test       # lint + suite completa
+npm run coverage # copertura backend con soglie minime
 ```
 
 **Stampa ticket**: attualmente il ticket viene scritto su console (stub); l'integrazione

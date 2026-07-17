@@ -185,14 +185,19 @@ async function runPageInits() {
   pageInitController?.abort();
   pageInitController = new AbortController();
   const { signal } = pageInitController;
-  try {
-    await initCassa(signal);
-    await initProdotti(signal);
-    await initSales();
-    await initReport();
-    await initReportExport();
-  } catch (e) {
-    console.error(e);
+  const initializers = [
+    ["cassa", () => initCassa(signal)],
+    ["prodotti", () => initProdotti(signal)],
+    ["vendite", () => initSales()],
+    ["report", () => initReport()],
+    ["export report", () => initReportExport()],
+  ];
+  for (const [name, initialize] of initializers) {
+    try {
+      await initialize();
+    } catch (error) {
+      console.error(`Inizializzazione ${name} non riuscita:`, error);
+    }
   }
 }
 
@@ -537,7 +542,6 @@ async function initCassa(signal) {
 
   // Barra turno
   const sessionBar = document.querySelector("#sessionBar");
-  const sessionDot = document.querySelector("#sessionDot");
   const sessionStatus = document.querySelector("#sessionStatus");
   const openSessionBtn = document.querySelector("#openSessionBtn");
   const closeSessionBtn = document.querySelector("#closeSessionBtn");
@@ -809,7 +813,7 @@ async function initCassa(signal) {
 
     const reconciled = new Map();
     const requestedStock = new Map();
-    for (const [key, item] of cart) {
+    for (const item of cart.values()) {
       const current = byId.get(item.product.id);
       if (!current) {
         removed.push(item.product.name);

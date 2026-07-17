@@ -289,6 +289,8 @@ function restoreLegacySequences(sequences) {
 // sostituiamo gli originali in un'unica transazione.
 function migrateLegacySchema(schema, previousVersion) {
   const canonicalDb = new Database(":memory:");
+  let migrationError = null;
+  let cleanupError = null;
 
   try {
     canonicalDb.exec(schema);
@@ -398,15 +400,22 @@ function migrateLegacySchema(schema, previousVersion) {
 
     migrate();
   } catch (err) {
-    throw new Error(`Migrazione schema v${DB_SCHEMA_VERSION} non riuscita: ${err.message}`, { cause: err });
+    migrationError = new Error(
+      `Migrazione schema v${DB_SCHEMA_VERSION} non riuscita: ${err.message}`,
+      { cause: err }
+    );
   } finally {
     db.pragma("foreign_keys = ON");
     if (db.pragma("foreign_keys", { simple: true }) !== 1) {
-      canonicalDb.close();
-      throw new Error("Impossibile riattivare le foreign key SQLite");
+      cleanupError = new Error("Impossibile riattivare le foreign key SQLite");
     }
     canonicalDb.close();
   }
+  if (migrationError) {
+    if (cleanupError) migrationError.cleanupError = cleanupError;
+    throw migrationError;
+  }
+  if (cleanupError) throw cleanupError;
 }
 
 function initDb() {

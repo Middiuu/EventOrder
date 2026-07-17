@@ -20,6 +20,19 @@ function createApp(options = {}) {
   const app = express();
   app.disable("x-powered-by");
   app.use((req, res, next) => {
+    res.setHeader("Content-Security-Policy", [
+      "default-src 'self'",
+      "base-uri 'none'",
+      "connect-src 'self'",
+      "font-src 'self'",
+      "form-action 'self'",
+      "frame-ancestors 'none'",
+      "img-src 'self' data:",
+      "object-src 'none'",
+      "script-src 'self'",
+      "script-src-attr 'none'",
+      "style-src 'self' 'unsafe-inline'",
+    ].join("; "));
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("X-Frame-Options", "DENY");
     res.setHeader("Referrer-Policy", "no-referrer");
