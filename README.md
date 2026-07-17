@@ -162,7 +162,8 @@ Con `APP_PIN` impostato, l'accesso è protetto da un **PIN-pad** touch:
 </div>
 
 > **Accesso da tablet in LAN:** imposta `HOST=0.0.0.0` e configura sempre
-> `APP_PIN`. Il server usa HTTP: su reti non fidate va pubblicato dietro HTTPS.
+> `APP_PIN`; senza PIN il server rifiuta l'avvio su interfacce non locali.
+> Il server usa HTTP: su reti non fidate va pubblicato dietro HTTPS.
 
 <br>
 

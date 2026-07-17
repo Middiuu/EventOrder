@@ -45,6 +45,10 @@ if (APP_PIN && !/^\d{1,8}$/.test(APP_PIN)) {
 // Per sicurezza l'app ascolta solo sulla macchina locale. Per l'uso da tablet
 // sulla LAN va impostato esplicitamente HOST=0.0.0.0 (e configurato APP_PIN).
 const HOST = String(process.env.HOST || "127.0.0.1").trim() || "127.0.0.1";
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
+if (!LOOPBACK_HOSTS.has(HOST.toLowerCase()) && !APP_PIN) {
+  throw new Error("APP_PIN e' obbligatorio quando HOST espone l'app fuori dal loopback");
+}
 
 const config = {
   APP_NAME,
@@ -61,14 +65,14 @@ const config = {
 };
 
 // Config esposta al frontend via GET /api/config (solo campi non sensibili).
-function publicConfig() {
+function publicConfig({ includeOperators = true } = {}) {
   return {
     appName: config.APP_NAME,
     businessName: config.BUSINESS_NAME,
     tagline: config.APP_TAGLINE,
     currencySymbol: config.CURRENCY_SYMBOL,
     locale: config.LOCALE,
-    operators: config.OPERATORS,
+    operators: includeOperators ? config.OPERATORS : [],
     authRequired: Boolean(config.APP_PIN),
   };
 }

@@ -7,7 +7,7 @@ const reports = require("./routes/reports");
 const sessions = require("./routes/sessions");
 const printer = require("./printer");
 const { publicConfig } = require("./config");
-const { authMiddleware, loginHandler } = require("./auth");
+const { authMiddleware, isAuthenticated, loginHandler, logoutHandler } = require("./auth");
 const { maintenanceMiddleware } = require("./maintenance");
 
 function createApp(options = {}) {
@@ -26,12 +26,15 @@ function createApp(options = {}) {
   app.use(express.json());
 
   // Config pubblica per il frontend (branding, valuta, locale) — sempre accessibile
-  app.get("/api/config", (req, res) => res.json(publicConfig()));
+  app.get("/api/config", (req, res) => res.json(publicConfig({
+    includeOperators: isAuthenticated(req),
+  })));
   // Login (attivo solo se APP_PIN e' impostato) — deve precedere il gate
   app.post("/api/auth/login", loginHandler);
 
   // Gate d'accesso opzionale con PIN (no-op se APP_PIN non e' impostato)
   app.use(authMiddleware);
+  app.post("/api/auth/logout", logoutHandler);
 
   // Un restore acquisisce un lock esclusivo prima di leggere il file caricato:
   // tutte le route DB successive vengono respinte fino alla conclusione.

@@ -1,5 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("crypto");
+const path = require("path");
+const { spawnSync } = require("child_process");
 const { createHarness } = require("./helpers/app-test-utils");
 
 const PIN = "1234";
@@ -66,7 +69,7 @@ test("con APP_PIN: API protette, pagine reindirizzate, asset pubblici accessibil
 });
 
 test("login: PIN errato rifiutato, PIN corretto imposta il cookie e sblocca le API", async () => {
-  const harness = createHarness({ env: { APP_PIN: PIN } });
+  const harness = createHarness({ env: { APP_PIN: PIN, OPERATORS: "Anna,Luca" } });
 
   try {
     await harness.withServer(async ({ request }) => {
@@ -78,12 +81,31 @@ test("login: PIN errato rifiutato, PIN corretto imposta il cookie e sblocca le A
       const setCookie = String(ok.headers["set-cookie"]);
       assert.match(setCookie, /pos_auth=/);
       assert.match(setCookie, /HttpOnly/);
+      assert.match(setCookie, /SameSite=Strict/);
+      assert.equal(ok.headers["cache-control"], "no-store");
+
+      const token = authCookie(ok).split("=")[1];
+      const legacyToken = crypto.createHmac("sha256", PIN).update("pos-auth-v1").digest("hex");
+      assert.match(token, /^[A-Za-z0-9_-]{43}$/);
+      assert.notEqual(token, legacyToken);
+
+      // Ogni login crea una credenziale distinta e non derivata dal PIN.
+      const secondLogin = await login(request, PIN);
+      assert.notEqual(authCookie(secondLogin), authCookie(ok));
 
       const withCookie = await request({
         url: "/api/products",
         headers: { Cookie: authCookie(ok) },
       });
       assert.equal(withCookie.status, 200);
+
+      const publicCfg = (await request({ url: "/api/config" })).json();
+      assert.deepEqual(publicCfg.operators, []);
+      const authenticatedCfg = (await request({
+        url: "/api/config",
+        headers: { Cookie: authCookie(ok) },
+      })).json();
+      assert.deepEqual(authenticatedCfg.operators, ["Anna", "Luca"]);
 
       // un cookie contraffatto non basta
       const forged = await request({
@@ -95,6 +117,74 @@ test("login: PIN errato rifiutato, PIN corretto imposta il cookie e sblocca le A
   } finally {
     harness.cleanup();
   }
+});
+
+test("logout revoca la sessione e cancella il cookie", async () => {
+  const harness = createHarness({ env: { APP_PIN: PIN } });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const loggedIn = await login(request, PIN);
+      const cookie = authCookie(loggedIn);
+
+      const logout = await request({
+        method: "POST",
+        url: "/api/auth/logout",
+        headers: { Cookie: cookie },
+      });
+      assert.equal(logout.status, 200);
+      assert.match(String(logout.headers["set-cookie"]), /pos_auth=;/);
+      assert.match(String(logout.headers["set-cookie"]), /Max-Age=0/);
+
+      const afterLogout = await request({
+        url: "/api/products",
+        headers: { Cookie: cookie },
+      });
+      assert.equal(afterLogout.status, 401);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("le sessioni scadono anche lato server", async () => {
+  const harness = createHarness({ env: { APP_PIN: PIN } });
+  const realNow = Date.now;
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const loggedIn = await login(request, PIN);
+      const cookie = authCookie(loggedIn);
+      const issuedAt = realNow();
+      Date.now = () => issuedAt + 24 * 60 * 60 * 1000 + 1;
+
+      const expired = await request({
+        url: "/api/products",
+        headers: { Cookie: cookie },
+      });
+      assert.equal(expired.status, 401);
+    });
+  } finally {
+    Date.now = realNow;
+    harness.cleanup();
+  }
+});
+
+test("HOST non locale richiede APP_PIN all'avvio", () => {
+  const projectRoot = path.join(__dirname, "..");
+  const configPath = path.join(projectRoot, "src", "config.js");
+  const run = (host, pin) => spawnSync(process.execPath, ["-e", `require(${JSON.stringify(configPath)})`], {
+    cwd: projectRoot,
+    env: { ...process.env, HOST: host, APP_PIN: pin },
+    encoding: "utf8",
+  });
+
+  const exposed = run("0.0.0.0", "");
+  assert.notEqual(exposed.status, 0);
+  assert.match(exposed.stderr, /APP_PIN e' obbligatorio/);
+
+  assert.equal(run("0.0.0.0", PIN).status, 0);
+  assert.equal(run("127.0.0.1", "").status, 0);
 });
 
 test("rate limiting: dopo 5 PIN errati il login e' bloccato anche col PIN giusto", async () => {

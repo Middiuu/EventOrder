@@ -101,12 +101,22 @@ function renderSidebar(active) {
     <div class="side-foot">
       <div class="avatar" id="sideAvatar">E</div>
       <div class="who"><span id="sideOperator">Operatore</span><small id="sideRole">EventOrder</small></div>
+      <button class="logout-button" type="button" id="logoutButton" aria-label="Esci" title="Esci" hidden>↪</button>
       <button class="theme-toggle" type="button" id="themeToggle"></button>
     </div>`;
   app.insertBefore(aside, app.firstChild);
 
   aside.querySelector("#themeToggle").addEventListener("click", toggleTheme);
+  aside.querySelector("#logoutButton").addEventListener("click", async () => {
+    try { await api("/api/auth/logout", { method: "POST" }); } catch {}
+    location.replace("/login.html");
+  });
   syncThemeToggle();
+}
+
+function syncAuthControls() {
+  const logoutButton = document.querySelector("#logoutButton");
+  if (logoutButton) logoutButton.hidden = !APP_CONFIG.authRequired;
 }
 
 // Aggiorna nome/marchio nella sidebar dopo il caricamento della config
@@ -1839,6 +1849,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     await loadConfig();
     applyBranding();
     refreshBrand();
+    syncAuthControls();
     await runPageInits();
     await refreshShellData();
   } catch (e) {
