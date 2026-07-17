@@ -24,13 +24,21 @@
             <div class="eyebrow">Filtri</div>
             <h2>Cerca nel registro</h2>
           </div>
+          <button class="btn btn-secondary btn-compact" id="toggleSalesFilters" type="button" aria-expanded="false" aria-controls="advancedSalesFilters">Altri filtri</button>
         </div>
         <form id="salesFilters">
-          <div class="report-controls">
+          <div class="sales-filter-primary">
             <label class="field">
               <span class="field-label">Numero</span>
               <input class="input mono" name="number" type="number" min="1" step="1" placeholder="Es. 42" />
             </label>
+            <label class="field sales-product-search">
+              <span class="field-label">Prodotto</span>
+              <input class="input" name="product" placeholder="Cerca per nome prodotto" />
+            </label>
+            <button class="btn btn-primary" type="submit">Cerca</button>
+          </div>
+          <div class="sales-filter-advanced" id="advancedSalesFilters" hidden>
             <label class="field">
               <span class="field-label">Da</span>
               <input class="input" name="from" type="date" />
@@ -39,12 +47,6 @@
               <span class="field-label">A (incluso)</span>
               <input class="input" name="to" type="date" />
             </label>
-            <label class="field">
-              <span class="field-label">Prodotto</span>
-              <input class="input" name="product" placeholder="Nome prodotto" />
-            </label>
-          </div>
-          <div class="report-controls" style="margin-top:12px">
             <label class="field">
               <span class="field-label">Operatore</span>
               <input class="input" name="operator" placeholder="Nome operatore" />
@@ -66,10 +68,10 @@
                 <option value="voided">Annullate</option>
               </select>
             </label>
-            <div class="actions" style="margin:0; align-self:end">
-              <button class="btn btn-primary btn-compact" type="submit">Filtra</button>
-              <button class="btn btn-ghost btn-compact" id="resetSalesFilters" type="button">Azzera</button>
-            </div>
+          </div>
+          <div class="sales-filter-footer">
+            <span class="small" id="salesFilterSummary">Nessun filtro avanzato</span>
+            <button class="btn btn-ghost btn-compact" id="resetSalesFilters" type="button">Azzera filtri</button>
           </div>
         </form>
       </section>

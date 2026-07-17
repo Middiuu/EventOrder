@@ -19,48 +19,45 @@
       </div>
 
       <div class="stack">
-        <section class="card">
+        <section class="card product-create-card" id="productCreateCard" hidden>
           <div class="section-heading">
             <div>
               <div class="eyebrow">Editor</div>
-              <h2>Nuovo prodotto</h2>
+              <h2>Aggiungi prodotto</h2>
             </div>
-            <div class="section-actions">
-              <p class="section-note">I prodotti non attivi restano nello storico ma non compaiono in cassa.</p>
-              <button class="btn btn-secondary btn-compact" id="newProductBtn" type="button">Nuovo prodotto</button>
-            </div>
+            <p class="section-note">Inserisci i dati essenziali. Costo e scorte sono opzionali.</p>
           </div>
 
           <form id="productForm" class="stack">
             <input type="hidden" name="sort_order" value="0" />
-            <div class="grid" style="grid-template-columns:1.3fr .9fr .6fr .6fr .6fr">
-              <label class="field">
+            <div class="product-editor-grid">
+              <label class="field product-field-name">
                 <span class="field-label">Nome</span>
                 <input class="input" name="name" placeholder="Es. Panino rustico" required />
               </label>
-              <label class="field">
+              <label class="field product-field-category">
                 <span class="field-label">Categoria</span>
                 <input class="input" name="category" placeholder="Es. Cibo / Bevande" />
               </label>
-              <label class="field">
+              <label class="field product-field-price">
                 <span class="field-label">Prezzo (€)</span>
                 <input class="input mono" name="price_eur" type="number" step="0.01" min="0" placeholder="0,00" required />
               </label>
-              <label class="field">
+              <label class="field product-field-cost">
                 <span class="field-label">Costo (€)</span>
                 <input class="input mono" name="cost_eur" type="number" step="0.01" min="0" placeholder="Opzionale" />
               </label>
-              <label class="field">
+              <label class="field product-field-stock">
                 <span class="field-label">Scorte</span>
                 <input class="input mono" name="stock" type="number" step="1" min="0" placeholder="Non tracciate" />
               </label>
             </div>
-            <div class="section-heading" style="margin:0; align-items:center">
+            <div class="product-form-footer">
               <label class="toggle">
                 <input type="checkbox" name="active" checked />
                 <span>Prodotto attivo in cassa</span>
               </label>
-              <div class="actions" style="margin:0">
+              <div class="actions product-form-actions">
                 <button class="btn btn-primary" type="submit" id="saveBtn">Salva prodotto</button>
                 <button class="btn btn-ghost" type="button" id="cancelEditBtn">Annulla</button>
               </div>
@@ -75,11 +72,14 @@
               <h2>Elenco prodotti</h2>
             </div>
             <div class="table-tools">
-              <p class="section-note section-note-inline">Trascina le righe per riordinare l'elenco in cassa (con la ricerca vuota).</p>
-              <div class="field-wrap field-wrap-search">
-                <label class="sr-only" for="productsSearch">Cerca in elenco</label>
-                <input id="productsSearch" class="input" placeholder="Cerca in elenco" />
+              <div class="product-list-actions">
+                <div class="field-wrap field-wrap-search">
+                  <label class="sr-only" for="productsSearch">Cerca prodotto</label>
+                  <input id="productsSearch" class="input" placeholder="Cerca prodotto" />
+                </div>
+                <button class="btn btn-primary" id="newProductBtn" type="button">Aggiungi prodotto</button>
               </div>
+              <p class="section-note section-note-inline">Trascina le righe per cambiare l'ordine in cassa.</p>
             </div>
           </div>
 
@@ -98,36 +98,36 @@
 
       <div id="editProductModal" class="modal-shell" hidden>
         <div class="modal-backdrop" data-close-modal="1"></div>
-        <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="editProductTitle">
+        <div class="modal-card product-modal-card" role="dialog" aria-modal="true" aria-labelledby="editProductTitle">
           <button class="modal-close" id="closeEditModalBtn" type="button" aria-label="Chiudi">✕</button>
           <div class="eyebrow">Modifica</div>
           <h2 id="editProductTitle">Modifica prodotto</h2>
           <form id="editProductForm" class="stack" style="margin-top:16px">
             <input type="hidden" name="id" />
             <input type="hidden" name="sort_order" value="0" />
-            <div class="grid" style="grid-template-columns:1.3fr .9fr .6fr .6fr .6fr">
-              <label class="field">
+            <div class="product-editor-grid">
+              <label class="field product-field-name">
                 <span class="field-label">Nome</span>
                 <input class="input" name="name" placeholder="Es. Panino rustico" required />
               </label>
-              <label class="field">
+              <label class="field product-field-category">
                 <span class="field-label">Categoria</span>
                 <input class="input" name="category" placeholder="Es. Cibo / Bevande" />
               </label>
-              <label class="field">
+              <label class="field product-field-price">
                 <span class="field-label">Prezzo (€)</span>
                 <input class="input mono" name="price_eur" type="number" step="0.01" min="0" placeholder="0,00" required />
               </label>
-              <label class="field">
+              <label class="field product-field-cost">
                 <span class="field-label">Costo (€)</span>
                 <input class="input mono" name="cost_eur" type="number" step="0.01" min="0" placeholder="Opzionale" />
               </label>
-              <label class="field">
+              <label class="field product-field-stock">
                 <span class="field-label">Scorte</span>
                 <input class="input mono" name="stock" type="number" step="1" min="0" placeholder="Non tracciate" />
               </label>
             </div>
-            <div class="section-heading" style="margin:0; align-items:center">
+            <div class="product-form-footer">
               <div class="stack" style="gap:8px">
                 <label class="toggle">
                   <input type="checkbox" name="active" checked />
@@ -138,7 +138,7 @@
                   <span>Esaurito (temporaneamente non vendibile)</span>
                 </label>
               </div>
-              <div class="actions" style="margin:0">
+              <div class="actions product-form-actions">
                 <button class="btn btn-danger" type="button" id="deleteProductBtn">Elimina</button>
                 <button class="btn btn-primary" type="submit" id="saveEditBtn">Salva modifiche</button>
                 <button class="btn btn-ghost" type="button" id="cancelEditModalBtn">Annulla</button>

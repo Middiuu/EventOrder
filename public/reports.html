@@ -18,15 +18,21 @@
         <div class="sub">Numeri per giorno o turno · export e backup.</div>
       </div>
 
+      <div class="view-switch" role="tablist" aria-label="Sezioni report">
+        <button class="view-switch-btn is-active" type="button" role="tab" aria-selected="true" data-report-view="summary">Riepilogo</button>
+        <button class="view-switch-btn" type="button" role="tab" aria-selected="false" data-report-view="sessions">Turni</button>
+        <button class="view-switch-btn" type="button" role="tab" aria-selected="false" data-report-view="data">Dati e backup</button>
+      </div>
+
       <section class="card">
         <div class="section-heading">
           <div>
             <div class="eyebrow">Periodo</div>
-            <h2>Filtri, export e backup</h2>
+            <h2>Periodo da analizzare</h2>
           </div>
-          <p class="section-note">Le date ("A" incluso) valgono per dashboard ed export. Se scegli un turno, ha la precedenza sulle date.</p>
+          <p class="section-note">Se scegli un turno, questo ha la precedenza sulle date.</p>
         </div>
-        <div class="report-controls">
+        <div class="report-scope-controls">
           <label class="field">
             <span class="field-label">Da</span>
             <input id="fromDate" class="input" type="date" />
@@ -42,48 +48,64 @@
             </select>
           </label>
         </div>
-        <div class="report-controls" style="margin-top:12px">
-          <button class="btn btn-secondary" id="downloadCsvBtn" type="button">CSV per prodotto</button>
-          <button class="btn btn-secondary" id="downloadTxCsvBtn" type="button">CSV transazioni</button>
-          <button class="btn btn-secondary" id="downloadItemsCsvBtn" type="button">CSV righe vendute</button>
-          <a class="btn btn-primary btn-center" href="/api/reports/backup">Backup database</a>
-        </div>
       </section>
 
-      <section class="card" style="margin-top:18px">
-        <div class="section-heading">
-          <div>
-            <div class="eyebrow">Sicurezza dati</div>
-            <h2>Ripristina un backup</h2>
+      <div class="report-view is-active" data-report-panel="summary">
+        <div id="reportBox" class="stack" style="margin-top:18px"></div>
+      </div>
+
+      <div class="report-view" data-report-panel="sessions" hidden>
+        <section class="card" style="margin-top:18px">
+          <div class="section-heading section-heading-tight">
+            <div>
+              <div class="eyebrow">Turni</div>
+              <h2>Chiusure di cassa</h2>
+            </div>
           </div>
-          <p class="section-note">La cassa deve essere chiusa. Il file viene verificato e il database corrente viene salvato automaticamente prima del ripristino.</p>
-        </div>
-        <input id="restoreFile" type="file" accept=".sqlite,application/x-sqlite3,application/vnd.sqlite3" hidden />
-        <div class="actions" style="margin-top:0">
-          <button class="btn btn-secondary" id="selectRestoreFileBtn" type="button">Scegli backup</button>
-          <span class="small" id="restoreFileName">Nessun file selezionato</span>
-          <button class="btn btn-danger" id="restoreBackupBtn" type="button" disabled>Verifica e ripristina</button>
-        </div>
-      </section>
-
-      <div id="reportBox" class="stack" style="margin-top:18px"></div>
-
-      <section class="card" style="margin-top:18px">
-        <div class="section-heading section-heading-tight">
-          <div>
-            <div class="eyebrow">Turni</div>
-            <h2>Chiusure di cassa</h2>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr><th>Turno</th><th>Operatore</th><th>Apertura</th><th>Chiusura</th><th>Incasso</th><th>Attesi</th><th>Contati</th><th>Differenza</th><th>Note</th></tr>
+              </thead>
+              <tbody id="closuresTable"></tbody>
+            </table>
           </div>
-        </div>
-        <div class="table-wrap">
-          <table class="data-table">
-            <thead>
-              <tr><th>Turno</th><th>Operatore</th><th>Apertura</th><th>Chiusura</th><th>Incasso</th><th>Attesi</th><th>Contati</th><th>Differenza</th><th>Note</th></tr>
-            </thead>
-            <tbody id="closuresTable"></tbody>
-          </table>
-        </div>
-      </section>
+        </section>
+      </div>
+
+      <div class="report-view" data-report-panel="data" hidden>
+        <section class="card" style="margin-top:18px">
+          <div class="section-heading">
+            <div>
+              <div class="eyebrow">Esporta</div>
+              <h2>Scarica i dati</h2>
+            </div>
+            <p class="section-note">I file rispettano il periodo o il turno selezionato sopra.</p>
+          </div>
+          <div class="report-export-grid">
+            <button class="btn btn-secondary" id="downloadCsvBtn" type="button">Riepilogo per prodotto</button>
+            <button class="btn btn-secondary" id="downloadTxCsvBtn" type="button">Elenco transazioni</button>
+            <button class="btn btn-secondary" id="downloadItemsCsvBtn" type="button">Righe vendute</button>
+            <a class="btn btn-primary btn-center" href="/api/reports/backup">Crea backup database</a>
+          </div>
+        </section>
+
+        <section class="card danger-zone" style="margin-top:18px">
+          <div class="section-heading">
+            <div>
+              <div class="eyebrow">Operazione delicata</div>
+              <h2>Ripristina un backup</h2>
+            </div>
+            <p class="section-note">Richiede la cassa chiusa e sostituisce tutti i dati correnti.</p>
+          </div>
+          <input id="restoreFile" type="file" accept=".sqlite,application/x-sqlite3,application/vnd.sqlite3" hidden />
+          <div class="restore-actions">
+            <button class="btn btn-secondary" id="selectRestoreFileBtn" type="button">Scegli backup</button>
+            <span class="small" id="restoreFileName">Nessun file selezionato</span>
+            <button class="btn btn-danger" id="restoreBackupBtn" type="button" disabled>Verifica e ripristina</button>
+          </div>
+        </section>
+      </div>
 
       <div id="toast" class="toast"></div>
     </main>

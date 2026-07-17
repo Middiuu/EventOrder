@@ -370,6 +370,9 @@ async function initCassa(signal) {
   const toastEl = document.querySelector("#toast");
   const cartCard = document.querySelector("#cartCard");
   const cartHelper = document.querySelector("#cartHelper");
+  const mobileCartBar = document.querySelector("#mobileCartBar");
+  const mobileCartCount = document.querySelector("#mobileCartCount");
+  const mobileCartTotal = document.querySelector("#mobileCartTotal");
 
   // Barra turno
   const sessionBar = document.querySelector("#sessionBar");
@@ -696,10 +699,12 @@ async function initCassa(signal) {
   function renderCart() {
     cartEl.innerHTML = "";
     let total = 0;
+    let itemCount = 0;
 
     for (const [id, it] of cart.entries()) {
       const line = it.qty * it.product.price_cents;
       total += line;
+      itemCount += it.qty;
 
       const row = document.createElement("div");
       row.className = "cart-item";
@@ -720,10 +725,20 @@ async function initCassa(signal) {
     }
 
     totalEl.textContent = euro(total);
+    if (mobileCartTotal) mobileCartTotal.textContent = euro(total);
+    if (mobileCartCount) {
+      mobileCartCount.textContent = itemCount === 0
+        ? "Comanda vuota"
+        : `${itemCount} ${itemCount === 1 ? "articolo" : "articoli"} nella comanda`;
+    }
 
     const empty = cart.size === 0;
     if (printBtn) printBtn.disabled = empty || isPrinting || !session;
     if (clearBtn) clearBtn.disabled = empty || isPrinting;
+    if (mobileCartBar) {
+      mobileCartBar.disabled = empty;
+      mobileCartBar.setAttribute("aria-label", empty ? "Comanda vuota" : `Vedi la comanda, totale ${euro(total)}`);
+    }
   }
 
   function addProduct(p) {
@@ -988,6 +1003,10 @@ async function initCassa(signal) {
     showToast("Carrello svuotato");
   });
 
+  mobileCartBar?.addEventListener("click", () => {
+    cartCard?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+
   renderProducts();
   renderCart();
   await refreshSession();
@@ -998,6 +1017,7 @@ async function initCassa(signal) {
 async function initProdotti(signal) {
   const table = document.querySelector("#productsTable");
   const form = document.querySelector("#productForm");
+  const createCard = document.querySelector("#productCreateCard");
   const newBtn = document.querySelector("#newProductBtn");
   const cancelCreateBtn = document.querySelector("#cancelEditBtn");
   const searchEl = document.querySelector("#productsSearch");
@@ -1068,7 +1088,18 @@ async function initProdotti(signal) {
     form.reset();
     sortEl.value = "0";
     activeEl.checked = true;
-    nameEl.focus();
+  }
+
+  function openCreateForm() {
+    resetCreateForm();
+    if (createCard) createCard.hidden = false;
+    createCard?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setTimeout(() => nameEl.focus(), 0);
+  }
+
+  function closeCreateForm() {
+    resetCreateForm();
+    if (createCard) createCard.hidden = true;
   }
 
   function openEditModal(product) {
@@ -1183,8 +1214,8 @@ async function initProdotti(signal) {
     if (p) openEditModal(p);
   });
 
-  newBtn?.addEventListener("click", resetCreateForm);
-  cancelCreateBtn?.addEventListener("click", resetCreateForm);
+  newBtn?.addEventListener("click", openCreateForm);
+  cancelCreateBtn?.addEventListener("click", closeCreateForm);
   deleteBtn?.addEventListener("click", async () => {
     const id = String(editIdEl?.value || "").trim();
     if (!id) return;
@@ -1237,7 +1268,7 @@ async function initProdotti(signal) {
       await api("/api/products", { method: "POST", body: JSON.stringify({ name, category, price_cents, sort_order, active, stock, cost_cents }) });
       showToast("Prodotto creato");
       await refresh();
-      resetCreateForm();
+      closeCreateForm();
     } catch (err) {
       alert(err.message);
     }
@@ -1278,6 +1309,7 @@ async function initProdotti(signal) {
 
   await refresh();
   resetCreateForm();
+  if (createCard) createCard.hidden = true;
 }
 
 function destroyReportCharts() {
@@ -1580,6 +1612,26 @@ async function initReportExport() {
   const restoreBackupBtn = document.querySelector("#restoreBackupBtn");
   const restoreFileName = document.querySelector("#restoreFileName");
   const toastEl = document.querySelector("#toast");
+
+  const viewButtons = Array.from(document.querySelectorAll("[data-report-view]"));
+  const viewPanels = Array.from(document.querySelectorAll("[data-report-panel]"));
+  function setReportView(view) {
+    viewButtons.forEach(button => {
+      const active = button.getAttribute("data-report-view") === view;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    viewPanels.forEach(panel => {
+      const active = panel.getAttribute("data-report-panel") === view;
+      panel.hidden = !active;
+      panel.classList.toggle("is-active", active);
+    });
+  }
+  viewButtons.forEach(button => {
+    button.onclick = () => setReportView(button.getAttribute("data-report-view"));
+  });
+  if (viewButtons.length > 0) setReportView("summary");
+
   if (!btn) return;
 
   function showToast(msg) {
@@ -1663,6 +1715,9 @@ async function initSales() {
   const resetBtn = document.querySelector("#resetSalesFilters");
   const listTitle = document.querySelector("#salesListTitle");
   const toastEl = document.querySelector("#toast");
+  const toggleFiltersBtn = document.querySelector("#toggleSalesFilters");
+  const advancedFilters = document.querySelector("#advancedSalesFilters");
+  const filterSummary = document.querySelector("#salesFilterSummary");
   if (!listEl) return;
 
   const PAY_LABEL = { cash: "Contanti", card: "Carta", other: "Altro" };
@@ -1709,6 +1764,25 @@ async function initSales() {
     return params;
   }
 
+  function setAdvancedFilters(open) {
+    if (!advancedFilters || !toggleFiltersBtn) return;
+    advancedFilters.hidden = !open;
+    toggleFiltersBtn.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  function syncFilterSummary() {
+    if (!filtersForm) return;
+    const advancedNames = ["from", "to", "operator", "method", "status"];
+    const active = advancedNames.filter(name => String(filtersForm[name]?.value || "").trim()).length;
+    if (filterSummary) {
+      filterSummary.textContent = active === 0
+        ? "Nessun filtro avanzato"
+        : `${active} ${active === 1 ? "filtro avanzato attivo" : "filtri avanzati attivi"}`;
+    }
+    if (toggleFiltersBtn) toggleFiltersBtn.textContent = active > 0 ? `Altri filtri (${active})` : "Altri filtri";
+    if (active > 0) setAdvancedFilters(true);
+  }
+
   async function refresh() {
     const params = filtersQuery();
     const sales = await api(`/api/sales?${params.toString()}`);
@@ -1737,14 +1811,22 @@ async function initSales() {
   });
 
   refreshBtn?.addEventListener("click", () => refresh().catch(err => alert(err.message)));
+  toggleFiltersBtn?.addEventListener("click", () => {
+    setAdvancedFilters(toggleFiltersBtn.getAttribute("aria-expanded") !== "true");
+  });
   if (filtersForm) filtersForm.onsubmit = (e) => {
     e.preventDefault();
+    syncFilterSummary();
     refresh().catch(err => alert(err.message));
   };
+  if (filtersForm) filtersForm.onchange = syncFilterSummary;
   if (resetBtn) resetBtn.onclick = () => {
     filtersForm?.reset();
+    setAdvancedFilters(false);
+    syncFilterSummary();
     refresh().catch(err => alert(err.message));
   };
+  syncFilterSummary();
   await refresh();
 }
 

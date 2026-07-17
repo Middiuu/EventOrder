@@ -22,7 +22,7 @@
         <span class="status-pill is-active" id="sessionStatus">Cassa aperta</span>
         <div class="actions" style="margin:0">
           <button class="btn btn-primary btn-compact" id="openSessionBtn" type="button" hidden>Apri cassa</button>
-          <button class="btn btn-secondary btn-compact" id="movementBtn" type="button" hidden>Movimento di cassa</button>
+          <button class="btn btn-secondary btn-compact" id="movementBtn" type="button" hidden>Movimento</button>
           <button class="btn btn-secondary btn-compact" id="closeSessionBtn" type="button" hidden>Chiudi cassa</button>
         </div>
       </div>
@@ -63,6 +63,14 @@
           </section>
         </aside>
       </section>
+
+      <button class="mobile-cart-bar" id="mobileCartBar" type="button" disabled aria-label="Vedi la comanda">
+        <span>
+          <b id="mobileCartCount">Comanda vuota</b>
+          <small>Vedi e completa l'incasso</small>
+        </span>
+        <strong id="mobileCartTotal" class="mono">€ 0,00</strong>
+      </button>
 
       <div id="toast" class="toast"></div>
 
