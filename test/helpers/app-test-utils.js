@@ -1,6 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const crypto = require("crypto");
 
 const PROJECT_ROOT = path.join(__dirname, "..", "..");
 
@@ -38,7 +39,18 @@ function loadApp({ dbPath, printTicket, env = {} } = {}) {
 // Richiesta HTTP reale verso il server di test. I redirect non vengono
 // seguiti, cosi' i test possono verificare status 302 e header Location.
 async function requestHttp(baseUrl, { method = "GET", url = "/", headers = {}, body } = {}) {
-  const res = await fetch(baseUrl + url, { method, headers, body, redirect: "manual" });
+  const requestHeaders = { ...headers };
+  const hasIdempotencyKey = Object.keys(requestHeaders)
+    .some(key => key.toLowerCase() === "idempotency-key");
+  if (method === "POST" && url === "/api/sales/print" && !hasIdempotencyKey) {
+    requestHeaders["Idempotency-Key"] = crypto.randomUUID();
+  }
+  const res = await fetch(baseUrl + url, {
+    method,
+    headers: requestHeaders,
+    body,
+    redirect: "manual",
+  });
   const buffer = Buffer.from(await res.arrayBuffer());
 
   const responseHeaders = {};

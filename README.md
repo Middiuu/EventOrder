@@ -32,7 +32,7 @@ nessun canone, nessun dato che esce dalla macchina**.
 - ⚡ **Veloce** — catalogo a griglia, un tap per aggiungere, totale sempre in vista.
 - 💶 **Pensato per i contanti** — calcolo del resto, tasti rapidi (€20, €50, €100…).
 - 🌙 **Chiaro e scuro** — interfaccia curata con tema scuro di default e tema chiaro per il giorno.
-- 🔌 **Autonomo** — un file database locale, backup con un clic.
+- 🔌 **Autonomo** — un file database locale, backup e ripristino guidato.
 
 <br>
 
@@ -95,7 +95,9 @@ consulti le **chiusure di cassa** con ammanchi, eccedenze e note. Se imposti il
 **costo** dei prodotti vedi anche il **margine** (fotografato alla vendita), e
 gli **sconti sono ripartiti sui prodotti** al centesimo. Esporti tutto in
 **CSV** — aggregato, per transazione o **riga per articolo** — e fai il
-**backup del database**. Lo storico vendite si filtra per numero, data,
+**backup del database**. Dalla stessa pagina puoi ripristinarlo in sicurezza:
+EventOrder verifica file e schema, richiede la cassa chiusa e crea prima una
+copia automatica dei dati correnti. Lo storico vendite si filtra per numero, data,
 prodotto, operatore, metodo e stato.
 
 <div align="center">
@@ -183,9 +185,12 @@ Con `APP_PIN` impostato, l'accesso è protetto da un **PIN-pad** touch:
 
 - **Node.js 24 LTS + Express 5**, **SQLite** (`better-sqlite3`), frontend **vanilla JS** (nessun build step).
 - Importi gestiti in **centesimi interi** (niente errori di arrotondamento).
+- Ogni incasso inviato dall'interfaccia usa una chiave idempotente: un retry di
+  rete restituisce la vendita gia' registrata senza duplicarla o scalare di nuovo le scorte.
 - Nome e categoria dei prodotti salvati nella vendita: le rinomine future non alterano lo storico.
 - Report e chiusura usano l'**ora locale** per attribuire correttamente le vendite a cavallo della mezzanotte.
-- Backup con la copia **online consistente** di SQLite e rotazione automatica.
+- Backup con copia **online consistente** di SQLite, rotazione automatica e
+  ripristino verificato con backup di sicurezza preventivo.
 - Branding/valuta esposti al frontend via `GET /api/config`.
 - Suite di test con `node:test` su database e flussi applicativi.
 

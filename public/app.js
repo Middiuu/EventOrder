@@ -236,9 +236,10 @@ function escapeHtml(value) {
 }
 
 async function api(path, opts) {
+  const { headers = {}, ...rest } = opts || {};
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
-    ...opts
+    ...rest,
+    headers: { "Content-Type": "application/json", ...headers },
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || "Errore");
@@ -410,6 +411,11 @@ async function initCassa(signal) {
   let products = await api("/api/products");
   let filtered = [...products];
 
+  function newCheckoutRequestId() {
+    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+    return `eo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+
   // Ricarica il catalogo (scorte e stato esaurito cambiano durante il servizio)
   async function reloadProducts() {
     try {
@@ -422,6 +428,7 @@ async function initCassa(signal) {
 
   const cart = new Map();
   let isPrinting = false;
+  let checkoutRequestId = null;
   let session = null;
   let payMethod = "cash";
   let discType = "none"; // none | percent | amount | gift
@@ -862,6 +869,9 @@ async function initCassa(signal) {
 
   printBtn?.addEventListener("click", () => {
     if (!session || cart.size === 0) return;
+    // Rimane invariata durante tutti i retry di questo incasso. Se la risposta
+    // si perde, il server riconosce la vendita gia' conclusa senza duplicarla.
+    checkoutRequestId = newCheckoutRequestId();
     if (cashReceivedEl) cashReceivedEl.value = "";
     setDiscount("none");
     setPayMethod("cash");
@@ -890,8 +900,14 @@ async function initCassa(signal) {
     try {
       isPrinting = true;
       confirmPayBtn.disabled = true;
-      const out = await api("/api/sales/print", { method: "POST", body: JSON.stringify(body) });
+      checkoutRequestId ||= newCheckoutRequestId();
+      const out = await api("/api/sales/print", {
+        method: "POST",
+        headers: { "Idempotency-Key": checkoutRequestId },
+        body: JSON.stringify(body),
+      });
       cart.clear();
+      checkoutRequestId = null;
       closeModal(paymentModal);
       cartCard?.classList.add("flash");
       setTimeout(() => cartCard?.classList.remove("flash"), 260);
@@ -905,6 +921,7 @@ async function initCassa(signal) {
     } finally {
       isPrinting = false;
       renderCart();
+      refreshPayment();
     }
   });
 
@@ -924,6 +941,7 @@ async function initCassa(signal) {
     const ok = await uiConfirm("Vuoi svuotare il carrello corrente?", "Svuota carrello");
     if (!ok) return;
     cart.clear();
+    checkoutRequestId = null;
     renderCart();
     showToast("Carrello svuotato");
   });
@@ -1515,6 +1533,10 @@ async function initReportExport() {
   const btn = document.querySelector("#downloadCsvBtn");
   const txBtn = document.querySelector("#downloadTxCsvBtn");
   const itemsBtn = document.querySelector("#downloadItemsCsvBtn");
+  const restoreFile = document.querySelector("#restoreFile");
+  const selectRestoreFileBtn = document.querySelector("#selectRestoreFileBtn");
+  const restoreBackupBtn = document.querySelector("#restoreBackupBtn");
+  const restoreFileName = document.querySelector("#restoreFileName");
   const toastEl = document.querySelector("#toast");
   if (!btn) return;
 
@@ -1536,6 +1558,58 @@ async function initReportExport() {
   btn.onclick = () => download("/api/reports/export.csv", "CSV prodotti");
   if (txBtn) txBtn.onclick = () => download("/api/reports/transactions.csv", "CSV transazioni");
   if (itemsBtn) itemsBtn.onclick = () => download("/api/reports/items.csv", "CSV righe vendute");
+
+  if (selectRestoreFileBtn && restoreFile) {
+    selectRestoreFileBtn.onclick = () => restoreFile.click();
+    restoreFile.onchange = () => {
+      const file = restoreFile.files?.[0];
+      if (restoreFileName) restoreFileName.textContent = file?.name || "Nessun file selezionato";
+      if (restoreBackupBtn) restoreBackupBtn.disabled = !file;
+    };
+  }
+
+  if (restoreBackupBtn && restoreFile) {
+    restoreBackupBtn.onclick = async () => {
+      const file = restoreFile.files?.[0];
+      if (!file) return;
+      if (file.size > 100 * 1024 * 1024) {
+        alert("Il file supera il limite di 100 MB.");
+        return;
+      }
+
+      const confirmation = await uiPrompt(
+        "Ripristina backup",
+        `Scrivi RIPRISTINA per sostituire i dati correnti con ${file.name}`
+      );
+      if (confirmation !== "RIPRISTINA") {
+        if (confirmation !== null) alert("Conferma non corretta: ripristino annullato.");
+        return;
+      }
+
+      const previousLabel = restoreBackupBtn.textContent;
+      restoreBackupBtn.disabled = true;
+      restoreBackupBtn.textContent = "Verifica in corso…";
+      try {
+        const res = await fetch("/api/reports/restore", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "X-EventOrder-Restore": "RESTORE",
+          },
+          body: file,
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || "Ripristino non riuscito");
+
+        alert(`Ripristino completato. Backup di sicurezza creato: ${data.safety_backup}`);
+        location.reload();
+      } catch (err) {
+        alert(err.message);
+        restoreBackupBtn.disabled = false;
+        restoreBackupBtn.textContent = previousLabel;
+      }
+    };
+  }
 }
 
 // --------------------

@@ -114,8 +114,10 @@ test("migrazione legacy aggiunge e valorizza gli snapshot prodotto prima di crea
       product_category: "Cibo",
       stock_decremented_qty: 0,
     });
-    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 3);
+    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 4);
     assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "session_id"));
+    assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "client_request_id"));
+    assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "request_fingerprint"));
 
     dbModule.db.close();
   } finally {

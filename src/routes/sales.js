@@ -1,4 +1,5 @@
 const express = require("express");
+const crypto = require("crypto");
 const { db, getNextSaleNumber, getOpenSession } = require("../db");
 const {
   hasPendingSaleForSession,
@@ -16,6 +17,58 @@ const {
 } = require("../validation");
 
 const PAYMENT_METHODS = new Set(["cash", "card", "other"]);
+const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9._:-]{8,120}$/;
+
+function idempotencyFingerprint(sessionId, normalized, paymentMethod, body) {
+  const discount = body?.discount && body.discount.type
+    ? { type: String(body.discount.type), value: body.discount.value ?? null }
+    : null;
+  const canonical = JSON.stringify({
+    session_id: sessionId,
+    items: normalized,
+    payment_method: paymentMethod,
+    cash_received_cents: body?.cash_received_cents ?? null,
+    discount,
+  });
+  return crypto.createHash("sha256").update(canonical).digest("hex");
+}
+
+function replayExistingSale(res, clientRequestId, fingerprint) {
+  const sale = db.prepare(`
+    SELECT id, sale_number, total_cents, discount_cents, payment_method,
+           change_cents, request_fingerprint, voided, void_reason
+    FROM sales WHERE client_request_id = ?
+  `).get(clientRequestId);
+  if (!sale) return false;
+
+  if (sale.request_fingerprint !== fingerprint) {
+    return res.status(409).json({
+      error: "Chiave di incasso gia' usata per una richiesta diversa",
+    });
+  }
+  if (isSalePending(sale.id)) {
+    return res.status(409).json({
+      error: "Incasso ancora in elaborazione. Attendi un istante e riprova.",
+      retryable: true,
+    });
+  }
+  if (sale.voided) {
+    return res.status(409).json({
+      error: `La vendita #${String(sale.sale_number).padStart(4, "0")} associata a questo tentativo e' stata annullata. Avvia un nuovo incasso.`,
+    });
+  }
+
+  return res.json({
+    ok: true,
+    idempotent_replay: true,
+    sale_number: sale.sale_number,
+    total_cents: sale.total_cents,
+    subtotal_cents: sale.total_cents + sale.discount_cents,
+    discount_cents: sale.discount_cents,
+    payment_method: sale.payment_method,
+    change_cents: sale.change_cents,
+  });
+}
 
 function loadItems(saleIds) {
   if (saleIds.length === 0) return new Map();
@@ -68,53 +121,52 @@ function expectedCashForSession(sessionId) {
 // Storno idempotente con ripristino della sola quantità effettivamente
 // decrementata alla vendita. Gli storni manuali proteggono inoltre l'invariante
 // dei contanti attesi, evitando di lasciare il turno in uno stato non chiudibile.
-const voidSale = db.transaction((saleId, reason, operator, protectExpectedCash = true) => {
-  const sale = db.prepare(`
-    SELECT id, session_id, payment_method, total_cents, voided
-    FROM sales WHERE id = ?
-  `).get(saleId);
-  if (!sale || sale.voided) return false;
+function voidSale(saleId, reason, operator, protectExpectedCash = true) {
+  // La transazione viene costruita sulla connessione corrente: dopo un restore
+  // non deve restare legata all'istanza SQLite che e' stata chiusa.
+  return db.transaction(() => {
+    const sale = db.prepare(`
+      SELECT id, session_id, payment_method, total_cents, voided
+      FROM sales WHERE id = ?
+    `).get(saleId);
+    if (!sale || sale.voided) return false;
 
-  if (protectExpectedCash && sale.payment_method === "cash") {
-    const expected = expectedCashForSession(sale.session_id);
-    if (expected != null && expected - sale.total_cents < 0) {
-      throw conflictError(
-        "Lo storno renderebbe negativi i contanti attesi. Registra prima un versamento di cassa sufficiente."
-      );
+    if (protectExpectedCash && sale.payment_method === "cash") {
+      const expected = expectedCashForSession(sale.session_id);
+      if (expected != null && expected - sale.total_cents < 0) {
+        throw conflictError(
+          "Lo storno renderebbe negativi i contanti attesi. Registra prima un versamento di cassa sufficiente."
+        );
+      }
     }
-  }
 
-  const updated = db.prepare(`
-    UPDATE sales
-    SET voided=1, void_reason=?, voided_at=datetime('now'), void_operator=?
-    WHERE id=? AND voided=0
-  `).run(reason, operator, saleId);
-  if (updated.changes !== 1) return false;
+    const updated = db.prepare(`
+      UPDATE sales
+      SET voided=1, void_reason=?, voided_at=datetime('now'), void_operator=?
+      WHERE id=? AND voided=0
+    `).run(reason, operator, saleId);
+    if (updated.changes !== 1) return false;
 
-  const items = db.prepare(`
-    SELECT product_id, stock_decremented_qty
-    FROM sale_items WHERE sale_id=?
-  `).all(saleId);
-  const incStock = db.prepare(`
-    UPDATE products SET stock = stock + ? WHERE id = ? AND stock IS NOT NULL
-  `);
-  for (const it of items) {
-    if (it.stock_decremented_qty > 0) {
-      incStock.run(it.stock_decremented_qty, it.product_id);
+    const items = db.prepare(`
+      SELECT product_id, stock_decremented_qty
+      FROM sale_items WHERE sale_id=?
+    `).all(saleId);
+    const incStock = db.prepare(`
+      UPDATE products SET stock = stock + ? WHERE id = ? AND stock IS NOT NULL
+    `);
+    for (const it of items) {
+      if (it.stock_decremented_qty > 0) {
+        incStock.run(it.stock_decremented_qty, it.product_id);
+      }
     }
-  }
-  return true;
-});
+    return true;
+  })();
+}
 
 function createSalesRouter({ printTicket }) {
   const router = express.Router();
 
   router.post("/print", async (req, res) => {
-    const session = getOpenSession();
-    if (!session) {
-      return res.status(409).json({ error: "Nessun turno di cassa aperto. Apri la cassa prima di vendere." });
-    }
-
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
     if (items.length === 0) return res.status(400).json({ error: "Carrello vuoto" });
 
@@ -137,6 +189,32 @@ function createSalesRouter({ printTicket }) {
     if (new Set(ids).size !== ids.length) {
       return res.status(400).json({ error: "Lo stesso prodotto compare piu' volte nel carrello" });
     }
+
+    const rawIdempotencyKey = req.get("Idempotency-Key");
+    if (!rawIdempotencyKey) {
+      return res.status(400).json({ error: "Chiave di incasso obbligatoria" });
+    }
+    const clientRequestId = String(rawIdempotencyKey).trim();
+    if (!IDEMPOTENCY_KEY_RE.test(clientRequestId)) {
+      return res.status(400).json({ error: "Chiave di incasso non valida" });
+    }
+    const priorRequest = db.prepare(
+      "SELECT session_id FROM sales WHERE client_request_id = ?"
+    ).get(clientRequestId);
+    const session = getOpenSession();
+    if (!session && !priorRequest) {
+      return res.status(409).json({ error: "Nessun turno di cassa aperto. Apri la cassa prima di vendere." });
+    }
+    const fingerprintSessionId = priorRequest?.session_id ?? session?.id;
+    if (!Number.isSafeInteger(fingerprintSessionId)) {
+      return res.status(409).json({ error: "La richiesta precedente non e' associata a un turno valido" });
+    }
+    const requestFingerprint = idempotencyFingerprint(
+      fingerprintSessionId, normalized, paymentMethod, req.body
+    );
+    const replay = replayExistingSale(res, clientRequestId, requestFingerprint);
+    if (replay) return replay;
+
     const placeholders = ids.map(() => "?").join(",");
     const products = db.prepare(`
       SELECT id, name, category, price_cents, sold_out, stock, cost_cents
@@ -230,10 +308,12 @@ function createSalesRouter({ printTicket }) {
 
       const saleInfo = db.prepare(`
         INSERT INTO sales
-          (sale_number, total_cents, discount_cents, discount_type, discount_value,
+          (sale_number, client_request_id, request_fingerprint,
+           total_cents, discount_cents, discount_type, discount_value,
            payment_method, cash_received_cents, change_cents, operator, session_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(saleNumber, totalCents, discountCents, discountType, discountValue,
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(saleNumber, clientRequestId, requestFingerprint,
+             totalCents, discountCents, discountType, discountValue,
              paymentMethod, cashReceivedCents, changeCents, session.operator, session.id);
 
       const saleId = saleInfo.lastInsertRowid;

@@ -1,9 +1,16 @@
 const express = require("express");
-const { db, DB_PATH } = require("../db");
+const {
+  db,
+  DB_PATH,
+  getOpenSession,
+  validateRestoreCandidate,
+  restoreDatabaseFromFile,
+} = require("../db");
 const { config } = require("../config");
 const { localYmdToUtcSql, parseLocalYmd } = require("../validation");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
 const router = express.Router();
 
@@ -429,40 +436,96 @@ router.get("/transactions.csv", (req, res) => {
   sendCsv(res, `${config.SLUG}_transazioni_${scopeLabel(scope)}.csv`, lines);
 });
 
+function backupStamp(now = new Date()) {
+  return `${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-` +
+    `${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
+}
+
+function getBackupsDir() {
+  const backupsDir = path.join(path.dirname(DB_PATH), "backups");
+  fs.mkdirSync(backupsDir, { recursive: true });
+  return backupsDir;
+}
+
+async function createDatabaseBackup(kind = "backup") {
+  if (!fs.existsSync(DB_PATH)) {
+    const err = new Error("Database non trovato");
+    err.status = 404;
+    err.publicMessage = err.message;
+    throw err;
+  }
+
+  const backupsDir = getBackupsDir();
+  const base = `${config.SLUG}-${kind}-${backupStamp()}`;
+  let backupName = `${base}.sqlite`;
+  let suffix = 2;
+  while (fs.existsSync(path.join(backupsDir, backupName))) {
+    backupName = `${base}-${suffix++}.sqlite`;
+  }
+  const backupPath = path.join(backupsDir, backupName);
+
+  // Backup online consistente: e' valido anche mentre altre richieste leggono.
+  await db.backup(backupPath);
+  pruneBackups(backupsDir);
+  return { backupName, backupPath, backupsDir };
+}
+
 // --- Backup DB (copia consistente e download)
 router.get("/backup", async (req, res, next) => {
   try {
-    const projectRoot = path.dirname(DB_PATH);
+    const { backupName, backupPath } = await createDatabaseBackup();
 
-    if (!fs.existsSync(DB_PATH)) {
-      return res.status(404).json({ error: "Database non trovato" });
-    }
-
-    const backupsDir = path.join(projectRoot, "backups");
-    fs.mkdirSync(backupsDir, { recursive: true });
-
-    const now = new Date();
-    const stamp =
-      `${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}-` +
-      `${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
-
-    const backupName = `${config.SLUG}-backup-${stamp}.sqlite`;
-    const backupPath = path.join(backupsDir, backupName);
-
-    // Backup online: copia consistente anche mentre il DB e' in uso
-    // (a differenza di copyFileSync, che puo' catturare uno stato parziale).
-    await db.backup(backupPath);
-
-    pruneBackups(backupsDir);
-
-    // Inviamo il file come buffer (niente streaming da disco): il backup e'
-    // piccolo, e cosi' il download e' affidabile su ogni versione di Node.
+    // Inviamo il file come buffer: il database e' piccolo e il download resta
+    // affidabile anche se la rotazione dei backup parte subito dopo.
     const data = fs.readFileSync(backupPath);
     res.setHeader("Content-Type", "application/x-sqlite3");
     res.setHeader("Content-Disposition", `attachment; filename="${backupName}"`);
     res.send(data);
   } catch (err) {
     next(err);
+  }
+});
+
+const restoreBody = express.raw({
+  type: ["application/octet-stream", "application/x-sqlite3", "application/vnd.sqlite3"],
+  limit: "100mb",
+});
+
+// --- Restore guidato: file grezzo + header esplicito anti-invio accidentale.
+router.post("/restore", restoreBody, async (req, res, next) => {
+  let candidatePath;
+  try {
+    if (req.get("X-EventOrder-Restore") !== "RESTORE") {
+      return res.status(400).json({ error: "Conferma di ripristino mancante" });
+    }
+    if (getOpenSession()) {
+      return res.status(409).json({ error: "Chiudi la cassa prima di ripristinare un backup" });
+    }
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+      return res.status(400).json({ error: "Seleziona un file di backup SQLite" });
+    }
+
+    // Il candidato resta accanto al DB: la sostituzione finale puo' quindi
+    // usare rename atomico senza attraversare filesystem differenti.
+    candidatePath = `${DB_PATH}.restore-upload-${process.pid}-${crypto.randomUUID()}`;
+    fs.writeFileSync(candidatePath, req.body, { flag: "wx", mode: 0o600 });
+    const inspected = validateRestoreCandidate(candidatePath);
+
+    // Questo backup non e' opzionale: se non riusciamo a crearlo il restore
+    // viene interrotto prima di toccare il database corrente.
+    const safety = await createDatabaseBackup("pre-restore");
+    restoreDatabaseFromFile(candidatePath);
+    candidatePath = null; // spostato atomicamente in DB_PATH
+
+    res.json({
+      ok: true,
+      restored: inspected,
+      safety_backup: safety.backupName,
+    });
+  } catch (err) {
+    next(err);
+  } finally {
+    if (candidatePath) fs.rmSync(candidatePath, { force: true });
   }
 });
 
