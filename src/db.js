@@ -7,7 +7,7 @@ const DB_PATH = process.env.POS_DB_PATH
   ? path.resolve(process.env.POS_DB_PATH)
   : path.join(__dirname, "..", "pos.sqlite");
 const SCHEMA_PATH = path.join(__dirname, "schema.sql");
-const DB_SCHEMA_VERSION = 4;
+const DB_SCHEMA_VERSION = 5;
 const RESTORE_MARKER_PATH = `${DB_PATH}.restore-state.json`;
 
 function fsyncDirectory(dirPath) {
@@ -122,108 +122,212 @@ const db = new Proxy({}, {
   },
 });
 
-// Migrazioni idempotenti: aggiunge colonne mancanti su DB gia' esistenti,
-// perche' "CREATE TABLE IF NOT EXISTS" non altera tabelle gia' presenti.
-const EXPECTED_SALES_COLUMNS = {
-  client_request_id: "TEXT",
-  request_fingerprint: "TEXT",
-  discount_cents: "INTEGER NOT NULL DEFAULT 0",
-  discount_type: "TEXT",
-  discount_value: "REAL",
-  payment_method: "TEXT NOT NULL DEFAULT 'cash'",
-  cash_received_cents: "INTEGER",
-  change_cents: "INTEGER",
-  operator: "TEXT",
-  session_id: "INTEGER",
-  void_reason: "TEXT",
-  voided_at: "TEXT",
-  void_operator: "TEXT",
-};
+const CANONICAL_TABLES = [
+  "products",
+  "cash_sessions",
+  "sales",
+  "app_state",
+  "sale_items",
+  "cash_movements",
+];
 
-const EXPECTED_SALE_ITEM_COLUMNS = {
-  product_name: "TEXT NOT NULL DEFAULT ''",
-  product_category: "TEXT NOT NULL DEFAULT 'Generale'",
-  product_cost_cents: "INTEGER",
-  stock_decremented_qty: "INTEGER NOT NULL DEFAULT 0",
-};
+const DROP_TABLE_ORDER = [
+  "cash_movements",
+  "sale_items",
+  "sales",
+  "cash_sessions",
+  "products",
+  "app_state",
+];
 
-const EXPECTED_PRODUCT_COLUMNS = {
-  sold_out: "INTEGER NOT NULL DEFAULT 0",
-  stock: "INTEGER",
-  cost_cents: "INTEGER",
-};
+function quoteIdentifier(identifier) {
+  if (!/^[a-z_][a-z0-9_]*$/i.test(identifier)) {
+    throw new Error(`Identificatore SQLite non valido: ${identifier}`);
+  }
+  return `"${identifier}"`;
+}
 
-function tableExists(table) {
-  return Boolean(db.prepare(`
+function tableExistsIn(database, table) {
+  return Boolean(database.prepare(`
     SELECT 1 FROM sqlite_master WHERE type='table' AND name=?
   `).get(table));
 }
 
-function addMissingColumns(table, expectedColumns) {
-  if (!tableExists(table)) return;
-  const existing = new Set(
-    db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name)
+function tableColumns(database, table) {
+  return database.prepare(`PRAGMA table_info(${quoteIdentifier(table)})`).all();
+}
+
+function canonicalTableSql(canonicalDb, table, replacement) {
+  const row = canonicalDb.prepare(`
+    SELECT sql FROM sqlite_master WHERE type='table' AND name=?
+  `).get(table);
+  if (!row?.sql) throw new Error(`Schema canonico mancante per ${table}`);
+
+  const createPrefix = row.sql.match(
+    /^CREATE TABLE(?: IF NOT EXISTS)?\s+(?:"[^"]+"|`[^`]+`|\[[^\]]+\]|\S+)/i
   );
-  for (const [name, definition] of Object.entries(expectedColumns)) {
-    if (!existing.has(name)) {
-      db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
-    }
+  if (!createPrefix) throw new Error(`Definizione canonica non riconosciuta per ${table}`);
+  return row.sql.replace(createPrefix[0], `CREATE TABLE ${quoteIdentifier(replacement)}`);
+}
+
+function copyCommonColumns(canonicalDb, table, destination) {
+  if (!tableExistsIn(db, table)) return;
+
+  const existing = new Set(tableColumns(db, table).map(column => column.name));
+  const common = tableColumns(canonicalDb, table)
+    .map(column => column.name)
+    .filter(name => existing.has(name));
+  if (common.length === 0) {
+    const count = db.prepare(`SELECT COUNT(*) AS count FROM ${quoteIdentifier(table)}`).get().count;
+    if (count > 0) throw new Error(`Nessuna colonna compatibile nella tabella ${table}`);
+    return;
   }
-}
 
-function ensureMigratedColumns() {
-  addMissingColumns("sales", EXPECTED_SALES_COLUMNS);
-  addMissingColumns("sale_items", EXPECTED_SALE_ITEM_COLUMNS);
-  addMissingColumns("products", EXPECTED_PRODUCT_COLUMNS);
-}
-
-function runMigrations() {
-  const previousVersion = db.pragma("user_version", { simple: true });
-  ensureMigratedColumns();
-
-  // I database precedenti conservavano il nome solo nella tabella prodotti.
-  // Lo copiamo una volta nelle righe storiche, che da ora restano immutabili.
+  const columns = common.map(quoteIdentifier).join(", ");
   db.exec(`
-    UPDATE sale_items
-    SET product_category = COALESCE(
-      (SELECT category FROM products WHERE id = sale_items.product_id),
-      'Generale'
-    )
-    WHERE product_name = '';
-
-    UPDATE sale_items
-    SET product_name = COALESCE((SELECT name FROM products WHERE id = sale_items.product_id), '')
-    WHERE product_name = '';
+    INSERT INTO ${quoteIdentifier(destination)} (${columns})
+    SELECT ${columns} FROM ${quoteIdentifier(table)}
   `);
+}
 
-  if (previousVersion < 3) {
-    // Le sole vendite legacy ancora stornabili appartengono al turno aperto.
-    // Per queste righe deduciamo una volta se la scorta era presumibilmente
-    // tracciata; tutte le nuove vendite fotografano il dato in modo esatto.
-    db.exec(`
-      UPDATE sale_items
-      SET stock_decremented_qty = qty
-      WHERE stock_decremented_qty = 0
-        AND product_id IN (SELECT id FROM products WHERE stock IS NOT NULL)
-        AND sale_id IN (
-          SELECT s.id
-          FROM sales s
-          JOIN cash_sessions cs ON cs.id = s.session_id
-          WHERE s.voided = 0 AND cs.closed_at IS NULL
-        )
-    `);
+function readLegacySequences() {
+  if (!tableExistsIn(db, "sqlite_sequence")) return new Map();
+  const names = new Set(CANONICAL_TABLES);
+  return new Map(
+    db.prepare("SELECT name, seq FROM sqlite_sequence").all()
+      .filter(row => names.has(row.name))
+      .map(row => [row.name, row.seq])
+  );
+}
+
+function restoreLegacySequences(sequences) {
+  const update = db.prepare(`
+    UPDATE sqlite_sequence
+    SET seq = CASE WHEN seq < ? THEN ? ELSE seq END
+    WHERE name = ?
+  `);
+  const insert = db.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)");
+  for (const [table, sequence] of sequences) {
+    const result = update.run(sequence, sequence, table);
+    if (result.changes === 0) insert.run(table, sequence);
   }
+}
 
-  db.pragma(`user_version = ${DB_SCHEMA_VERSION}`);
+// SQLite non consente di aggiungere CHECK e FOREIGN KEY a una tabella con
+// ALTER TABLE. Per i DB precedenti alla v5 ricreiamo quindi tutte le tabelle
+// applicative dalla definizione canonica di schema.sql, copiamo i dati e
+// sostituiamo gli originali in un'unica transazione.
+function migrateLegacySchema(schema, previousVersion) {
+  const canonicalDb = new Database(":memory:");
+
+  try {
+    canonicalDb.exec(schema);
+    db.pragma("foreign_keys = OFF");
+    if (db.pragma("foreign_keys", { simple: true }) !== 0) {
+      throw new Error("Impossibile acquisire il lock di migrazione SQLite");
+    }
+
+    const migrate = db.transaction(() => {
+      const legacySequences = readLegacySequences();
+      for (const table of CANONICAL_TABLES) {
+        const replacement = `__eventorder_v5_${table}`;
+        if (tableExistsIn(db, replacement)) {
+          throw new Error(`Tabella temporanea inattesa: ${replacement}`);
+        }
+        db.exec(canonicalTableSql(canonicalDb, table, replacement));
+        copyCommonColumns(canonicalDb, table, replacement);
+      }
+
+      // I database precedenti conservavano nome e categoria solo nei prodotti.
+      db.exec(`
+        UPDATE __eventorder_v5_sale_items
+        SET product_category = COALESCE(
+          (SELECT category FROM __eventorder_v5_products
+           WHERE id = __eventorder_v5_sale_items.product_id),
+          'Generale'
+        )
+        WHERE product_name = '';
+
+        UPDATE __eventorder_v5_sale_items
+        SET product_name = COALESCE(
+          (SELECT name FROM __eventorder_v5_products
+           WHERE id = __eventorder_v5_sale_items.product_id),
+          ''
+        )
+        WHERE product_name = '';
+      `);
+
+      if (previousVersion < 3) {
+        // Le sole vendite legacy ancora stornabili appartengono al turno aperto.
+        db.exec(`
+          UPDATE __eventorder_v5_sale_items
+          SET stock_decremented_qty = qty
+          WHERE stock_decremented_qty = 0
+            AND product_id IN (
+              SELECT id FROM __eventorder_v5_products WHERE stock IS NOT NULL
+            )
+            AND sale_id IN (
+              SELECT s.id
+              FROM __eventorder_v5_sales s
+              JOIN __eventorder_v5_cash_sessions cs ON cs.id = s.session_id
+              WHERE s.voided = 0 AND cs.closed_at IS NULL
+            )
+        `);
+      }
+
+      for (const table of DROP_TABLE_ORDER) {
+        if (tableExistsIn(db, table)) {
+          db.exec(`DROP TABLE ${quoteIdentifier(table)}`);
+        }
+      }
+      for (const table of CANONICAL_TABLES) {
+        db.exec(`
+          ALTER TABLE ${quoteIdentifier(`__eventorder_v5_${table}`)}
+          RENAME TO ${quoteIdentifier(table)}
+        `);
+      }
+      restoreLegacySequences(legacySequences);
+
+      // Ricrea anche indici e vincoli di unicita' prima del commit: eventuali
+      // duplicati legacy fanno fallire e annullare l'intera migrazione.
+      db.exec(schema);
+      const foreignKeyErrors = db.pragma("foreign_key_check");
+      if (foreignKeyErrors.length > 0) {
+        const first = foreignKeyErrors[0];
+        throw new Error(`Relazione non valida in ${first.table}, riga ${first.rowid}`);
+      }
+      db.pragma(`user_version = ${DB_SCHEMA_VERSION}`);
+    });
+
+    migrate();
+  } catch (err) {
+    throw new Error(`Migrazione schema v5 non riuscita: ${err.message}`, { cause: err });
+  } finally {
+    db.pragma("foreign_keys = ON");
+    if (db.pragma("foreign_keys", { simple: true }) !== 1) {
+      canonicalDb.close();
+      throw new Error("Impossibile riattivare le foreign key SQLite");
+    }
+    canonicalDb.close();
+  }
 }
 
 function initDb() {
-  // Le colonne vanno aggiunte prima degli indici definiti nello schema: su un
-  // database vecchio, un CREATE INDEX che cita una colonna assente fallirebbe.
-  ensureMigratedColumns();
   const schema = fs.readFileSync(SCHEMA_PATH, "utf8");
-  db.exec(schema);
-  runMigrations();
+  const previousVersion = db.pragma("user_version", { simple: true });
+  if (previousVersion > DB_SCHEMA_VERSION) {
+    throw new Error(`Database creato da una versione piu' recente (${previousVersion})`);
+  }
+
+  const hasLegacyTables = CANONICAL_TABLES.some(table => tableExistsIn(db, table));
+  if (hasLegacyTables && previousVersion < DB_SCHEMA_VERSION) {
+    migrateLegacySchema(schema, previousVersion);
+  } else {
+    db.exec(schema);
+    if (previousVersion < DB_SCHEMA_VERSION) {
+      db.pragma(`user_version = ${DB_SCHEMA_VERSION}`);
+    }
+  }
 
   // seed demo generico se non ci sono prodotti (disattivabile con POS_SEED_DEMO=0)
   const count = db.prepare("SELECT COUNT(*) AS c FROM products").get().c;

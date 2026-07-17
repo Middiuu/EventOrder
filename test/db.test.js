@@ -26,6 +26,7 @@ test("initDb crea schema, seed iniziale e contatore vendite", () => {
 
     assert.equal(productCount, 4);
     assert.equal(saleCounter.int_value, 0);
+    assert.equal(db.pragma("user_version", { simple: true }), 5);
 
     db.close();
   } finally {
@@ -114,11 +115,181 @@ test("migrazione legacy aggiunge e valorizza gli snapshot prodotto prima di crea
       product_category: "Cibo",
       stock_decremented_qty: 0,
     });
-    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 4);
+    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 5);
     assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "session_id"));
     assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "client_request_id"));
     assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "request_fingerprint"));
+    assert.match(
+      dbModule.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='products'").get().sql,
+      /CHECK\s*\(/i
+    );
 
+    dbModule.db.close();
+  } finally {
+    delete process.env.POS_DB_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("migrazione v4 preserva dati, sequenze, snapshot e applica i constraint canonici", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
+  const dbPath = path.join(tempDir, "pos.sqlite");
+  const Database = require("better-sqlite3");
+
+  try {
+    const legacy = new Database(dbPath);
+    legacy.exec(fs.readFileSync(path.join(__dirname, "..", "src", "schema.sql"), "utf8"));
+    legacy.exec(`
+      PRAGMA user_version = 4;
+      INSERT INTO products
+        (id, name, price_cents, category, sort_order, active, sold_out, stock, cost_cents)
+      VALUES (7, 'Prodotto v4', 900, 'Test', 40, 1, 0, 12, 300);
+      INSERT INTO products (id, name, price_cents) VALUES (100, 'Prodotto eliminato', 100);
+      DELETE FROM products WHERE id = 100;
+      INSERT INTO cash_sessions
+        (id, opening_float_cents, operator)
+      VALUES (5, 1000, 'Ada');
+      INSERT INTO sales
+        (id, sale_number, client_request_id, request_fingerprint, total_cents,
+         payment_method, session_id)
+      VALUES (11, 42, 'legacy-request', 'legacy-fingerprint', 1800, 'cash', 5);
+      INSERT INTO sale_items
+        (id, sale_id, product_id, qty, unit_price_cents, line_total_cents,
+         product_name, product_category, product_cost_cents, stock_decremented_qty)
+      VALUES (13, 11, 7, 2, 900, 1800, 'Prodotto v4', 'Test', 300, 2);
+      INSERT INTO cash_movements
+        (id, session_id, direction, amount_cents, reason, operator)
+      VALUES (3, 5, 'in', 200, 'Resto', 'Ada');
+      INSERT INTO app_state (key, int_value) VALUES ('sale_number', 42);
+    `);
+    legacy.close();
+
+    const dbModule = loadDbModule(dbPath);
+    dbModule.initDb();
+    const migrated = dbModule.db;
+
+    assert.equal(migrated.pragma("user_version", { simple: true }), 5);
+    assert.equal(migrated.pragma("foreign_keys", { simple: true }), 1);
+    assert.deepEqual(migrated.pragma("foreign_key_check"), []);
+    assert.deepEqual(
+      migrated.prepare(`
+        SELECT id, product_name, product_category, product_cost_cents, stock_decremented_qty
+        FROM sale_items WHERE id = 13
+      `).get(),
+      {
+        id: 13,
+        product_name: "Prodotto v4",
+        product_category: "Test",
+        product_cost_cents: 300,
+        stock_decremented_qty: 2,
+      }
+    );
+    assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM cash_movements").get().count, 1);
+    assert.equal(migrated.prepare("SELECT int_value FROM app_state WHERE key='sale_number'").get().int_value, 42);
+
+    // Una seconda inizializzazione non ricopia i dati e non altera le sequenze.
+    dbModule.initDb();
+    assert.equal(migrated.prepare("SELECT COUNT(*) AS count FROM sales").get().count, 1);
+
+    const invalidStatements = [
+      "UPDATE products SET price_cents = -1 WHERE id = 7",
+      "UPDATE products SET active = 2 WHERE id = 7",
+      "UPDATE products SET stock = -1 WHERE id = 7",
+      "UPDATE sales SET total_cents = -1 WHERE id = 11",
+      "UPDATE sales SET payment_method = 'crypto' WHERE id = 11",
+      "UPDATE sale_items SET qty = 0 WHERE id = 13",
+      "UPDATE sale_items SET stock_decremented_qty = -1 WHERE id = 13",
+      "UPDATE cash_sessions SET opening_float_cents = -1 WHERE id = 5",
+      "UPDATE cash_movements SET direction = 'sideways' WHERE id = 3",
+    ];
+    for (const sql of invalidStatements) {
+      assert.throws(() => migrated.exec(sql), /CHECK constraint failed/, sql);
+    }
+    assert.throws(
+      () => migrated.exec("UPDATE sale_items SET sale_id = 999 WHERE id = 13"),
+      /FOREIGN KEY constraint failed/
+    );
+
+    const inserted = migrated.prepare(`
+      INSERT INTO products (name, price_cents) VALUES ('Dopo migrazione', 100)
+    `).run();
+    assert.equal(Number(inserted.lastInsertRowid), 101);
+    assert.throws(
+      () => migrated.prepare("INSERT INTO products (name, price_cents) VALUES (?, ?)")
+        .run("  prodotto V4  ", 900),
+      /UNIQUE constraint failed/
+    );
+
+    migrated.close();
+  } finally {
+    delete process.env.POS_DB_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("una migrazione incompatibile fa rollback e lascia intatte le tabelle legacy", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
+  const dbPath = path.join(tempDir, "pos.sqlite");
+  const Database = require("better-sqlite3");
+
+  try {
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        price_cents INTEGER NOT NULL,
+        category TEXT NOT NULL DEFAULT 'Generale',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO products (name, price_cents) VALUES ('Dato incompatibile', -50);
+      PRAGMA user_version = 4;
+    `);
+    legacy.close();
+
+    const dbModule = loadDbModule(dbPath);
+    assert.throws(
+      () => dbModule.initDb(),
+      /Migrazione schema v5 non riuscita: CHECK constraint failed/
+    );
+    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 4);
+    assert.equal(
+      dbModule.db.prepare("SELECT price_cents FROM products WHERE id = 1").get().price_cents,
+      -50
+    );
+    assert.doesNotMatch(
+      dbModule.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='products'").get().sql,
+      /CHECK\s*\(/i
+    );
+    assert.equal(
+      dbModule.db.prepare(`
+        SELECT COUNT(*) AS count FROM sqlite_master
+        WHERE type='table' AND name LIKE '__eventorder_v5_%'
+      `).get().count,
+      0
+    );
+    dbModule.db.close();
+  } finally {
+    delete process.env.POS_DB_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("rifiuta database creati da una versione futura senza modificarli", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
+  const dbPath = path.join(tempDir, "pos.sqlite");
+  const Database = require("better-sqlite3");
+
+  try {
+    const future = new Database(dbPath);
+    future.pragma("user_version = 99");
+    future.close();
+
+    const dbModule = loadDbModule(dbPath);
+    assert.throws(() => dbModule.initDb(), /versione piu' recente \(99\)/);
+    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 99);
     dbModule.db.close();
   } finally {
     delete process.env.POS_DB_PATH;
