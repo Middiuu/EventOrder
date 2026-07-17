@@ -288,16 +288,135 @@ function eurToCents(value) {
   return Math.round(n * 100);
 }
 
+const modalStack = [];
+const modalFocusOrigins = new WeakMap();
+const managedInert = new Map();
+
+const MODAL_FOCUSABLE = [
+  "button:not([disabled])",
+  "input:not([disabled]):not([type='hidden'])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "a[href]",
+  "[tabindex]:not([tabindex='-1'])",
+].join(",");
+
+function visibleFocusableElements(el) {
+  return Array.from(el?.querySelectorAll?.(MODAL_FOCUSABLE) || [])
+    .filter(node => !node.hidden && !node.closest("[hidden]") && node.getClientRects().length > 0);
+}
+
+function topOpenModal() {
+  for (let i = modalStack.length - 1; i >= 0; i -= 1) {
+    if (modalStack[i]?.isConnected && !modalStack[i].hidden) return modalStack[i];
+  }
+  return null;
+}
+
+function isTopModal(el) {
+  return topOpenModal() === el;
+}
+
+function restoreManagedInert() {
+  for (const [el, wasInert] of managedInert) {
+    if (el.isConnected) el.inert = wasInert;
+  }
+  managedInert.clear();
+}
+
+function makeManagedInert(el) {
+  if (!managedInert.has(el)) managedInert.set(el, el.inert);
+  el.inert = true;
+}
+
+function isolateModal(el) {
+  // Rende inerte ogni ramo fratello lungo il percorso modale -> body. In
+  // questo modo funzionano sia le modali dentro #app sia i dialoghi dinamici
+  // aggiunti direttamente al body.
+  let current = el;
+  while (current?.parentElement) {
+    for (const sibling of current.parentElement.children) {
+      if (sibling !== current) makeManagedInert(sibling);
+    }
+    current = current.parentElement;
+  }
+}
+
+function syncModalState() {
+  restoreManagedInert();
+  const top = topOpenModal();
+  document.body.style.overflow = top ? "hidden" : "";
+  if (top) isolateModal(top);
+}
+
+function focusModal(el) {
+  if (!isTopModal(el)) return;
+  const dialog = el.querySelector("[role='dialog']") || el;
+  const target = el.querySelector("[autofocus]")
+    || visibleFocusableElements(el)[0]
+    || dialog;
+  if (target === dialog && !dialog.hasAttribute("tabindex")) dialog.tabIndex = -1;
+  target.focus({ preventScroll: true });
+}
+
 function openModal(el) {
   if (!el) return;
+  const existingIndex = modalStack.indexOf(el);
+  if (existingIndex === -1) {
+    modalFocusOrigins.set(el, document.activeElement);
+  } else {
+    modalStack.splice(existingIndex, 1);
+  }
   el.hidden = false;
-  document.body.style.overflow = "hidden";
+  modalStack.push(el);
+  syncModalState();
+  setTimeout(() => {
+    if (isTopModal(el) && !el.contains(document.activeElement)) focusModal(el);
+  }, 0);
 }
+
 function closeModal(el) {
   if (!el) return;
+  const wasTop = isTopModal(el);
+  const index = modalStack.lastIndexOf(el);
+  if (index !== -1) modalStack.splice(index, 1);
   el.hidden = true;
-  document.body.style.overflow = "";
+  syncModalState();
+
+  if (wasTop) {
+    const origin = modalFocusOrigins.get(el);
+    modalFocusOrigins.delete(el);
+    if (origin?.isConnected && !origin.closest("[inert]")) {
+      setTimeout(() => origin.focus({ preventScroll: true }), 0);
+    } else {
+      const next = topOpenModal();
+      if (next) setTimeout(() => focusModal(next), 0);
+    }
+  }
 }
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Tab") return;
+  const modal = topOpenModal();
+  if (!modal) return;
+  const focusable = visibleFocusableElements(modal);
+  if (focusable.length === 0) {
+    e.preventDefault();
+    focusModal(modal);
+    return;
+  }
+
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  if (e.shiftKey && (active === first || !modal.contains(active))) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && (active === last || !modal.contains(active))) {
+    e.preventDefault();
+    first.focus();
+  }
+});
 
 // Dialog a tema (sostituisce i nativi confirm/prompt, non ottimizzati per il touch)
 function ensureDialog() {
@@ -355,6 +474,7 @@ function openDialog({ title, message, input, okLabel } = {}) {
     const onOk = () => cleanup(input ? inputEl.value : true);
     const onCancel = (e) => { if (e.target?.getAttribute?.("data-dlg") === "cancel") cleanup(input ? null : false); };
     const onKey = (e) => {
+      if (!isTopModal(el)) return;
       if (e.key === "Escape") cleanup(input ? null : false);
       else if (e.key === "Enter") { e.preventDefault(); onOk(); }
     };
@@ -1013,7 +1133,10 @@ async function initCassa(signal) {
   }
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
-    [openSessionModal, paymentModal, closeSessionModal, movementModal].forEach(m => { if (m && !m.hidden) closeModal(m); });
+    const top = topOpenModal();
+    if ([openSessionModal, paymentModal, closeSessionModal, movementModal].includes(top)) {
+      closeModal(top);
+    }
   }, { signal });
 
   clearBtn?.addEventListener("click", async () => {
@@ -1136,16 +1259,14 @@ async function initProdotti(signal) {
     if (editStockEl) editStockEl.value = product.stock == null ? "" : String(product.stock);
     if (editCostEl) editCostEl.value = product.cost_cents == null ? "" : (Number(product.cost_cents) / 100).toFixed(2);
     if (editSoldOutEl) editSoldOutEl.checked = !!product.sold_out;
-    modalEl.hidden = false;
-    document.body.style.overflow = "hidden";
+    openModal(modalEl);
     setTimeout(() => editNameEl.focus(), 0);
   }
 
   function closeEditModal() {
     if (!modalEl || !editForm) return;
-    modalEl.hidden = true;
+    closeModal(modalEl);
     editForm.reset();
-    document.body.style.overflow = "";
   }
 
   function statusPill(p) {
@@ -1266,7 +1387,7 @@ async function initProdotti(signal) {
     }
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && modalEl && !modalEl.hidden) {
+    if (e.key === "Escape" && modalEl && isTopModal(modalEl)) {
       closeEditModal();
     }
   }, { signal });
