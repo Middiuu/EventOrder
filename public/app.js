@@ -2808,9 +2808,13 @@ async function initSales() {
   const toggleFiltersBtn = document.querySelector("#toggleSalesFilters");
   const advancedFilters = document.querySelector("#advancedSalesFilters");
   const filterSummary = document.querySelector("#salesFilterSummary");
+  const loadMoreBtn = document.querySelector("#loadMoreSalesBtn");
   if (!listEl) return;
 
   const PAY_LABEL = { cash: "Contanti", card: "Carta", other: "Altro" };
+  let loadedSales = [];
+  let nextCursor = null;
+  let loading = false;
 
   function showToast(msg) {
     if (!toastEl) return;
@@ -2882,14 +2886,37 @@ async function initSales() {
     if (active > 0) setAdvancedFilters(true);
   }
 
-  async function refresh() {
+  async function refresh({ append = false } = {}) {
+    if (loading) return;
+    loading = true;
     const params = filtersQuery();
-    const sales = await api(`/api/sales?${params.toString()}`);
-    const filtered = [...params.keys()].length > 1;
-    if (listTitle) listTitle.textContent = filtered ? `Risultati (${sales.length})` : "Vendite recenti";
-    listEl.innerHTML = sales.length
-      ? sales.map(saleCard).join("")
-      : "<div class='empty-state'>Nessuna vendita trovata con questi filtri.</div>";
+    params.set("paginated", "1");
+    if (append && nextCursor) params.set("cursor", String(nextCursor));
+    if (loadMoreBtn) {
+      loadMoreBtn.disabled = true;
+      loadMoreBtn.textContent = append ? "Caricamento…" : "Carica altre vendite";
+    }
+    try {
+      const page = await api(`/api/sales?${params.toString()}`);
+      loadedSales = append ? [...loadedSales, ...page.sales] : page.sales;
+      nextCursor = page.next_cursor;
+      const filtered = [...params.keys()].some(key => !["limit", "paginated", "cursor"].includes(key));
+      if (listTitle) {
+        listTitle.textContent = filtered
+          ? `Risultati (${loadedSales.length}${nextCursor ? "+" : ""})`
+          : "Vendite recenti";
+      }
+      listEl.innerHTML = loadedSales.length
+        ? loadedSales.map(saleCard).join("")
+        : "<div class='empty-state'>Nessuna vendita trovata con questi filtri.</div>";
+      if (loadMoreBtn) loadMoreBtn.hidden = !nextCursor;
+    } finally {
+      loading = false;
+      if (loadMoreBtn) {
+        loadMoreBtn.disabled = false;
+        loadMoreBtn.textContent = "Carica altre vendite";
+      }
+    }
   }
 
   listEl.addEventListener("click", async (e) => {
@@ -2932,6 +2959,7 @@ async function initSales() {
   });
 
   refreshBtn?.addEventListener("click", () => refresh().catch(uiError));
+  loadMoreBtn?.addEventListener("click", () => refresh({ append: true }).catch(uiError));
   toggleFiltersBtn?.addEventListener("click", () => {
     setAdvancedFilters(toggleFiltersBtn.getAttribute("aria-expanded") !== "true");
   });

@@ -27,6 +27,15 @@ function createSalesHistory({ database, getOpenSession, isSalePending, paymentMe
     const where = [];
     const params = [];
 
+    if (query.cursor !== undefined && query.cursor !== "") {
+      const cursor = Number(query.cursor);
+      if (!Number.isSafeInteger(cursor) || cursor <= 0) {
+        throw badRequest("Cursore non valido");
+      }
+      where.push("id < ?");
+      params.push(cursor);
+    }
+
     if (query.session !== undefined) {
       const sessionId = Number(query.session);
       if (!Number.isSafeInteger(sessionId) || sessionId <= 0) {
@@ -93,8 +102,13 @@ function createSalesHistory({ database, getOpenSession, isSalePending, paymentMe
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const rows = database.prepare(`
       SELECT * FROM sales ${whereSql} ORDER BY id DESC LIMIT ?
-    `).all(...params, limit);
-    return decorate(rows);
+    `).all(...params, limit + 1);
+    const hasMore = rows.length > limit;
+    const sales = decorate(hasMore ? rows.slice(0, limit) : rows);
+    return {
+      sales,
+      nextCursor: hasMore ? sales.at(-1).id : null,
+    };
   }
 
   function findById(id) {

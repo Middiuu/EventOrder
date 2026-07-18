@@ -75,7 +75,14 @@ function createSalesRouter({ printTicket }) {
   });
 
   router.get("/", (req, res) => {
-    res.json(history.list(req.query));
+    const page = history.list(req.query);
+    if (req.query.paginated === "1") {
+      return res.json({
+        sales: page.sales,
+        next_cursor: page.nextCursor,
+      });
+    }
+    res.json(page.sales);
   });
 
   router.get("/:id", (req, res) => {

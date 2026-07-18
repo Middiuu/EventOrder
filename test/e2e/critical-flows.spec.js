@@ -109,6 +109,42 @@ test("una navigazione lenta non puo' sovrascrivere quella piu' recente", async (
   }
 });
 
+test("lo storico carica progressivamente le pagine successive", async ({ page }) => {
+  const harness = createHarness();
+  try {
+    await harness.withServer(async ({ baseUrl }) => {
+      const sale = id => ({
+        id,
+        sale_number: id,
+        created_at: "2026-07-18 12:00:00",
+        total_cents: 500,
+        payment_method: "cash",
+        voided: 0,
+        can_void: false,
+        can_reprint: false,
+        print_status: "printed",
+        items: [{ qty: 1, name: `Prodotto ${id}`, options: [], note: "" }],
+      });
+      await page.route("**/api/sales?**", async route => {
+        const cursor = new URL(route.request().url()).searchParams.get("cursor");
+        const body = cursor
+          ? { sales: [sale(1)], next_cursor: null }
+          : { sales: Array.from({ length: 100 }, (_, index) => sale(101 - index)), next_cursor: 2 };
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+      });
+
+      await page.goto(`${baseUrl}/sales.html`);
+      await expect(page.locator("#salesList .sale-row")).toHaveCount(100);
+      await expect(page.locator("#loadMoreSalesBtn")).toBeVisible();
+      await page.locator("#loadMoreSalesBtn").click();
+      await expect(page.locator("#salesList .sale-row")).toHaveCount(101);
+      await expect(page.locator("#loadMoreSalesBtn")).toBeHidden();
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test("la UI crea il backup con POST e lo scarica in streaming", async ({ page }) => {
   const harness = createHarness();
   try {

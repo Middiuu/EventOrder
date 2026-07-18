@@ -195,6 +195,7 @@ input::placeholder { color:var(--faint); }
 .section-actions { display:grid; gap:10px; justify-items:end; }
 .section-note-inline { max-width:48ch; }
 .stack { display:grid; gap:18px; }
+.sales-load-more { display:flex; justify-content:center; margin-top:18px; }
 
 /* ============ Pills / stato ============ */
 .status-pill { display:inline-flex; align-items:center; gap:8px; padding:7px 13px; border-radius:999px; font-size:.82rem; font-weight:700; }

@@ -341,6 +341,48 @@ test("storico vendite filtrabile per numero, data, prodotto, operatore, metodo e
   }
 });
 
+test("storico vendite paginato con cursore senza rompere la risposta legacy", async () => {
+  const harness = createHarness({ printTicket: async () => {} });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const [product] = (await request({ url: "/api/products" })).json();
+      await postJson(request, "/api/sessions/open", { opening_float_cents: 0, operator: "Ada" });
+      for (let index = 0; index < 5; index += 1) {
+        await postJson(request, "/api/sales/print", {
+          items: [{ product_id: product.id, qty: 1 }],
+        });
+      }
+
+      const legacy = (await request({ url: "/api/sales?limit=2" })).json();
+      assert.ok(Array.isArray(legacy));
+      assert.equal(legacy.length, 2);
+
+      const first = (await request({ url: "/api/sales?paginated=1&limit=2" })).json();
+      assert.deepEqual(first.sales.map(sale => sale.id), legacy.map(sale => sale.id));
+      assert.equal(first.next_cursor, first.sales.at(-1).id);
+
+      const second = (await request({
+        url: `/api/sales?paginated=1&limit=2&cursor=${first.next_cursor}`,
+      })).json();
+      assert.equal(second.sales.length, 2);
+      assert.equal(second.next_cursor, second.sales.at(-1).id);
+      assert.equal(first.sales.some(sale => second.sales.some(next => next.id === sale.id)), false);
+
+      const last = (await request({
+        url: `/api/sales?paginated=1&limit=2&cursor=${second.next_cursor}`,
+      })).json();
+      assert.equal(last.sales.length, 1);
+      assert.equal(last.next_cursor, null);
+
+      assert.equal((await request({ url: "/api/sales?paginated=1&cursor=0" })).status, 400);
+      assert.equal((await request({ url: "/api/sales?paginated=1&cursor=abc" })).status, 400);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test("i caratteri wildcard nei filtri storico sono cercati letteralmente", async () => {
   const harness = createHarness({ printTicket: async () => {} });
 
