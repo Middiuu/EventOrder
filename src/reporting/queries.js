@@ -28,7 +28,7 @@ function loadScopedSales(database, scope, { includeVoided = false } = {}) {
   return { sales, itemsBySale };
 }
 
-function loadTransactions(database, scope) {
+function iterateTransactions(database, scope) {
   return database.prepare(`
     SELECT
       s.sale_number,
@@ -43,7 +43,41 @@ function loadTransactions(database, scope) {
     FROM sales s
     WHERE ${scope.where}
     ORDER BY s.sale_number ASC
-  `).all(...scope.params);
+  `);
 }
 
-module.exports = { loadScopedSales, loadTransactions };
+function iterateScopedItems(database, scope) {
+  return database.prepare(`
+    SELECT
+      s.id AS sale_id,
+      s.sale_number,
+      datetime(s.created_at, 'localtime') AS created_local,
+      s.operator,
+      s.session_id,
+      s.payment_method,
+      s.voided,
+      s.note AS sale_note,
+      s.total_cents,
+      s.discount_cents,
+      si.id AS item_id,
+      si.product_id,
+      si.qty,
+      si.unit_price_cents,
+      si.line_total_cents,
+      si.product_name,
+      si.product_category,
+      si.product_cost_cents,
+      si.options_json,
+      si.note AS item_note
+    FROM sales s
+    JOIN sale_items si ON si.sale_id = s.id
+    WHERE ${scope.where}
+    ORDER BY s.id ASC, si.id ASC
+  `);
+}
+
+module.exports = {
+  iterateScopedItems,
+  iterateTransactions,
+  loadScopedSales,
+};

@@ -443,6 +443,8 @@ test("export: items.csv riga-per-articolo con sconto ripartito, aggregato con ne
 
       const itemsCsv = await request({ url: `/api/reports/items.csv?from=${TODAY}&to=${TOMORROW}` });
       assert.equal(itemsCsv.status, 200);
+      assert.equal(itemsCsv.headers["content-length"], undefined);
+      assert.equal(itemsCsv.headers["transfer-encoding"], "chunked");
       const lines = itemsCsv.text.replace(/^\uFEFF/, "").trim().split("\n");
       assert.match(lines[0], /sale_number;datetime;operator;session_id;payment_method;voided;product_name/);
       assert.equal(lines.length, 3); // intestazione + 2 righe articolo
@@ -505,6 +507,8 @@ test("gli export CSV neutralizzano i prefissi interpretabili come formule", asyn
       const transactions = await request({
         url: `/api/reports/transactions.csv?from=${TODAY}&to=${TOMORROW}`,
       });
+      assert.equal(transactions.headers["content-length"], undefined);
+      assert.equal(transactions.headers["transfer-encoding"], "chunked");
       assert.match(transactions.text, /'@Operatore/);
       assert.match(transactions.text, /'@Ordine/);
     });

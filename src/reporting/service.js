@@ -211,7 +211,6 @@ function createReportService(database) {
   return {
     buildSummary,
     loadScopedSales,
-    loadTransactions: scope => queries.loadTransactions(database, scope),
   };
 }
 
