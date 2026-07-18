@@ -69,4 +69,7 @@ test("navigazione e retry persistenti mantengono i guardrail verificati in brows
   assert.match(source, /eventorder-pending-suspend-v1/);
   assert.match(source, /eventorder-pending-resume-v1/);
   assert.match(source, /restoreCheckoutUi\(\)/);
+  assert.match(source, /async function withFormSubmitLock/);
+  assert.match(source, /form\.dataset\.submitting === "true"/);
+  assert.match(source, /form\.setAttribute\("aria-busy", "true"\)/);
 });

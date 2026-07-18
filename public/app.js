@@ -303,6 +303,22 @@ async function api(path, opts) {
   return data;
 }
 
+async function withFormSubmitLock(form, action) {
+  if (!form || form.dataset.submitting === "true") return undefined;
+  form.dataset.submitting = "true";
+  form.setAttribute("aria-busy", "true");
+  const submitControls = [...form.querySelectorAll('button[type="submit"], input[type="submit"]')];
+  const disabledBefore = submitControls.map(control => control.disabled);
+  submitControls.forEach(control => { control.disabled = true; });
+  try {
+    return await action();
+  } finally {
+    delete form.dataset.submitting;
+    form.removeAttribute("aria-busy");
+    submitControls.forEach((control, index) => { control.disabled = disabledBefore[index]; });
+  }
+}
+
 // --------------------
 // Utils date (report export)
 function ymd(d) {
@@ -1040,17 +1056,19 @@ async function initCassa(signal) {
     const operator = operatorInput && !operatorField.hidden
       ? String(operatorInput.value || "").trim() || undefined
       : undefined;
-    try {
-      await api("/api/sessions/open", {
-        method: "POST",
-        body: JSON.stringify({ opening_float_cents: floatCents, operator })
-      });
-      closeModal(openSessionModal);
-      showToast("Cassa aperta");
-      await refreshSession();
-    } catch (err) {
-      await uiError(err);
-    }
+    await withFormSubmitLock(openSessionForm, async () => {
+      try {
+        await api("/api/sessions/open", {
+          method: "POST",
+          body: JSON.stringify({ opening_float_cents: floatCents, operator })
+        });
+        closeModal(openSessionModal);
+        showToast("Cassa aperta");
+        await refreshSession();
+      } catch (err) {
+        await uiError(err);
+      }
+    });
   });
 
   function renderCloseSummary() {
@@ -1094,18 +1112,20 @@ async function initCassa(signal) {
     e.preventDefault();
     const counted = eurToCents(closeSessionForm.counted_eur.value);
     if (counted === null) return uiAlert("Inserisci i contanti contati.");
-    try {
-      const data = await api("/api/sessions/close", {
-        method: "POST",
-        body: JSON.stringify({ counted_cash_cents: counted })
-      });
-      const diff = data.session.difference_cents;
-      closeModal(closeSessionModal);
-      showToast(`Cassa chiusa • differenza ${diff >= 0 ? "+" : "−"} ${money(Math.abs(diff))}`);
-      await refreshSession();
-    } catch (err) {
-      await uiError(err);
-    }
+    await withFormSubmitLock(closeSessionForm, async () => {
+      try {
+        const data = await api("/api/sessions/close", {
+          method: "POST",
+          body: JSON.stringify({ counted_cash_cents: counted })
+        });
+        const diff = data.session.difference_cents;
+        closeModal(closeSessionModal);
+        showToast(`Cassa chiusa • differenza ${diff >= 0 ? "+" : "−"} ${money(Math.abs(diff))}`);
+        await refreshSession();
+      } catch (err) {
+        await uiError(err);
+      }
+    });
   });
 
   // ---- Movimenti di cassa (prelievi / versamenti a turno aperto)
@@ -1160,24 +1180,22 @@ async function initCassa(signal) {
         payload: JSON.stringify({ direction: movDirection, amount_cents: amount, reason }),
       });
     }
-    const submitButton = movementForm.querySelector("button[type='submit']");
-    try {
-      if (submitButton) submitButton.disabled = true;
-      await api("/api/sessions/movements", {
-        method: "POST",
-        headers: { "Idempotency-Key": movementAttempt.requestId },
-        body: movementAttempt.payload,
-      });
-      setMovementAttempt(null);
-      closeModal(movementModal);
-      showToast(`${movDirection === "out" ? "Prelievo" : "Versamento"} registrato • ${money(amount)}`);
-      await refreshSession();
-    } catch (err) {
-      if (err.status !== undefined && err.data?.retryable !== true) setMovementAttempt(null);
-      await uiError(err);
-    } finally {
-      if (submitButton) submitButton.disabled = false;
-    }
+    await withFormSubmitLock(movementForm, async () => {
+      try {
+        await api("/api/sessions/movements", {
+          method: "POST",
+          headers: { "Idempotency-Key": movementAttempt.requestId },
+          body: movementAttempt.payload,
+        });
+        setMovementAttempt(null);
+        closeModal(movementModal);
+        showToast(`${movDirection === "out" ? "Prelievo" : "Versamento"} registrato • ${money(amount)}`);
+        await refreshSession();
+      } catch (err) {
+        if (err.status !== undefined && err.data?.retryable !== true) setMovementAttempt(null);
+        await uiError(err);
+      }
+    });
   });
 
   // Disponibilità derivata: esaurito manuale oppure scorte tracciate a zero
@@ -2318,17 +2336,19 @@ async function initProdotti(signal) {
     if (cost_cents === undefined) return uiAlert("Costo non valido: importo in euro o vuoto.");
     if (optionGroups.error) return uiAlert(optionGroups.error);
 
-    try {
-      await api("/api/products", { method: "POST", body: JSON.stringify({
-        name, category, price_cents, sort_order, active, stock, cost_cents,
-        option_groups: optionGroups.groups,
-      }) });
-      showToast("Prodotto creato");
-      await refresh();
-      closeCreateForm();
-    } catch (err) {
-      await uiError(err);
-    }
+    await withFormSubmitLock(form, async () => {
+      try {
+        await api("/api/products", { method: "POST", body: JSON.stringify({
+          name, category, price_cents, sort_order, active, stock, cost_cents,
+          option_groups: optionGroups.groups,
+        }) });
+        showToast("Prodotto creato");
+        await refresh();
+        closeCreateForm();
+      } catch (err) {
+        await uiError(err);
+      }
+    });
   };
 
   editForm.onsubmit = async (e) => {
@@ -2352,21 +2372,23 @@ async function initProdotti(signal) {
     if (cost_cents === undefined) return uiAlert("Costo non valido: importo in euro o vuoto.");
     if (optionGroups.error) return uiAlert(optionGroups.error);
 
-    try {
-      await api(`/api/products/${encodeURIComponent(id)}`, {
-        method: "PATCH",
-        body: JSON.stringify({
-          name, category, price_cents, sort_order, active, sold_out, stock, cost_cents,
-          option_groups: optionGroups.groups,
-        })
-      });
-      showToast("Prodotto aggiornato");
-      closeEditModal();
-      await refresh();
-      resetCreateForm();
-    } catch (err) {
-      await uiError(err);
-    }
+    await withFormSubmitLock(editForm, async () => {
+      try {
+        await api(`/api/products/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            name, category, price_cents, sort_order, active, sold_out, stock, cost_cents,
+            option_groups: optionGroups.groups,
+          })
+        });
+        showToast("Prodotto aggiornato");
+        closeEditModal();
+        await refresh();
+        resetCreateForm();
+      } catch (err) {
+        await uiError(err);
+      }
+    });
   };
 
   await refresh();
