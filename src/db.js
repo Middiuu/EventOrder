@@ -11,6 +11,7 @@ const SCHEMA_PATH = path.join(__dirname, "schema.sql");
 const DB_SCHEMA_VERSION = 9;
 const DB_BUSY_TIMEOUT_MS = 5000;
 const RESTORE_MARKER_PATH = `${DB_PATH}.restore-state.json`;
+const MIGRATION_MARKER_PATH = `${DB_PATH}.migration-state.json`;
 const DB_SIDECAR_PATHS = [`${DB_PATH}-wal`, `${DB_PATH}-shm`];
 
 function fsyncDirectory(dirPath) {
@@ -92,6 +93,56 @@ function recoverFromRestoreMarker() {
   return true;
 }
 
+function writeMigrationMarker(safetyBackupPath, fromVersion, toVersion) {
+  const verified = verifiedSafetyBackup(safetyBackupPath);
+  const tempPath = `${MIGRATION_MARKER_PATH}.${process.pid}.tmp`;
+  const fd = fs.openSync(tempPath, "wx", 0o600);
+  try {
+    fs.writeFileSync(fd, JSON.stringify({
+      safetyBackupPath: verified,
+      fromVersion,
+      toVersion,
+      createdAt: new Date().toISOString(),
+    }));
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tempPath, MIGRATION_MARKER_PATH);
+  fsyncDirectory(path.dirname(DB_PATH));
+}
+
+function recoverFromMigrationMarker() {
+  if (!fs.existsSync(MIGRATION_MARKER_PATH)) return false;
+
+  let marker;
+  try {
+    marker = JSON.parse(fs.readFileSync(MIGRATION_MARKER_PATH, "utf8"));
+  } catch {
+    throw new Error(
+      `Migrazione interrotta: marker non leggibile (${MIGRATION_MARKER_PATH}). Intervento manuale richiesto.`
+    );
+  }
+  if (!Number.isSafeInteger(marker.fromVersion) || !Number.isSafeInteger(marker.toVersion)) {
+    throw new Error("Migrazione interrotta: versioni del marker non valide. Intervento manuale richiesto.");
+  }
+  const safetyBackupPath = verifiedSafetyBackup(marker.safetyBackupPath);
+  const recoveryPath = `${DB_PATH}.migration-recovery-${process.pid}-${Date.now()}`;
+  fs.copyFileSync(safetyBackupPath, recoveryPath, fs.constants.COPYFILE_EXCL);
+  const fd = fs.openSync(recoveryPath, "r");
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+
+  removeDatabaseSidecars();
+  fs.renameSync(recoveryPath, DB_PATH);
+  fs.rmSync(MIGRATION_MARKER_PATH, { force: true });
+  fsyncDirectory(path.dirname(DB_PATH));
+  console.warn(
+    `Rilevata una migrazione v${marker.fromVersion}->v${marker.toVersion} interrotta: ` +
+    "recuperato automaticamente il backup pre-migrazione."
+  );
+  return true;
+}
+
 // Compatibilita' con la prima implementazione del restore: se un crash e'
 // avvenuto fra i due rename, recupera l'originale invece di creare un DB vuoto.
 function recoverLegacyRestoreOriginal() {
@@ -118,7 +169,11 @@ function recoverLegacyRestoreOriginal() {
   return true;
 }
 
+if (fs.existsSync(RESTORE_MARKER_PATH) && fs.existsSync(MIGRATION_MARKER_PATH)) {
+  throw new Error("Stato ambiguo: presenti marker di restore e migrazione. Intervento manuale richiesto.");
+}
 recoverFromRestoreMarker();
+recoverFromMigrationMarker();
 recoverLegacyRestoreOriginal();
 
 function openConnection() {
@@ -213,6 +268,44 @@ const DROP_TABLE_ORDER = [
   "app_state",
 ];
 
+// Ogni versione legacy supportata deve comparire una sola volta in una
+// definizione diretta verso il target corrente. A ogni bump il registro va
+// aggiornato esplicitamente, separando in piu' voci le versioni che richiedono
+// mappature vecchio->nuovo differenti.
+const CANONICAL_REBUILD_MIGRATION = Object.freeze({
+  targetVersion: 9,
+  sourceVersions: Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 8]),
+  columnMappings: Object.freeze({}),
+});
+const SCHEMA_MIGRATIONS = Object.freeze([CANONICAL_REBUILD_MIGRATION]);
+const SUPPORTED_MIGRATION_SOURCES = Object.freeze(
+  SCHEMA_MIGRATIONS.flatMap(migration => migration.sourceVersions)
+);
+
+function validateMigrationRegistry() {
+  const targets = SCHEMA_MIGRATIONS.map(migration => migration.targetVersion);
+  if (targets.some(target => target !== DB_SCHEMA_VERSION)) {
+    throw new Error(`Registro migrazioni non allineato al target corrente v${DB_SCHEMA_VERSION}`);
+  }
+  const sortedSources = [...SUPPORTED_MIGRATION_SOURCES].sort((a, b) => a - b);
+  const expectedSources = Array.from({ length: DB_SCHEMA_VERSION }, (_, version) => version);
+  if (new Set(sortedSources).size !== sortedSources.length
+    || sortedSources.some((version, index) => version !== expectedSources[index])) {
+    throw new Error(`Registro migrazioni incompleto o ambiguo per il target v${DB_SCHEMA_VERSION}`);
+  }
+}
+validateMigrationRegistry();
+
+function migrationForSource(sourceVersion) {
+  const migration = SCHEMA_MIGRATIONS.find(candidate => (
+    candidate.targetVersion > sourceVersion && candidate.sourceVersions.includes(sourceVersion)
+  ));
+  if (!migration) {
+    throw new Error(`Nessuna migrazione registrata per lo schema v${sourceVersion}`);
+  }
+  return migration;
+}
+
 function quoteIdentifier(identifier) {
   if (!/^[a-z_][a-z0-9_]*$/i.test(identifier)) {
     throw new Error(`Identificatore SQLite non valido: ${identifier}`);
@@ -243,23 +336,49 @@ function canonicalTableSql(canonicalDb, table, replacement) {
   return row.sql.replace(createPrefix[0], `CREATE TABLE ${quoteIdentifier(replacement)}`);
 }
 
-function copyCommonColumns(database, canonicalDb, table, destination) {
+function copyMappedColumns(database, canonicalDb, table, destination, columnMappings = {}) {
   if (!tableExistsIn(database, table)) return;
 
-  const existing = new Set(tableColumns(database, table).map(column => column.name));
-  const common = tableColumns(canonicalDb, table)
-    .map(column => column.name)
-    .filter(name => existing.has(name));
-  if (common.length === 0) {
+  const sourceColumns = tableColumns(database, table).map(column => column.name);
+  const canonicalColumns = new Set(tableColumns(canonicalDb, table).map(column => column.name));
+  const destinations = new Set();
+  const copied = [];
+
+  for (const source of sourceColumns) {
+    const destinationColumn = columnMappings[source]
+      || (canonicalColumns.has(source) ? source : null);
+    if (!destinationColumn) {
+      const populated = database.prepare(`
+        SELECT 1 FROM ${quoteIdentifier(table)}
+        WHERE ${quoteIdentifier(source)} IS NOT NULL
+        LIMIT 1
+      `).get();
+      if (populated) {
+        throw new Error(`Colonna legacy popolata senza mappatura: ${table}.${source}`);
+      }
+      continue;
+    }
+    if (!canonicalColumns.has(destinationColumn)) {
+      throw new Error(`Mappatura verso colonna canonica inesistente: ${table}.${source}->${destinationColumn}`);
+    }
+    if (destinations.has(destinationColumn)) {
+      throw new Error(`Mappatura legacy ambigua verso ${table}.${destinationColumn}`);
+    }
+    destinations.add(destinationColumn);
+    copied.push({ source, destination: destinationColumn });
+  }
+
+  if (copied.length === 0) {
     const count = database.prepare(`SELECT COUNT(*) AS count FROM ${quoteIdentifier(table)}`).get().count;
     if (count > 0) throw new Error(`Nessuna colonna compatibile nella tabella ${table}`);
     return;
   }
 
-  const columns = common.map(quoteIdentifier).join(", ");
+  const destinationColumns = copied.map(column => quoteIdentifier(column.destination)).join(", ");
+  const sourceExpressions = copied.map(column => quoteIdentifier(column.source)).join(", ");
   database.exec(`
-    INSERT INTO ${quoteIdentifier(destination)} (${columns})
-    SELECT ${columns} FROM ${quoteIdentifier(table)}
+    INSERT INTO ${quoteIdentifier(destination)} (${destinationColumns})
+    SELECT ${sourceExpressions} FROM ${quoteIdentifier(table)}
   `);
 }
 
@@ -291,6 +410,9 @@ function restoreLegacySequences(database, sequences) {
 // applicative dalla definizione canonica di schema.sql, copiamo i dati e
 // sostituiamo gli originali in un'unica transazione.
 function migrateLegacySchema(database, schema, previousVersion) {
+  const migration = previousVersion === DB_SCHEMA_VERSION
+    ? CANONICAL_REBUILD_MIGRATION
+    : migrationForSource(previousVersion);
   const canonicalDb = new Database(":memory:");
   let migrationError = null;
   let cleanupError = null;
@@ -310,7 +432,13 @@ function migrateLegacySchema(database, schema, previousVersion) {
           throw new Error(`Tabella temporanea inattesa: ${replacement}`);
         }
         database.exec(canonicalTableSql(canonicalDb, table, replacement));
-        copyCommonColumns(database, canonicalDb, table, replacement);
+        copyMappedColumns(
+          database,
+          canonicalDb,
+          table,
+          replacement,
+          migration.columnMappings[table] || {}
+        );
       }
 
       // I database precedenti conservavano nome e categoria solo nei prodotti.
@@ -398,13 +526,13 @@ function migrateLegacySchema(database, schema, previousVersion) {
         const first = foreignKeyErrors[0];
         throw new Error(`Relazione non valida in ${first.table}, riga ${first.rowid}`);
       }
-      database.pragma(`user_version = ${DB_SCHEMA_VERSION}`);
+      database.pragma(`user_version = ${migration.targetVersion}`);
     });
 
     migrate();
   } catch (err) {
     migrationError = new Error(
-      `Migrazione schema v${DB_SCHEMA_VERSION} non riuscita: ${err.message}`,
+      `Migrazione schema v${previousVersion}->v${migration.targetVersion} non riuscita: ${err.message}`,
       { cause: err }
     );
   } finally {
@@ -421,6 +549,54 @@ function migrateLegacySchema(database, schema, previousVersion) {
   if (cleanupError) throw cleanupError;
 }
 
+function preMigrationBackupStamp(now = new Date()) {
+  return now.toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+}
+
+function createPreMigrationBackup(database, fromVersion, toVersion) {
+  const backupsDir = path.resolve(path.dirname(DB_PATH), "backups");
+  fs.mkdirSync(backupsDir, { recursive: true });
+  const base = `${config.SLUG}-pre-migration-v${fromVersion}-to-v${toVersion}-${preMigrationBackupStamp()}`;
+  let backupName = `${base}.sqlite`;
+  let suffix = 2;
+  while (fs.existsSync(path.join(backupsDir, backupName))) {
+    backupName = `${base}-${suffix++}.sqlite`;
+  }
+  const backupPath = path.join(backupsDir, backupName);
+  const tempPath = `${backupPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  let verification;
+
+  try {
+    database.prepare("VACUUM INTO ?").run(tempPath);
+    fs.chmodSync(tempPath, 0o600);
+    verification = new Database(tempPath, { readonly: true, fileMustExist: true });
+    const integrity = verification.pragma("integrity_check");
+    if (integrity.length !== 1 || integrity[0].integrity_check !== "ok") {
+      throw new Error("Il backup pre-migrazione non supera integrity_check");
+    }
+    const backupVersion = verification.pragma("user_version", { simple: true });
+    if (backupVersion !== fromVersion) {
+      throw new Error(`Versione inattesa nel backup pre-migrazione: v${backupVersion}`);
+    }
+    verification.close();
+    verification = null;
+
+    const fd = fs.openSync(tempPath, "r");
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    fs.renameSync(tempPath, backupPath);
+    fsyncDirectory(backupsDir);
+    return backupPath;
+  } finally {
+    try { verification?.close(); } catch {}
+    fs.rmSync(tempPath, { force: true });
+  }
+}
+
+function completeMigrationMarker() {
+  fs.rmSync(MIGRATION_MARKER_PATH, { force: true });
+  fsyncDirectory(path.dirname(DB_PATH));
+}
+
 function initDb() {
   const schema = fs.readFileSync(SCHEMA_PATH, "utf8");
   const previousVersion = db.pragma("user_version", { simple: true });
@@ -431,7 +607,19 @@ function initDb() {
 
   const hasLegacyTables = CANONICAL_TABLES.some(table => tableExistsIn(db, table));
   if (hasLegacyTables && previousVersion < DB_SCHEMA_VERSION) {
+    const migration = migrationForSource(previousVersion);
+    const safetyBackupPath = createPreMigrationBackup(
+      db,
+      previousVersion,
+      migration.targetVersion
+    );
+    writeMigrationMarker(safetyBackupPath, previousVersion, migration.targetVersion);
     migrateLegacySchema(db, schema, previousVersion);
+    const quickCheck = db.pragma("quick_check");
+    if (quickCheck.length !== 1 || quickCheck[0].quick_check !== "ok") {
+      throw new Error("Il database migrato non supera quick_check");
+    }
+    completeMigrationMarker();
   } else {
     db.exec(schema);
     if (previousVersion < DB_SCHEMA_VERSION) {
@@ -695,7 +883,9 @@ module.exports = {
   restoreDatabaseFromFile,
   closeDatabase,
   RESTORE_MARKER_PATH,
+  MIGRATION_MARKER_PATH,
   DB_PATH,
   DB_BUSY_TIMEOUT_MS,
   DB_SCHEMA_VERSION,
+  SUPPORTED_MIGRATION_SOURCES,
 };

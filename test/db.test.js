@@ -16,7 +16,13 @@ test("initDb crea schema, seed iniziale e contatore vendite", () => {
   const dbPath = path.join(tempDir, "pos.sqlite");
 
   try {
-    const { db, initDb, DB_PATH, DB_BUSY_TIMEOUT_MS } = loadDbModule(dbPath);
+    const {
+      db,
+      initDb,
+      DB_PATH,
+      DB_BUSY_TIMEOUT_MS,
+      SUPPORTED_MIGRATION_SOURCES,
+    } = loadDbModule(dbPath);
     initDb();
 
     assert.equal(DB_PATH, dbPath);
@@ -35,6 +41,7 @@ test("initDb crea schema, seed iniziale e contatore vendite", () => {
     assert.equal(db.pragma("journal_mode", { simple: true }), "wal");
     assert.equal(db.pragma("synchronous", { simple: true }), 2);
     assert.equal(db.pragma("busy_timeout", { simple: true }), DB_BUSY_TIMEOUT_MS);
+    assert.deepEqual(SUPPORTED_MIGRATION_SOURCES, [0, 1, 2, 3, 4, 5, 6, 7, 8]);
 
     db.close();
   } finally {
@@ -182,6 +189,21 @@ test("migrazione v4 preserva dati, sequenze, snapshot e applica i constraint can
     dbModule.initDb();
     const migrated = dbModule.db;
 
+    const migrationBackups = fs.readdirSync(path.join(tempDir, "backups"))
+      .filter(name => /pre-migration-v4-to-v9-.*\.sqlite$/.test(name));
+    assert.equal(migrationBackups.length, 1);
+    const migrationBackupPath = path.join(tempDir, "backups", migrationBackups[0]);
+    assert.equal(fs.statSync(migrationBackupPath).mode & 0o777, 0o600);
+    const backup = new Database(migrationBackupPath, {
+      readonly: true,
+      fileMustExist: true,
+    });
+    assert.equal(backup.pragma("user_version", { simple: true }), 4);
+    assert.equal(backup.prepare("SELECT name FROM products WHERE id = 7").get().name, "Prodotto v4");
+    assert.deepEqual(backup.pragma("integrity_check"), [{ integrity_check: "ok" }]);
+    backup.close();
+    assert.equal(fs.existsSync(dbModule.MIGRATION_MARKER_PATH), false);
+
     assert.equal(migrated.pragma("user_version", { simple: true }), 9);
     assert.equal(migrated.pragma("foreign_keys", { simple: true }), 1);
     assert.deepEqual(migrated.pragma("foreign_key_check"), []);
@@ -280,7 +302,7 @@ test("una migrazione incompatibile fa rollback e lascia intatte le tabelle legac
     const dbModule = loadDbModule(dbPath);
     assert.throws(
       () => dbModule.initDb(),
-      /Migrazione schema v9 non riuscita: CHECK constraint failed/
+      /Migrazione schema v4->v9 non riuscita: CHECK constraint failed/
     );
     assert.equal(dbModule.db.pragma("user_version", { simple: true }), 4);
     assert.equal(
@@ -298,7 +320,146 @@ test("una migrazione incompatibile fa rollback e lascia intatte le tabelle legac
       `).get().count,
       0
     );
+    assert.equal(fs.existsSync(dbModule.MIGRATION_MARKER_PATH), true);
+    const migrationBackups = fs.readdirSync(path.join(tempDir, "backups"))
+      .filter(name => /pre-migration-v4-to-v9-.*\.sqlite$/.test(name));
+    assert.equal(migrationBackups.length, 1);
     dbModule.db.close();
+  } finally {
+    delete process.env.POS_DB_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("la migrazione rifiuta una colonna legacy popolata senza mappatura", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
+  const dbPath = path.join(tempDir, "pos.sqlite");
+  const Database = require("better-sqlite3");
+
+  try {
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        price_cents INTEGER NOT NULL,
+        legacy_label TEXT
+      );
+      INSERT INTO products (name, price_cents, legacy_label)
+      VALUES ('Prodotto legacy', 500, 'Valore da non perdere');
+      PRAGMA user_version = 8;
+    `);
+    legacy.close();
+
+    const dbModule = loadDbModule(dbPath);
+    assert.throws(
+      () => dbModule.initDb(),
+      /Colonna legacy popolata senza mappatura: products\.legacy_label/
+    );
+    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 8);
+    assert.equal(
+      dbModule.db.prepare("SELECT legacy_label FROM products").get().legacy_label,
+      "Valore da non perdere"
+    );
+    assert.equal(fs.existsSync(dbModule.MIGRATION_MARKER_PATH), true);
+    dbModule.db.close();
+  } finally {
+    delete process.env.POS_DB_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("un marker di migrazione recupera il backup e ripete il bump in sicurezza", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
+  const dbPath = path.join(tempDir, "pos.sqlite");
+  const Database = require("better-sqlite3");
+
+  try {
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        price_cents INTEGER NOT NULL,
+        category TEXT NOT NULL DEFAULT 'Generale',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      INSERT INTO products (name, price_cents) VALUES ('Prima del crash', 700);
+      PRAGMA user_version = 4;
+    `);
+    legacy.close();
+
+    let dbModule = loadDbModule(dbPath);
+    dbModule.initDb();
+    const safetyName = fs.readdirSync(path.join(tempDir, "backups"))
+      .find(name => /pre-migration-v4-to-v9-.*\.sqlite$/.test(name));
+    const safetyBackupPath = path.join(tempDir, "backups", safetyName);
+    dbModule.closeDatabase();
+
+    fs.writeFileSync(dbPath, "database lasciato corrotto da una migrazione interrotta");
+    fs.writeFileSync(`${dbPath}.migration-state.json`, JSON.stringify({
+      safetyBackupPath,
+      fromVersion: 4,
+      toVersion: 9,
+      createdAt: new Date().toISOString(),
+    }));
+
+    dbModule = loadDbModule(dbPath);
+    dbModule.initDb();
+    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 9);
+    assert.ok(dbModule.db.prepare("SELECT 1 FROM products WHERE name = ?").get("Prima del crash"));
+    assert.equal(fs.existsSync(dbModule.MIGRATION_MARKER_PATH), false);
+    dbModule.closeDatabase();
+  } finally {
+    delete process.env.POS_DB_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("la migrazione non parte se il backup preventivo non puo' essere creato", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
+  const dbPath = path.join(tempDir, "pos.sqlite");
+  const Database = require("better-sqlite3");
+
+  try {
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        price_cents INTEGER NOT NULL
+      );
+      INSERT INTO products (name, price_cents) VALUES ('Da preservare', 500);
+      PRAGMA user_version = 4;
+    `);
+    legacy.close();
+    fs.writeFileSync(path.join(tempDir, "backups"), "impedisce la creazione della directory");
+
+    const dbModule = loadDbModule(dbPath);
+    assert.throws(() => dbModule.initDb(), /EEXIST|ENOTDIR/);
+    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 4);
+    assert.equal(dbModule.db.prepare("SELECT name FROM products").get().name, "Da preservare");
+    assert.equal(fs.existsSync(dbModule.MIGRATION_MARKER_PATH), false);
+    dbModule.db.close();
+  } finally {
+    delete process.env.POS_DB_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("marker concorrenti di restore e migrazione bloccano l'avvio", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
+  const dbPath = path.join(tempDir, "pos.sqlite");
+
+  try {
+    fs.writeFileSync(`${dbPath}.restore-state.json`, "{}");
+    fs.writeFileSync(`${dbPath}.migration-state.json`, "{}");
+    assert.throws(
+      () => loadDbModule(dbPath),
+      /Stato ambiguo: presenti marker di restore e migrazione/
+    );
   } finally {
     delete process.env.POS_DB_PATH;
     fs.rmSync(tempDir, { recursive: true, force: true });
