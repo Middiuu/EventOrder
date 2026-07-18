@@ -14,6 +14,7 @@ test("i router backend separati rispettano il ratchet di dimensione", () => {
   const limits = new Map([
     ["src/routes/reports.js", 250],
     ["src/routes/database-maintenance.js", 300],
+    ["src/routes/products.js", 250],
     ["src/routes/sales.js", 250],
   ]);
 
