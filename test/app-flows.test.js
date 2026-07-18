@@ -423,6 +423,45 @@ test("restore backup: valida il file, blocca il turno aperto e sostituisce il DB
   }
 });
 
+test("restore rifiuta un database v9 non canonico con dati fuori vincolo", async () => {
+  const harness = createHarness();
+  const candidatePath = path.join(harness.tempDir, "malformed-v9.sqlite");
+  const Database = require("better-sqlite3");
+
+  try {
+    const candidate = new Database(candidatePath);
+    candidate.exec(`
+      CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, price_cents INTEGER, category TEXT);
+      CREATE TABLE cash_sessions (id INTEGER PRIMARY KEY, opened_at TEXT, closed_at TEXT, opening_float_cents INTEGER);
+      CREATE TABLE sales (id INTEGER PRIMARY KEY, sale_number INTEGER, total_cents INTEGER, created_at TEXT);
+      CREATE TABLE sale_items (id INTEGER PRIMARY KEY, sale_id INTEGER, product_id INTEGER, qty INTEGER, unit_price_cents INTEGER, line_total_cents INTEGER);
+      CREATE TABLE app_state (key TEXT PRIMARY KEY, int_value INTEGER);
+      INSERT INTO products VALUES (1, 'Prezzo impossibile', -500, 'Test');
+      INSERT INTO app_state VALUES ('sale_number', 0);
+      PRAGMA user_version = 9;
+    `);
+    candidate.close();
+
+    await harness.withServer(async ({ request }) => {
+      const before = (await request({ url: "/api/products" })).json().length;
+      const restored = await request({
+        method: "POST",
+        url: "/api/reports/restore",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-EventOrder-Restore": "RESTORE",
+        },
+        body: fs.readFileSync(candidatePath),
+      });
+      assert.equal(restored.status, 400);
+      assert.match(restored.json().error, /schema o dati non compatibili/i);
+      assert.equal((await request({ url: "/api/products" })).json().length, before);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test("la manutenzione di restore blocca tutte le route che usano il database", async () => {
   const harness = createHarness();
 
@@ -1243,6 +1282,43 @@ test("movimenti di cassa: prelievi e versamenti entrano nei contanti attesi", as
   }
 });
 
+test("movimenti di cassa: il replay con la stessa chiave non duplica il saldo", async () => {
+  const harness = createHarness();
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      await request({
+        method: "POST",
+        url: "/api/sessions/open",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opening_float_cents: 1000, operator: "Ada" }),
+      });
+      const key = "movement-retry-test-0001";
+      const body = JSON.stringify({ direction: "in", amount_cents: 123, reason: "Resto" });
+      const send = (payload = body) => request({
+        method: "POST",
+        url: "/api/sessions/movements",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+        body: payload,
+      });
+
+      assert.equal((await send()).status, 200);
+      const replay = await send();
+      assert.equal(replay.status, 200);
+      assert.equal(replay.json().idempotent_replay, true);
+      const current = (await request({ url: "/api/sessions/current" })).json().session;
+      assert.equal(current.movements.length, 1);
+      assert.equal(current.totals.movementsInCents, 123);
+
+      const conflict = await send(JSON.stringify({ direction: "in", amount_cents: 124, reason: "Resto" }));
+      assert.equal(conflict.status, 409);
+      assert.match(conflict.json().error, /richiesta diversa/);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test("esaurito e scorte: vendita bloccata, decremento e ripristino su storno", async () => {
   let failPrint = false;
   const harness = createHarness({
@@ -1619,6 +1695,49 @@ test("comande sospese: persistono nel turno e proteggono chiusura ed eliminazion
       assert.equal((await request({ method: "DELETE", url: `/api/carts/${cartId}` })).status, 200);
       assert.equal((await request({ method: "DELETE", url: `/api/products/${productId}` })).status, 200);
       assert.equal((await post("/api/sessions/close", { counted_cash_cents: 0 })).status, 200);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("comande sospese: creazione e ripresa sono idempotenti e la ripresa e' atomica", async () => {
+  const harness = createHarness();
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const post = (url, body, key) => request({
+        method: "POST",
+        url,
+        headers: { "Content-Type": "application/json", "Idempotency-Key": key },
+        body: JSON.stringify(body),
+      });
+      const productId = (await post("/api/products", {
+        name: "Comanda idempotente", price_cents: 500, stock: 10,
+      }, "unused-product-key")).json().id;
+      await post("/api/sessions/open", { opening_float_cents: 0 }, "unused-session-key");
+
+      const createKey = "suspend-cart-retry-0001";
+      const payload = { label: "Tavolo 3", items: [{ product_id: productId, qty: 2 }] };
+      const first = await post("/api/carts", payload, createKey);
+      const replay = await post("/api/carts", payload, createKey);
+      assert.equal(first.status, 201);
+      assert.equal(replay.status, 200);
+      assert.equal(replay.json().idempotent_replay, true);
+      assert.equal((await request({ url: "/api/carts" })).json().carts.length, 1);
+
+      const cartId = first.json().cart.id;
+      const resumeKey = "resume-cart-retry-0001";
+      const resumed = await post(`/api/carts/${cartId}/resume`, {}, resumeKey);
+      const resumedReplay = await post(`/api/carts/${cartId}/resume`, {}, resumeKey);
+      assert.equal(resumed.status, 200);
+      assert.equal(resumedReplay.status, 200);
+      assert.equal(resumedReplay.json().idempotent_replay, true);
+      assert.equal(resumedReplay.json().cart.id, cartId);
+      assert.equal((await request({ url: "/api/carts" })).json().carts.length, 0);
+
+      const competing = await post(`/api/carts/${cartId}/resume`, {}, "resume-cart-competing-0002");
+      assert.equal(competing.status, 404);
     });
   } finally {
     harness.cleanup();

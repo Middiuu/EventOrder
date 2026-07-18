@@ -2,6 +2,13 @@ const express = require("express");
 const { db, getOpenSession } = require("../db");
 const { config } = require("../config");
 const { hasPendingSaleForSession } = require("../pending-sales");
+const {
+  fingerprint,
+  operationRequest,
+  parseStoredResponse,
+  requestIdFrom,
+  storeOperationRequest,
+} = require("../idempotency");
 const { MAX_MONEY_CENTS, cleanText, isValidCents } = require("../validation");
 
 const router = express.Router();
@@ -202,13 +209,8 @@ router.post("/open", (req, res) => {
 // Movimento di cassa sul turno aperto: prelievo ('out') o versamento ('in').
 // Un errore si corregge registrando il movimento opposto, non cancellando.
 router.post("/movements", (req, res) => {
-  const open = getOpenSession();
-  if (!open) {
-    return res.status(409).json({ error: "Nessun turno di cassa aperto" });
-  }
-  if (hasPendingSaleForSession(open.id)) {
-    return res.status(409).json({ error: "Attendi la conclusione della stampa prima di registrare movimenti" });
-  }
+  const requestId = requestIdFrom(req);
+  if (!requestId) return res.status(400).json({ error: "Chiave idempotente del movimento obbligatoria o non valida" });
 
   const direction = req.body?.direction;
   if (direction !== "in" && direction !== "out") {
@@ -228,6 +230,26 @@ router.post("/movements", (req, res) => {
     return res.status(400).json({ error: "Motivo non valido (massimo 240 caratteri)" });
   }
 
+  const prior = operationRequest(db, "cash_movement", requestId);
+  const open = getOpenSession();
+  const sessionId = prior?.session_id ?? open?.id;
+  if (!Number.isSafeInteger(sessionId)) {
+    return res.status(409).json({ error: "Nessun turno di cassa aperto" });
+  }
+  const requestFingerprint = fingerprint({ session_id: sessionId, direction, amount_cents: amountCents, reason });
+  if (prior) {
+    if (prior.request_fingerprint !== requestFingerprint) {
+      return res.status(409).json({ error: "Chiave del movimento gia' usata per una richiesta diversa" });
+    }
+    parseStoredResponse(prior);
+    const priorSession = db.prepare("SELECT * FROM cash_sessions WHERE id = ?").get(prior.session_id);
+    if (!priorSession) return res.status(409).json({ error: "Turno del movimento non piu' disponibile" });
+    return res.json({ idempotent_replay: true, session: withTotals(priorSession) });
+  }
+  if (hasPendingSaleForSession(open.id)) {
+    return res.status(409).json({ error: "Attendi la conclusione della stampa prima di registrare movimenti" });
+  }
+
   // Un prelievo non puo' superare i contanti attesi in cassa in quel momento.
   if (direction === "out") {
     const { expectedCashCents } = sessionTotals(open.id, open.opening_float_cents);
@@ -236,13 +258,33 @@ router.post("/movements", (req, res) => {
     }
   }
 
-  db.prepare(`
-    INSERT INTO cash_movements (session_id, direction, amount_cents, reason, operator)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(open.id, direction, amountCents, reason, open.operator);
+  const createMovement = db.transaction(() => {
+    const existing = operationRequest(db, "cash_movement", requestId);
+    if (existing) return { replay: existing };
+    const info = db.prepare(`
+      INSERT INTO cash_movements (session_id, direction, amount_cents, reason, operator)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(open.id, direction, amountCents, reason, open.operator);
+    storeOperationRequest(db, {
+      operation: "cash_movement",
+      requestId,
+      requestFingerprint,
+      sessionId: open.id,
+      response: { movement_id: Number(info.lastInsertRowid) },
+    });
+    return { movementId: Number(info.lastInsertRowid) };
+  });
+  const created = createMovement();
+  if (created.replay) {
+    if (created.replay.request_fingerprint !== requestFingerprint) {
+      return res.status(409).json({ error: "Chiave del movimento gia' usata per una richiesta diversa" });
+    }
+    const replaySession = db.prepare("SELECT * FROM cash_sessions WHERE id = ?").get(created.replay.session_id);
+    return res.json({ idempotent_replay: true, session: withTotals(replaySession) });
+  }
 
   const session = db.prepare("SELECT * FROM cash_sessions WHERE id = ?").get(open.id);
-  res.json({ session: withTotals(session) });
+  res.json({ movement_id: created.movementId, session: withTotals(session) });
 });
 
 // Chiusura turno: confronta contanti contati con quelli attesi

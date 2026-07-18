@@ -3,6 +3,13 @@ const crypto = require("crypto");
 const { db, getOpenSession } = require("../db");
 const { MAX_PRODUCT_PRICE_CENTS, MAX_QTY, cleanText, isValidCents } = require("../validation");
 const { loadOptionCatalog, resolveSelectedOptions } = require("../product-options");
+const {
+  fingerprint,
+  operationRequest,
+  parseStoredResponse,
+  requestIdFrom,
+  storeOperationRequest,
+} = require("../idempotency");
 
 const router = express.Router();
 const MAX_SUSPENDED_CARTS = 100;
@@ -45,15 +52,14 @@ router.get("/", (req, res) => {
 });
 
 router.post("/", (req, res) => {
+  const requestId = requestIdFrom(req);
+  if (!requestId) return res.status(400).json({ error: "Chiave idempotente della comanda obbligatoria o non valida" });
   const session = getOpenSession();
   if (!session) return res.status(409).json({ error: "Apri la cassa prima di sospendere una comanda" });
 
   const currentCount = db.prepare(
     "SELECT COUNT(*) AS count FROM suspended_carts WHERE session_id = ?"
   ).get(session.id).count;
-  if (currentCount >= MAX_SUSPENDED_CARTS) {
-    return res.status(409).json({ error: `Limite di ${MAX_SUSPENDED_CARTS} comande sospese raggiunto` });
-  }
 
   const items = Array.isArray(req.body?.items) ? req.body.items : [];
   if (items.length === 0 || items.length > MAX_CART_ITEMS) {
@@ -93,6 +99,38 @@ router.post("/", (req, res) => {
     return res.status(400).json({ error: "La stessa riga compare piu' volte nella comanda" });
   }
   const ids = [...new Set(normalized.map(item => item.product_id))];
+  const rawLabel = req.body?.label == null
+    ? `Comanda ${currentCount + 1}`
+    : req.body.label;
+  const label = cleanText(rawLabel, 80);
+  if (!label) return res.status(400).json({ error: "Nome comanda non valido (massimo 80 caratteri)" });
+  const rawNote = req.body?.note;
+  const note = rawNote == null || String(rawNote).trim() === "" ? null : cleanText(rawNote, 500);
+  if (note === null && rawNote != null && String(rawNote).trim() !== "") {
+    return res.status(400).json({ error: "Nota comanda non valida (massimo 500 caratteri)" });
+  }
+  const requestFingerprint = fingerprint({
+    session_id: session.id,
+    requested_label: req.body?.label ?? null,
+    note,
+    items: normalized.map(item => ({
+      product_id: item.product_id,
+      qty: item.qty,
+      selected_option_value_ids: item.selected_option_value_ids,
+      expected_unit_price_cents: item.expected_unit_price_cents ?? null,
+      note: item.note,
+    })),
+  });
+  const prior = operationRequest(db, "suspend_cart", requestId);
+  if (prior) {
+    if (prior.request_fingerprint !== requestFingerprint) {
+      return res.status(409).json({ error: "Chiave della comanda gia' usata per una richiesta diversa" });
+    }
+    return res.json({ idempotent_replay: true, ...parseStoredResponse(prior) });
+  }
+  if (currentCount >= MAX_SUSPENDED_CARTS) {
+    return res.status(409).json({ error: `Limite di ${MAX_SUSPENDED_CARTS} comande sospese raggiunto` });
+  }
 
   const placeholders = ids.map(() => "?").join(",");
   const existing = db.prepare(`
@@ -133,17 +171,6 @@ router.post("/", (req, res) => {
     }
   }
 
-  const rawLabel = req.body?.label == null
-    ? `Comanda ${currentCount + 1}`
-    : req.body.label;
-  const label = cleanText(rawLabel, 80);
-  if (!label) return res.status(400).json({ error: "Nome comanda non valido (massimo 80 caratteri)" });
-  const rawNote = req.body?.note;
-  const note = rawNote == null || String(rawNote).trim() === "" ? null : cleanText(rawNote, 500);
-  if (note === null && rawNote != null && String(rawNote).trim() !== "") {
-    return res.status(400).json({ error: "Nota comanda non valida (massimo 500 caratteri)" });
-  }
-
   const create = db.transaction(() => {
     const info = db.prepare(`
       INSERT INTO suspended_carts (session_id, label, operator, note)
@@ -159,12 +186,65 @@ router.post("/", (req, res) => {
       cartId, item.line_key, item.product_id, item.qty,
       JSON.stringify(item.selected_options), item.note, item.expected_unit_price_cents
     );
-    return cartId;
+    const cart = cartsForSession(session.id).find(entry => entry.id === cartId);
+    storeOperationRequest(db, {
+      operation: "suspend_cart",
+      requestId,
+      requestFingerprint,
+      sessionId: session.id,
+      response: { cart },
+    });
+    return cart;
   });
 
-  const cartId = create();
-  const cart = cartsForSession(session.id).find(entry => entry.id === cartId);
+  const cart = create();
   res.status(201).json({ cart });
+});
+
+// Ripresa atomica: la comanda viene restituita e rimossa nella stessa
+// transazione. Il risultato resta rigiocabile con la medesima chiave anche se
+// la risposta HTTP si perde dopo il commit.
+router.post("/:id/resume", (req, res) => {
+  const requestId = requestIdFrom(req);
+  if (!requestId) return res.status(400).json({ error: "Chiave idempotente della ripresa obbligatoria o non valida" });
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    return res.status(400).json({ error: "Comanda sospesa non valida" });
+  }
+
+  const prior = operationRequest(db, "resume_cart", requestId);
+  const session = getOpenSession();
+  const sessionId = prior?.session_id ?? session?.id;
+  if (!Number.isSafeInteger(sessionId)) {
+    return res.status(409).json({ error: "Nessun turno di cassa aperto" });
+  }
+  const requestFingerprint = fingerprint({ session_id: sessionId, cart_id: id });
+  if (prior) {
+    if (prior.request_fingerprint !== requestFingerprint) {
+      return res.status(409).json({ error: "Chiave di ripresa gia' usata per una comanda diversa" });
+    }
+    return res.json({ idempotent_replay: true, ...parseStoredResponse(prior) });
+  }
+
+  const resume = db.transaction(() => {
+    const cart = cartsForSession(session.id).find(entry => entry.id === id);
+    if (!cart) return null;
+    const removed = db.prepare(`
+      DELETE FROM suspended_carts WHERE id = ? AND session_id = ?
+    `).run(id, session.id);
+    if (removed.changes !== 1) return null;
+    storeOperationRequest(db, {
+      operation: "resume_cart",
+      requestId,
+      requestFingerprint,
+      sessionId: session.id,
+      response: { cart },
+    });
+    return cart;
+  });
+  const cart = resume();
+  if (!cart) return res.status(404).json({ error: "Comanda sospesa non trovata" });
+  res.json({ cart });
 });
 
 router.delete("/:id", (req, res) => {

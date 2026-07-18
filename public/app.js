@@ -217,6 +217,7 @@ async function clientNavigate(url, push = true) {
   const curMain = document.querySelector(".main");
   if (!newMain || !curMain) { location.href = url; return; }
 
+  disposePageUi();
   curMain.replaceWith(newMain);
   document.title = doc.title || document.title;
   document.body.dataset.page = doc.body.dataset.page || "";
@@ -357,6 +358,17 @@ function syncModalState() {
   const top = topOpenModal();
   document.body.style.overflow = top ? "hidden" : "";
   if (top) isolateModal(top);
+}
+
+function disposePageUi() {
+  pageInitController?.abort();
+  for (const modal of modalStack) {
+    if (modal?.isConnected) modal.hidden = true;
+    modalFocusOrigins.delete(modal);
+  }
+  modalStack.length = 0;
+  restoreManagedInert();
+  document.body.style.overflow = "";
 }
 
 function focusModal(el) {
@@ -656,6 +668,10 @@ async function initCassa(signal) {
 
   const cart = new Map();
   const CART_DRAFT_KEY = "eventorder-current-cart-v1";
+  const CHECKOUT_ATTEMPT_KEY = "eventorder-pending-checkout-v1";
+  const MOVEMENT_ATTEMPT_KEY = "eventorder-pending-movement-v1";
+  const SUSPEND_ATTEMPT_KEY = "eventorder-pending-suspend-v1";
+  const RESUME_ATTEMPT_KEY = "eventorder-pending-resume-v1";
   let cartPersistenceReady = false;
   let suspendedCarts = [];
   let itemEditor = null;
@@ -663,10 +679,85 @@ async function initCassa(signal) {
   // Un tentativo dall'esito incerto conserva chiave e payload esatti: riaprire
   // la modale non puo' trasformare un retry in una seconda vendita.
   let checkoutAttempt = null;
+  let movementAttempt = null;
+  let suspendAttempt = null;
+  let resumeAttempt = null;
   let session = null;
   let payMethod = "cash";
   let discType = "none"; // none | percent | amount | gift
   let movDirection = "out"; // out = prelievo | in = versamento
+
+  function persistAttempt(storageKey, value) {
+    try {
+      if (value) localStorage.setItem(storageKey, JSON.stringify(value));
+      else localStorage.removeItem(storageKey);
+    } catch {
+      // Il server resta idempotente anche se lo storage del browser e' disabilitato.
+    }
+  }
+
+  function loadAttempt(storageKey) {
+    try {
+      const value = JSON.parse(localStorage.getItem(storageKey) || "null");
+      if (!value) return null;
+      if (value.session_id !== session?.id || typeof value.requestId !== "string") {
+        persistAttempt(storageKey, null);
+        return null;
+      }
+      return value;
+    } catch {
+      persistAttempt(storageKey, null);
+      return null;
+    }
+  }
+
+  function setCheckoutAttempt(value) {
+    checkoutAttempt = value;
+    persistAttempt(CHECKOUT_ATTEMPT_KEY, value ? { ...value, session_id: session?.id } : null);
+  }
+
+  function setMovementAttempt(value) {
+    movementAttempt = value;
+    persistAttempt(MOVEMENT_ATTEMPT_KEY, value ? { ...value, session_id: session?.id } : null);
+  }
+
+  function setSuspendAttempt(value) {
+    suspendAttempt = value;
+    persistAttempt(SUSPEND_ATTEMPT_KEY, value ? { ...value, session_id: session?.id } : null);
+  }
+
+  function setResumeAttempt(value) {
+    resumeAttempt = value;
+    persistAttempt(RESUME_ATTEMPT_KEY, value ? { ...value, session_id: session?.id } : null);
+  }
+
+  function restoreCheckoutUi() {
+    if (!checkoutAttempt) return;
+    try {
+      const body = JSON.parse(checkoutAttempt.payload);
+      payMethod = ["cash", "card", "other"].includes(body.payment_method) ? body.payment_method : "cash";
+      payMethodBtns.forEach(button => button.classList.toggle(
+        "is-active", button.getAttribute("data-method") === payMethod
+      ));
+      discType = body.discount?.type || "none";
+      discOptBtns.forEach(button => button.classList.toggle(
+        "is-active", button.getAttribute("data-disc") === discType
+      ));
+      const needsDiscountValue = discType === "percent" || discType === "amount";
+      if (discValueField) discValueField.hidden = !needsDiscountValue;
+      if (discValueEl && needsDiscountValue) {
+        discValueEl.value = discType === "amount"
+          ? (Number(body.discount?.value || 0) / 100).toFixed(2)
+          : String(body.discount?.value ?? "");
+      }
+      if (cashReceivedEl && body.cash_received_cents != null) {
+        cashReceivedEl.value = (Number(body.cash_received_cents) / 100).toFixed(2);
+      }
+      refreshPayment();
+    } catch {
+      setCheckoutAttempt(null);
+    }
+  }
 
   function showToast(msg) {
     if (!toastEl) return;
@@ -989,8 +1080,23 @@ async function initCassa(signal) {
 
   movementBtn?.addEventListener("click", () => {
     if (!session) return;
-    movementForm?.reset();
-    setMovementDirection("out");
+    if (movementAttempt) {
+      try {
+        const pending = JSON.parse(movementAttempt.payload);
+        if (movementForm) {
+          movementForm.amount_eur.value = (pending.amount_cents / 100).toFixed(2);
+          movementForm.reason.value = pending.reason;
+        }
+        setMovementDirection(pending.direction);
+      } catch {
+        setMovementAttempt(null);
+        movementForm?.reset();
+        setMovementDirection("out");
+      }
+    } else {
+      movementForm?.reset();
+      setMovementDirection("out");
+    }
     openModal(movementModal);
     setTimeout(() => movementForm?.amount_eur.focus(), 0);
   });
@@ -1002,16 +1108,29 @@ async function initCassa(signal) {
     if (!amount) return uiAlert("Inserisci un importo maggiore di zero.");
     const reason = String(movementForm.reason.value || "").trim();
     if (!reason) return uiAlert("Indica il motivo del movimento.");
+    if (!movementAttempt) {
+      setMovementAttempt({
+        requestId: newCheckoutRequestId(),
+        payload: JSON.stringify({ direction: movDirection, amount_cents: amount, reason }),
+      });
+    }
+    const submitButton = movementForm.querySelector("button[type='submit']");
     try {
+      if (submitButton) submitButton.disabled = true;
       await api("/api/sessions/movements", {
         method: "POST",
-        body: JSON.stringify({ direction: movDirection, amount_cents: amount, reason }),
+        headers: { "Idempotency-Key": movementAttempt.requestId },
+        body: movementAttempt.payload,
       });
+      setMovementAttempt(null);
       closeModal(movementModal);
       showToast(`${movDirection === "out" ? "Prelievo" : "Versamento"} registrato • ${money(amount)}`);
       await refreshSession();
     } catch (err) {
+      if (err.status !== undefined && err.data?.retryable !== true) setMovementAttempt(null);
       await uiError(err);
+    } finally {
+      if (submitButton) submitButton.disabled = false;
     }
   });
 
@@ -1360,16 +1479,16 @@ async function initCassa(signal) {
 
   suspendCartBtn?.addEventListener("click", async () => {
     if (!session || cart.size === 0 || guardPendingCheckout()) return;
-    const label = await uiPrompt(
-      "Sospendi comanda",
-      "Nome o riferimento",
-      `Comanda ${suspendedCarts.length + 1}`
-    );
-    if (label === null) return;
-    try {
-      await api("/api/carts", {
-        method: "POST",
-        body: JSON.stringify({
+    if (!suspendAttempt) {
+      const label = await uiPrompt(
+        "Sospendi comanda",
+        "Nome o riferimento",
+        `Comanda ${suspendedCarts.length + 1}`
+      );
+      if (label === null) return;
+      setSuspendAttempt({
+        requestId: newCheckoutRequestId(),
+        payload: JSON.stringify({
           label,
           note: orderNoteEl?.value.trim() || null,
           items: Array.from(cart.values()).map(item => ({
@@ -1381,12 +1500,21 @@ async function initCassa(signal) {
           })),
         }),
       });
+    }
+    try {
+      await api("/api/carts", {
+        method: "POST",
+        headers: { "Idempotency-Key": suspendAttempt.requestId },
+        body: suspendAttempt.payload,
+      });
+      setSuspendAttempt(null);
       cart.clear();
       if (orderNoteEl) orderNoteEl.value = "";
       renderCart();
       await refreshSuspendedCarts();
       showToast("Comanda sospesa");
     } catch (err) {
+      if (err.status !== undefined && err.data?.retryable !== true) setSuspendAttempt(null);
       await uiError(err);
     }
   });
@@ -1396,6 +1524,49 @@ async function initCassa(signal) {
     await refreshSuspendedCarts();
     openModal(suspendedCartsModal);
   });
+
+  async function completeResumeAttempt() {
+    if (!resumeAttempt || cart.size > 0) return false;
+    const entry = resumeAttempt.entry;
+    await loadFreshProducts();
+    const byId = new Map(products.map(product => [product.id, product]));
+    const restored = entry.items.map(item => {
+      const product = byId.get(item.product_id);
+      const selectedIds = (item.selected_options || []).map(option => option.value_id);
+      const built = product ? buildCartItem(product, item.qty, selectedIds, item.note) : { error: "Prodotto non disponibile" };
+      return { item, product, built };
+    });
+    const requested = new Map();
+    for (const { item, product } of restored) {
+      if (product) requested.set(product.id, (requested.get(product.id) || 0) + item.qty);
+    }
+    const invalid = restored.filter(({ product, built }) => (
+      !product || built.error || !productAvailable(product)
+      || (product.stock != null && (requested.get(product.id) || 0) > product.stock)
+    ));
+    if (invalid.length > 0) {
+      await uiAlert(
+        `Non è possibile riprendere la comanda. Verifica: ${invalid.map(({ item }) => item.name).join(", ")}.`,
+        "Disponibilità cambiata"
+      );
+      return false;
+    }
+
+    const out = await api(`/api/carts/${entry.id}/resume`, {
+      method: "POST",
+      headers: { "Idempotency-Key": resumeAttempt.requestId },
+      body: "{}",
+    });
+    const resumedEntry = out.cart || entry;
+    for (const { built } of restored) cart.set(built.key, built.item);
+    if (orderNoteEl) orderNoteEl.value = resumedEntry.note || "";
+    setResumeAttempt(null);
+    renderCart();
+    closeModal(suspendedCartsModal);
+    await refreshSuspendedCarts();
+    showToast(`Comanda ripresa • ${resumedEntry.label}`);
+    return true;
+  }
 
   suspendedCartsList?.addEventListener("click", async (event) => {
     const resumeId = Number(event.target?.getAttribute?.("data-resume-cart"));
@@ -1411,40 +1582,10 @@ async function initCassa(signal) {
         return;
       }
       try {
-        await loadFreshProducts();
-        const byId = new Map(products.map(product => [product.id, product]));
-        const restored = entry.items.map(item => {
-          const product = byId.get(item.product_id);
-          const selectedIds = (item.selected_options || []).map(option => option.value_id);
-          const built = product ? buildCartItem(product, item.qty, selectedIds, item.note) : { error: "Prodotto non disponibile" };
-          return { item, product, built };
-        });
-        const requested = new Map();
-        for (const { item, product } of restored) {
-          if (product) requested.set(product.id, (requested.get(product.id) || 0) + item.qty);
-        }
-        const invalid = restored.filter(({ product, built }) => (
-          !product || built.error || !productAvailable(product)
-          || (product.stock != null && (requested.get(product.id) || 0) > product.stock)
-        ));
-        if (invalid.length > 0) {
-          await refreshSuspendedCarts();
-          await uiAlert(
-            `Non è possibile riprendere la comanda. Verifica: ${invalid.map(({ item }) => item.name).join(", ")}.`,
-            "Disponibilità cambiata"
-          );
-          return;
-        }
-        for (const { built } of restored) {
-          cart.set(built.key, built.item);
-        }
-        if (orderNoteEl) orderNoteEl.value = entry.note || "";
-        renderCart();
-        await api(`/api/carts/${id}`, { method: "DELETE" });
-        closeModal(suspendedCartsModal);
-        await refreshSuspendedCarts();
-        showToast(`Comanda ripresa • ${entry.label}`);
+        setResumeAttempt({ requestId: newCheckoutRequestId(), entry });
+        await completeResumeAttempt();
       } catch (err) {
+        if (err.status !== undefined && err.data?.retryable !== true) setResumeAttempt(null);
         await uiError(err);
       }
       return;
@@ -1652,10 +1793,10 @@ async function initCassa(signal) {
           body.cash_received_cents = received;
         }
       }
-      checkoutAttempt = {
+      setCheckoutAttempt({
         requestId: newCheckoutRequestId(),
         payload: JSON.stringify(body),
-      };
+      });
     }
     try {
       isPrinting = true;
@@ -1667,7 +1808,7 @@ async function initCassa(signal) {
       });
       cart.clear();
       if (orderNoteEl) orderNoteEl.value = "";
-      checkoutAttempt = null;
+      setCheckoutAttempt(null);
       setCheckoutControlsLocked(false);
       closeModal(paymentModal);
       cartCard?.classList.add("flash");
@@ -1682,7 +1823,7 @@ async function initCassa(signal) {
         const saleNumber = String(err.data.sale_number || "").padStart(4, "0");
         cart.clear();
         if (orderNoteEl) orderNoteEl.value = "";
-        checkoutAttempt = null;
+        setCheckoutAttempt(null);
         setCheckoutControlsLocked(false);
         closeModal(paymentModal);
         showToast(`Vendita #${saleNumber} registrata • stampa da ripetere`);
@@ -1693,7 +1834,7 @@ async function initCassa(signal) {
         return;
       }
       if (err.data?.code === "PRICE_CHANGED" || err.data?.code === "CATALOG_CHANGED") {
-        checkoutAttempt = null;
+        setCheckoutAttempt(null);
         setCheckoutControlsLocked(false);
         try {
           await loadFreshProducts();
@@ -1720,7 +1861,7 @@ async function initCassa(signal) {
           "danger"
         );
       } else {
-        checkoutAttempt = null;
+        setCheckoutAttempt(null);
         setCheckoutControlsLocked(false);
         await uiError(err);
       }
@@ -1764,9 +1905,23 @@ async function initCassa(signal) {
   applySearch();
   renderCart();
   await refreshSession();
+  checkoutAttempt = loadAttempt(CHECKOUT_ATTEMPT_KEY);
+  movementAttempt = loadAttempt(MOVEMENT_ATTEMPT_KEY);
+  suspendAttempt = loadAttempt(SUSPEND_ATTEMPT_KEY);
+  resumeAttempt = loadAttempt(RESUME_ATTEMPT_KEY);
   const recovery = recoverCurrentCart();
   cartPersistenceReady = true;
   renderCart();
+  restoreCheckoutUi();
+  if (resumeAttempt && cart.size === 0) {
+    try { await completeResumeAttempt(); } catch (err) { await uiError(err); }
+  }
+  if (checkoutAttempt) {
+    setCheckoutControlsLocked(true);
+    showToast("Incasso in sospeso recuperato");
+  } else if (movementAttempt || suspendAttempt || resumeAttempt) {
+    showToast("Operazione in sospeso recuperata");
+  }
   if (recovery.recovered) showToast("Comanda recuperata");
   if (recovery.skipped.length > 0) {
     void uiAlert(

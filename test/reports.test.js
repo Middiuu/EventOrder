@@ -71,6 +71,44 @@ test("summary: sconto ripartito sui prodotti al centesimo e filtro per data", as
   }
 });
 
+test("summary gestisce oltre il limite SQLite di variabili senza costruire un IN per vendita", async () => {
+  const harness = createHarness();
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const product = (await request({ url: "/api/products" })).json()[0];
+      const session = (await postJson(request, "/api/sessions/open", {
+        opening_float_cents: 0,
+      })).json().session;
+      const { db } = require("../src/db");
+      const insertSale = db.prepare(`
+        INSERT INTO sales (sale_number, total_cents, payment_method, session_id, print_status)
+        VALUES (?, 100, 'card', ?, 'printed')
+      `);
+      const insertItem = db.prepare(`
+        INSERT INTO sale_items
+          (sale_id, product_id, qty, unit_price_cents, base_unit_price_cents,
+           line_total_cents, product_name, product_category)
+        VALUES (?, ?, 1, 100, 100, 100, ?, ?)
+      `);
+      db.transaction(() => {
+        for (let number = 1; number <= 33000; number += 1) {
+          const sale = insertSale.run(number, session.id);
+          insertItem.run(Number(sale.lastInsertRowid), product.id, product.name, product.category);
+        }
+      })();
+
+      const response = await request({ url: `/api/reports/summary?session=${session.id}` });
+      assert.equal(response.status, 200);
+      assert.equal(response.json().summary.sales_count, 33000);
+      assert.equal(response.json().summary.revenue_cents, 3300000);
+      assert.equal(response.json().byProduct[0].qty_sold, 33000);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
 test("summary per turno e margine dal costo storicizzato", async () => {
   const harness = createHarness({ printTicket: async () => {} });
 

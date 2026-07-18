@@ -57,3 +57,16 @@ test("gli initializer di pagina sono isolati fra loro", () => {
   assert.match(source, /await initialize\(\)/);
   assert.match(source, /Inizializzazione \$\{name\} non riuscita/);
 });
+
+test("navigazione e retry persistenti mantengono i guardrail verificati in browser", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+
+  assert.match(source, /disposePageUi\(\);\s*curMain\.replaceWith\(newMain\)/);
+  assert.match(source, /modalStack\.length = 0/);
+  assert.match(source, /document\.body\.style\.overflow = ""/);
+  assert.match(source, /eventorder-pending-checkout-v1/);
+  assert.match(source, /eventorder-pending-movement-v1/);
+  assert.match(source, /eventorder-pending-suspend-v1/);
+  assert.match(source, /eventorder-pending-resume-v1/);
+  assert.match(source, /restoreCheckoutUi\(\)/);
+});

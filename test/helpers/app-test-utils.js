@@ -15,6 +15,7 @@ function clearAppModules() {
     path.join(PROJECT_ROOT, "src/maintenance.js"),
     path.join(PROJECT_ROOT, "src/printer.js"),
     path.join(PROJECT_ROOT, "src/pending-sales.js"),
+    path.join(PROJECT_ROOT, "src/idempotency.js"),
     path.join(PROJECT_ROOT, "src/routes/products.js"),
     path.join(PROJECT_ROOT, "src/routes/sales.js"),
     path.join(PROJECT_ROOT, "src/routes/sessions.js"),
@@ -46,7 +47,13 @@ async function requestHttp(baseUrl, { method = "GET", url = "/", headers = {}, b
   const requestHeaders = { ...headers };
   const hasIdempotencyKey = Object.keys(requestHeaders)
     .some(key => key.toLowerCase() === "idempotency-key");
-  if (method === "POST" && url === "/api/sales/print" && !hasIdempotencyKey) {
+  const requiresIdempotency = method === "POST" && (
+    url === "/api/sales/print"
+    || url === "/api/sessions/movements"
+    || url === "/api/carts"
+    || /^\/api\/carts\/\d+\/resume$/.test(url)
+  );
+  if (requiresIdempotency && !hasIdempotencyKey) {
     requestHeaders["Idempotency-Key"] = crypto.randomUUID();
   }
   const res = await fetch(baseUrl + url, {

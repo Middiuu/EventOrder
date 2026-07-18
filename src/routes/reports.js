@@ -115,17 +115,19 @@ function loadScopedSales(scope, { includeVoided = false } = {}) {
   `).all(...scope.params);
 
   const itemsBySale = new Map();
-  const ids = sales.map(s => s.id);
-  if (ids.length > 0) {
-    const placeholders = ids.map(() => "?").join(",");
+  if (sales.length > 0) {
+    // La selezione viene ripetuta come JOIN invece di costruire un placeholder
+    // per ogni vendita. Il numero di bind resta costante anche su storici molto
+    // grandi e non puo' superare SQLITE_MAX_VARIABLE_NUMBER.
     const items = db.prepare(`
-      SELECT id, sale_id, qty, unit_price_cents, line_total_cents,
-             product_name, product_category, product_cost_cents,
-             options_json, note
-      FROM sale_items
-      WHERE sale_id IN (${placeholders})
-      ORDER BY id ASC
-    `).all(...ids);
+      SELECT si.id, si.sale_id, si.qty, si.unit_price_cents, si.line_total_cents,
+             si.product_name, si.product_category, si.product_cost_cents,
+             si.options_json, si.note
+      FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id
+      WHERE ${scope.where} ${voidedFilter}
+      ORDER BY si.id ASC
+    `).all(...scope.params);
     for (const it of items) {
       if (!itemsBySale.has(it.sale_id)) itemsBySale.set(it.sale_id, []);
       itemsBySale.get(it.sale_id).push(it);

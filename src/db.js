@@ -7,7 +7,7 @@ const DB_PATH = process.env.POS_DB_PATH
   ? path.resolve(process.env.POS_DB_PATH)
   : path.join(__dirname, "..", "pos.sqlite");
 const SCHEMA_PATH = path.join(__dirname, "schema.sql");
-const DB_SCHEMA_VERSION = 8;
+const DB_SCHEMA_VERSION = 9;
 const DB_BUSY_TIMEOUT_MS = 5000;
 const RESTORE_MARKER_PATH = `${DB_PATH}.restore-state.json`;
 const DB_SIDECAR_PATHS = [`${DB_PATH}-wal`, `${DB_PATH}-shm`];
@@ -195,9 +195,11 @@ const CANONICAL_TABLES = [
   "suspended_carts",
   "suspended_cart_items",
   "cash_movements",
+  "operation_requests",
 ];
 
 const DROP_TABLE_ORDER = [
+  "operation_requests",
   "suspended_cart_items",
   "suspended_carts",
   "cash_movements",
@@ -240,43 +242,43 @@ function canonicalTableSql(canonicalDb, table, replacement) {
   return row.sql.replace(createPrefix[0], `CREATE TABLE ${quoteIdentifier(replacement)}`);
 }
 
-function copyCommonColumns(canonicalDb, table, destination) {
-  if (!tableExistsIn(db, table)) return;
+function copyCommonColumns(database, canonicalDb, table, destination) {
+  if (!tableExistsIn(database, table)) return;
 
-  const existing = new Set(tableColumns(db, table).map(column => column.name));
+  const existing = new Set(tableColumns(database, table).map(column => column.name));
   const common = tableColumns(canonicalDb, table)
     .map(column => column.name)
     .filter(name => existing.has(name));
   if (common.length === 0) {
-    const count = db.prepare(`SELECT COUNT(*) AS count FROM ${quoteIdentifier(table)}`).get().count;
+    const count = database.prepare(`SELECT COUNT(*) AS count FROM ${quoteIdentifier(table)}`).get().count;
     if (count > 0) throw new Error(`Nessuna colonna compatibile nella tabella ${table}`);
     return;
   }
 
   const columns = common.map(quoteIdentifier).join(", ");
-  db.exec(`
+  database.exec(`
     INSERT INTO ${quoteIdentifier(destination)} (${columns})
     SELECT ${columns} FROM ${quoteIdentifier(table)}
   `);
 }
 
-function readLegacySequences() {
-  if (!tableExistsIn(db, "sqlite_sequence")) return new Map();
+function readLegacySequences(database) {
+  if (!tableExistsIn(database, "sqlite_sequence")) return new Map();
   const names = new Set(CANONICAL_TABLES);
   return new Map(
-    db.prepare("SELECT name, seq FROM sqlite_sequence").all()
+    database.prepare("SELECT name, seq FROM sqlite_sequence").all()
       .filter(row => names.has(row.name))
       .map(row => [row.name, row.seq])
   );
 }
 
-function restoreLegacySequences(sequences) {
-  const update = db.prepare(`
+function restoreLegacySequences(database, sequences) {
+  const update = database.prepare(`
     UPDATE sqlite_sequence
     SET seq = CASE WHEN seq < ? THEN ? ELSE seq END
     WHERE name = ?
   `);
-  const insert = db.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)");
+  const insert = database.prepare("INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)");
   for (const [table, sequence] of sequences) {
     const result = update.run(sequence, sequence, table);
     if (result.changes === 0) insert.run(table, sequence);
@@ -287,31 +289,31 @@ function restoreLegacySequences(sequences) {
 // ALTER TABLE. Per i DB precedenti alla versione corrente ricreiamo tutte le tabelle
 // applicative dalla definizione canonica di schema.sql, copiamo i dati e
 // sostituiamo gli originali in un'unica transazione.
-function migrateLegacySchema(schema, previousVersion) {
+function migrateLegacySchema(database, schema, previousVersion) {
   const canonicalDb = new Database(":memory:");
   let migrationError = null;
   let cleanupError = null;
 
   try {
     canonicalDb.exec(schema);
-    db.pragma("foreign_keys = OFF");
-    if (db.pragma("foreign_keys", { simple: true }) !== 0) {
+    database.pragma("foreign_keys = OFF");
+    if (database.pragma("foreign_keys", { simple: true }) !== 0) {
       throw new Error("Impossibile acquisire il lock di migrazione SQLite");
     }
 
-    const migrate = db.transaction(() => {
-      const legacySequences = readLegacySequences();
+    const migrate = database.transaction(() => {
+      const legacySequences = readLegacySequences(database);
       for (const table of CANONICAL_TABLES) {
         const replacement = `__eventorder_migrate_${table}`;
-        if (tableExistsIn(db, replacement)) {
+        if (tableExistsIn(database, replacement)) {
           throw new Error(`Tabella temporanea inattesa: ${replacement}`);
         }
-        db.exec(canonicalTableSql(canonicalDb, table, replacement));
-        copyCommonColumns(canonicalDb, table, replacement);
+        database.exec(canonicalTableSql(canonicalDb, table, replacement));
+        copyCommonColumns(database, canonicalDb, table, replacement);
       }
 
       // I database precedenti conservavano nome e categoria solo nei prodotti.
-      db.exec(`
+      database.exec(`
         UPDATE __eventorder_migrate_sale_items
         SET base_unit_price_cents = unit_price_cents
         WHERE base_unit_price_cents = 0 AND unit_price_cents > 0;
@@ -335,7 +337,7 @@ function migrateLegacySchema(schema, previousVersion) {
 
       if (previousVersion < 3) {
         // Le sole vendite legacy ancora stornabili appartengono al turno aperto.
-        db.exec(`
+        database.exec(`
           UPDATE __eventorder_migrate_sale_items
           SET stock_decremented_qty = qty
           WHERE stock_decremented_qty = 0
@@ -355,7 +357,7 @@ function migrateLegacySchema(schema, previousVersion) {
         // Nel vecchio flusso una vendita rimaneva valida solo dopo il successo
         // della stampa. Le vendite storiche valide sono quindi considerate
         // stampate; gli annulli automatici per errore stampante restano failed.
-        db.exec(`
+        database.exec(`
           UPDATE __eventorder_migrate_sales
           SET print_status = CASE
                 WHEN voided = 1 AND void_reason = 'Stampa non riuscita' THEN 'failed'
@@ -375,27 +377,27 @@ function migrateLegacySchema(schema, previousVersion) {
       }
 
       for (const table of DROP_TABLE_ORDER) {
-        if (tableExistsIn(db, table)) {
-          db.exec(`DROP TABLE ${quoteIdentifier(table)}`);
+        if (tableExistsIn(database, table)) {
+          database.exec(`DROP TABLE ${quoteIdentifier(table)}`);
         }
       }
       for (const table of CANONICAL_TABLES) {
-        db.exec(`
+        database.exec(`
           ALTER TABLE ${quoteIdentifier(`__eventorder_migrate_${table}`)}
           RENAME TO ${quoteIdentifier(table)}
         `);
       }
-      restoreLegacySequences(legacySequences);
+      restoreLegacySequences(database, legacySequences);
 
       // Ricrea anche indici e vincoli di unicita' prima del commit: eventuali
       // duplicati legacy fanno fallire e annullare l'intera migrazione.
-      db.exec(schema);
-      const foreignKeyErrors = db.pragma("foreign_key_check");
+      database.exec(schema);
+      const foreignKeyErrors = database.pragma("foreign_key_check");
       if (foreignKeyErrors.length > 0) {
         const first = foreignKeyErrors[0];
         throw new Error(`Relazione non valida in ${first.table}, riga ${first.rowid}`);
       }
-      db.pragma(`user_version = ${DB_SCHEMA_VERSION}`);
+      database.pragma(`user_version = ${DB_SCHEMA_VERSION}`);
     });
 
     migrate();
@@ -405,8 +407,8 @@ function migrateLegacySchema(schema, previousVersion) {
       { cause: err }
     );
   } finally {
-    db.pragma("foreign_keys = ON");
-    if (db.pragma("foreign_keys", { simple: true }) !== 1) {
+    database.pragma("foreign_keys = ON");
+    if (database.pragma("foreign_keys", { simple: true }) !== 1) {
       cleanupError = new Error("Impossibile riattivare le foreign key SQLite");
     }
     canonicalDb.close();
@@ -428,7 +430,7 @@ function initDb() {
 
   const hasLegacyTables = CANONICAL_TABLES.some(table => tableExistsIn(db, table));
   if (hasLegacyTables && previousVersion < DB_SCHEMA_VERSION) {
-    migrateLegacySchema(schema, previousVersion);
+    migrateLegacySchema(db, schema, previousVersion);
   } else {
     db.exec(schema);
     if (previousVersion < DB_SCHEMA_VERSION) {
@@ -506,10 +508,49 @@ function restoreError(message) {
   return err;
 }
 
-// Apre il file separatamente e in sola lettura: nessun contenuto del backup
-// viene eseguito o copiato prima che integrita' e identita' siano verificate.
+function canonicalizeRestoreCandidate(candidatePath, sourceVersion) {
+  const validationPath = `${candidatePath}.canonical-${process.pid}-${Date.now()}`;
+  let validationDb;
+  try {
+    fs.copyFileSync(candidatePath, validationPath, fs.constants.COPYFILE_EXCL);
+    validationDb = new Database(validationPath, { fileMustExist: true });
+    validationDb.pragma(`busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
+    validationDb.pragma("foreign_keys = ON");
+
+    // Ricostruire una copia isolata applica tutti i CHECK/FK/UNIQUE canonici
+    // anche se il file dichiara gia' la versione corrente ma ne imita solo una
+    // parte dello schema. Il file ricevuto non diventa mai il DB attivo.
+    const schema = fs.readFileSync(SCHEMA_PATH, "utf8");
+    migrateLegacySchema(validationDb, schema, sourceVersion);
+
+    const integrity = validationDb.pragma("integrity_check");
+    if (integrity.length !== 1 || integrity[0].integrity_check !== "ok") {
+      throw new Error("controllo di integrita' fallito dopo la canonicalizzazione");
+    }
+    if (validationDb.pragma("foreign_key_check").length > 0) {
+      throw new Error("relazioni non valide dopo la canonicalizzazione");
+    }
+    validationDb.pragma("journal_mode = DELETE");
+    validationDb.close();
+    validationDb = null;
+
+    const fd = fs.openSync(validationPath, "r");
+    try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    fs.renameSync(validationPath, candidatePath);
+    fsyncDirectory(path.dirname(candidatePath));
+  } finally {
+    try { validationDb?.close(); } catch {}
+    fs.rmSync(validationPath, { force: true });
+    fs.rmSync(`${validationPath}-wal`, { force: true });
+    fs.rmSync(`${validationPath}-shm`, { force: true });
+  }
+}
+
+// Apre prima il file in sola lettura per verificarne identita' e integrita',
+// poi sostituisce l'upload con una copia ricostruita nello schema canonico.
 function validateRestoreCandidate(candidatePath) {
   let candidate;
+  let inspected;
   try {
     candidate = new Database(candidatePath, { readonly: true, fileMustExist: true });
 
@@ -534,6 +575,17 @@ function validateRestoreCandidate(candidatePath) {
       throw restoreError("Il file non e' un backup EventOrder supportato");
     }
 
+    const unexpectedTable = candidate.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'table'
+        AND name NOT LIKE 'sqlite_%'
+        AND name NOT IN (${CANONICAL_TABLES.map(() => "?").join(",")})
+      LIMIT 1
+    `).get(...CANONICAL_TABLES);
+    if (unexpectedTable) {
+      throw restoreError(`Backup non valido: tabella inattesa ${unexpectedTable.name}`);
+    }
+
     for (const [table, requiredColumns] of Object.entries(REQUIRED_RESTORE_SCHEMA)) {
       const exists = candidate.prepare(`
         SELECT 1 FROM sqlite_master WHERE type='table' AND name=?
@@ -551,17 +603,25 @@ function validateRestoreCandidate(candidatePath) {
       throw restoreError("Il backup proviene da una versione piu' recente di EventOrder");
     }
 
-    return {
+    inspected = {
       products: candidate.prepare("SELECT COUNT(*) AS count FROM products").get().count,
       sales: candidate.prepare("SELECT COUNT(*) AS count FROM sales").get().count,
       sessions: candidate.prepare("SELECT COUNT(*) AS count FROM cash_sessions").get().count,
-      userVersion,
+      sourceUserVersion: userVersion,
+      userVersion: DB_SCHEMA_VERSION,
     };
   } catch (err) {
     if (err.status === 400) throw err;
     throw restoreError("Il file selezionato non e' un database SQLite EventOrder valido");
   } finally {
     candidate?.close();
+  }
+
+  try {
+    canonicalizeRestoreCandidate(candidatePath, inspected.sourceUserVersion);
+    return inspected;
+  } catch {
+    throw restoreError("Il backup contiene schema o dati non compatibili con EventOrder");
   }
 }
 
@@ -608,4 +668,5 @@ module.exports = {
   RESTORE_MARKER_PATH,
   DB_PATH,
   DB_BUSY_TIMEOUT_MS,
+  DB_SCHEMA_VERSION,
 };

@@ -148,8 +148,22 @@ CREATE TABLE IF NOT EXISTS cash_movements (
   FOREIGN KEY (session_id) REFERENCES cash_sessions(id)
 );
 
+-- Risultati persistenti delle mutazioni che devono poter essere ritentate
+-- dopo timeout, reload o crash del browser senza duplicare l'operazione.
+CREATE TABLE IF NOT EXISTS operation_requests (
+  operation TEXT NOT NULL CHECK(operation IN ('cash_movement', 'suspend_cart', 'resume_cart')),
+  request_id TEXT NOT NULL CHECK(length(request_id) BETWEEN 8 AND 120),
+  request_fingerprint TEXT NOT NULL CHECK(length(request_fingerprint) = 64),
+  session_id INTEGER NOT NULL,
+  response_json TEXT NOT NULL CHECK(json_valid(response_json)),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (operation, request_id),
+  FOREIGN KEY (session_id) REFERENCES cash_sessions(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_products_active ON products(active, sort_order);
 CREATE INDEX IF NOT EXISTS idx_cash_movements_session ON cash_movements(session_id);
+CREATE INDEX IF NOT EXISTS idx_operation_requests_created_at ON operation_requests(created_at);
 CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);
 CREATE INDEX IF NOT EXISTS idx_sales_session ON sales(session_id);
 CREATE INDEX IF NOT EXISTS idx_sales_voided ON sales(voided, created_at);
