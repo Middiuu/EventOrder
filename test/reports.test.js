@@ -366,3 +366,45 @@ test("export: items.csv riga-per-articolo con sconto ripartito, aggregato con ne
     harness.cleanup();
   }
 });
+
+test("gli export CSV neutralizzano i prefissi interpretabili come formule", async () => {
+  const harness = createHarness({ printTicket: async () => {} });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const productId = (await postJson(request, "/api/products", {
+        name: "=2+3",
+        category: "+Categoria",
+        price_cents: 500,
+      })).json().id;
+      await postJson(request, "/api/sessions/open", {
+        opening_float_cents: 0,
+        operator: "@Operatore",
+      });
+      await postJson(request, "/api/sales/print", {
+        items: [{ product_id: productId, qty: 1, note: "-Voce" }],
+        note: "@Ordine",
+        payment_method: "card",
+      });
+
+      const items = await request({
+        url: `/api/reports/items.csv?from=${TODAY}&to=${TOMORROW}`,
+      });
+      assert.equal(items.status, 200);
+      assert.match(items.text, /'@Operatore/);
+      assert.match(items.text, /'=2\+3/);
+      assert.match(items.text, /'\+Categoria/);
+      assert.match(items.text, /'-Voce/);
+      assert.match(items.text, /'@Ordine/);
+      assert.doesNotMatch(items.text, /(?:^|;)[=+\-@]/m);
+
+      const transactions = await request({
+        url: `/api/reports/transactions.csv?from=${TODAY}&to=${TOMORROW}`,
+      });
+      assert.match(transactions.text, /'@Operatore/);
+      assert.match(transactions.text, /'@Ordine/);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});

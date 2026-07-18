@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const Database = require("better-sqlite3");
 const { config } = require("./config");
 
@@ -466,6 +467,32 @@ function initDb() {
     ON CONFLICT(key) DO UPDATE SET int_value = excluded.int_value
     WHERE app_state.int_value < excluded.int_value
   `).run(maxSaleNumber);
+
+  db.prepare(`
+    INSERT OR IGNORE INTO app_state (key, int_value)
+    VALUES ('database_instance_id', ?)
+  `).run(newDatabaseInstanceId());
+}
+
+function newDatabaseInstanceId() {
+  // 48 bit casuali: rappresentabili esattamente come Number e come INTEGER
+  // SQLite, ma abbastanza ampi da non confondere draft di istanze diverse.
+  return crypto.randomBytes(6).readUIntBE(0, 6);
+}
+
+function getDatabaseInstanceId() {
+  return db.prepare(`
+    SELECT int_value FROM app_state WHERE key = 'database_instance_id'
+  `).get()?.int_value;
+}
+
+function rotateDatabaseInstanceId() {
+  const value = newDatabaseInstanceId();
+  db.prepare(`
+    INSERT INTO app_state (key, int_value) VALUES ('database_instance_id', ?)
+    ON CONFLICT(key) DO UPDATE SET int_value = excluded.int_value
+  `).run(value);
+  return value;
 }
 
 function getNextSaleNumber() {
@@ -639,6 +666,7 @@ function restoreDatabaseFromFile(candidatePath, safetyBackupPath) {
 
     connection = openConnection();
     initDb();
+    rotateDatabaseInstanceId();
 
     const foreignKeyErrors = db.pragma("foreign_key_check");
     if (foreignKeyErrors.length > 0) {
@@ -662,6 +690,7 @@ module.exports = {
   initDb,
   getNextSaleNumber,
   getOpenSession,
+  getDatabaseInstanceId,
   validateRestoreCandidate,
   restoreDatabaseFromFile,
   closeDatabase,

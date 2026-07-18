@@ -11,6 +11,8 @@ const { localYmdToUtcSql, parseLocalYmd } = require("../validation");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { Transform } = require("stream");
+const { pipeline } = require("stream/promises");
 const {
   beginBackup,
   endBackup,
@@ -45,9 +47,21 @@ function rangeError(message) {
 }
 
 function csvEscape(value) {
-  const s = String(value ?? "");
+  const isText = value && typeof value === "object" && Object.hasOwn(value, "csvText");
+  let s = String(isText ? value.csvText : (value ?? ""));
+  // Excel e software compatibili possono eseguire come formula una cella
+  // testuale controllata dall'utente. L'apostrofo forza l'import come testo;
+  // i valori numerici reali restano numerici.
+  const firstMeaningful = [...s].find(character => character > " ");
+  if (isText && ["=", "+", "-", "@"].includes(firstMeaningful)) {
+    s = `'${s}`;
+  }
   if (/[",;\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
+}
+
+function csvText(value) {
+  return { csvText: value ?? "" };
 }
 
 function centsToEuroString(cents) {
@@ -333,7 +347,7 @@ router.get("/export.csv", (req, res) => {
         toLabel,
         String(summary.sales_count),
         centsToEuroString(summary.revenue_cents),
-        r.name,
+        csvText(r.name),
         String(r.qty_sold),
         centsToEuroString(r.gross_revenue_cents),
         centsToEuroString(r.net_revenue_cents),
@@ -381,18 +395,18 @@ router.get("/items.csv", (req, res) => {
       lines.push([
         String(sale.sale_number),
         sale.created_local || "",
-        sale.operator || "",
+        csvText(sale.operator),
         sale.session_id == null ? "" : String(sale.session_id),
         sale.payment_method || "",
         sale.voided ? "1" : "0",
-        it.product_name,
-        it.product_category,
-        (() => {
+        csvText(it.product_name),
+        csvText(it.product_category),
+        csvText((() => {
           try { return JSON.parse(it.options_json || "[]").map(option => `${option.group_name}: ${option.name}`).join(" | "); }
           catch { return ""; }
-        })(),
-        it.note || "",
-        sale.note || "",
+        })()),
+        csvText(it.note),
+        csvText(sale.note),
         String(it.qty),
         centsToEuroString(it.unit_price_cents),
         centsToEuroString(it.line_total_cents),
@@ -444,13 +458,13 @@ router.get("/transactions.csv", (req, res) => {
     lines.push([
       String(r.sale_number),
       r.created_local || "",
-      r.operator || "",
+      csvText(r.operator),
       r.payment_method || "",
       centsToEuroString(r.discount_cents),
       centsToEuroString(r.total_cents),
       r.voided ? "1" : "0",
       r.session_id == null ? "" : String(r.session_id),
-      r.note || "",
+      csvText(r.note),
     ].map(csvEscape).join(sep));
   }
 
@@ -487,12 +501,18 @@ async function createDatabaseBackup(kind = "backup") {
 
   // Backup online consistente: e' valido anche mentre altre richieste leggono.
   await db.backup(backupPath);
-  pruneBackups(backupsDir);
-  return { backupName, backupPath, backupsDir };
+  pruneBackups(backupsDir, backupName);
+  return {
+    backupName,
+    backupPath,
+    backupsDir,
+    sizeBytes: fs.statSync(backupPath).size,
+  };
 }
 
-// --- Backup DB (copia consistente e download)
-router.get("/backup", async (req, res, next) => {
+// La creazione e' una mutazione esplicita. Il download separato puo' poi
+// trasferire il file con backpressure, senza caricarlo interamente in memoria.
+router.post("/backup", async (req, res, next) => {
   if (!beginBackup()) {
     res.setHeader("Retry-After", "2");
     return res.status(503).json({
@@ -500,14 +520,12 @@ router.get("/backup", async (req, res, next) => {
     });
   }
   try {
-    const { backupName, backupPath } = await createDatabaseBackup();
-
-    // Inviamo il file come buffer: il database e' piccolo e il download resta
-    // affidabile anche se la rotazione dei backup parte subito dopo.
-    const data = fs.readFileSync(backupPath);
-    res.setHeader("Content-Type", "application/x-sqlite3");
-    res.setHeader("Content-Disposition", `attachment; filename="${backupName}"`);
-    res.send(data);
+    const { backupName, sizeBytes } = await createDatabaseBackup();
+    res.status(201).json({
+      backup_name: backupName,
+      size_bytes: sizeBytes,
+      download_url: `/api/reports/backup/${encodeURIComponent(backupName)}`,
+    });
   } catch (err) {
     next(err);
   } finally {
@@ -515,10 +533,110 @@ router.get("/backup", async (req, res, next) => {
   }
 });
 
-const restoreBody = express.raw({
-  type: ["application/octet-stream", "application/x-sqlite3", "application/vnd.sqlite3"],
-  limit: "100mb",
+router.get("/backup", (req, res) => {
+  res.setHeader("Allow", "POST");
+  res.status(405).json({ error: "Usa POST per creare un nuovo backup" });
 });
+
+router.get("/backup/:filename", async (req, res, next) => {
+  const filename = String(req.params.filename || "");
+  const allowedName = new RegExp(
+    `^${config.SLUG}-(?:backup|pre-restore)-\\d{8}-\\d{6}(?:-\\d+)?\\.sqlite$`
+  );
+  if (!allowedName.test(filename)) {
+    return res.status(400).json({ error: "Nome backup non valido" });
+  }
+
+  const backupPath = path.resolve(getBackupsDir(), filename);
+  if (path.dirname(backupPath) !== getBackupsDir()) {
+    return res.status(400).json({ error: "Percorso backup non valido" });
+  }
+  let stat;
+  try {
+    stat = fs.lstatSync(backupPath);
+  } catch (error) {
+    if (error.code === "ENOENT") return res.status(404).json({ error: "Backup non trovato" });
+    return next(error);
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    return res.status(400).json({ error: "Backup non valido" });
+  }
+
+  res.setHeader("Content-Type", "application/x-sqlite3");
+  res.setHeader("Content-Length", stat.size);
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  try {
+    await pipeline(fs.createReadStream(backupPath), res);
+  } catch (error) {
+    if (!req.destroyed && !res.destroyed) next(error);
+  }
+});
+
+const RESTORE_MAX_BYTES = 100 * 1024 * 1024;
+
+function restoreUploadError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  error.publicMessage = message;
+  return error;
+}
+
+async function streamRestoreUpload(req, res, next) {
+  const contentType = String(req.get("Content-Type") || "").split(";", 1)[0].trim().toLowerCase();
+  const allowedTypes = new Set([
+    "application/octet-stream",
+    "application/x-sqlite3",
+    "application/vnd.sqlite3",
+  ]);
+  if (!allowedTypes.has(contentType)) {
+    return next(restoreUploadError(415, "Formato del backup non supportato"));
+  }
+
+  const declaredLength = Number(req.get("Content-Length"));
+  if (Number.isFinite(declaredLength) && declaredLength > RESTORE_MAX_BYTES) {
+    return next(restoreUploadError(413, "Il backup supera il limite di 100 MB"));
+  }
+
+  const candidatePath = `${DB_PATH}.restore-upload-${process.pid}-${crypto.randomUUID()}`;
+  let received = 0;
+  const limiter = new Transform({
+    transform(chunk, encoding, callback) {
+      received += chunk.length;
+      if (received > RESTORE_MAX_BYTES) {
+        callback(restoreUploadError(413, "Il backup supera il limite di 100 MB"));
+        return;
+      }
+      callback(null, chunk);
+    },
+  });
+
+  try {
+    await pipeline(
+      req,
+      limiter,
+      fs.createWriteStream(candidatePath, { flags: "wx", mode: 0o600 })
+    );
+    if (received === 0) throw restoreUploadError(400, "Seleziona un file di backup SQLite");
+    req.restoreCandidatePath = candidatePath;
+    next();
+  } catch (error) {
+    fs.rmSync(candidatePath, { force: true });
+    next(error);
+  }
+}
+
+function ensureRestoreCapacity(candidatePath) {
+  if (typeof fs.statfsSync !== "function") return;
+  const filesystem = fs.statfsSync(path.dirname(DB_PATH));
+  const available = Number(filesystem.bavail) * Number(filesystem.bsize);
+  const candidateSize = fs.statSync(candidatePath).size;
+  const currentSize = fs.existsSync(DB_PATH) ? fs.statSync(DB_PATH).size : 0;
+  const reserve = 10 * 1024 * 1024;
+  if (available < candidateSize + currentSize + reserve) {
+    throw restoreUploadError(507, "Spazio su disco insufficiente per completare il ripristino in sicurezza");
+  }
+}
 
 function requireRestoreConfirmation(req, res, next) {
   if (req.get("X-EventOrder-Restore") !== "RESTORE") {
@@ -544,22 +662,19 @@ function acquireRestoreLock(req, res, next) {
   next();
 }
 
+function requireClosedSession(req, res, next) {
+  if (getOpenSession()) {
+    return res.status(409).json({ error: "Chiudi la cassa prima di ripristinare un backup" });
+  }
+  next();
+}
+
 // Il lock precede il parser del file: anche durante un upload lento nessuna
 // nuova cassa o vendita puo' entrare nella finestra di ripristino.
-router.post("/restore", requireRestoreConfirmation, acquireRestoreLock, restoreBody, async (req, res, next) => {
-  let candidatePath;
+router.post("/restore", requireRestoreConfirmation, acquireRestoreLock, requireClosedSession, streamRestoreUpload, async (req, res, next) => {
+  let candidatePath = req.restoreCandidatePath;
   try {
-    if (getOpenSession()) {
-      return res.status(409).json({ error: "Chiudi la cassa prima di ripristinare un backup" });
-    }
-    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-      return res.status(400).json({ error: "Seleziona un file di backup SQLite" });
-    }
-
-    // Il candidato resta accanto al DB: la sostituzione finale puo' quindi
-    // usare rename atomico senza attraversare filesystem differenti.
-    candidatePath = `${DB_PATH}.restore-upload-${process.pid}-${crypto.randomUUID()}`;
-    fs.writeFileSync(candidatePath, req.body, { flag: "wx", mode: 0o600 });
+    ensureRestoreCapacity(candidatePath);
     const inspected = validateRestoreCandidate(candidatePath);
 
     // Questo backup non e' opzionale: se non riusciamo a crearlo il restore
@@ -581,7 +696,7 @@ router.post("/restore", requireRestoreConfirmation, acquireRestoreLock, restoreB
 });
 
 // Rotazione: conserva solo i BACKUP_KEEP file piu' recenti (0 = illimitato)
-function pruneBackups(backupsDir) {
+function pruneBackups(backupsDir, protectedName) {
   if (!config.BACKUP_KEEP) return;
   try {
     const files = fs.readdirSync(backupsDir)
@@ -589,11 +704,14 @@ function pruneBackups(backupsDir) {
       .map(f => ({ f, t: fs.statSync(path.join(backupsDir, f)).mtimeMs }))
       .sort((a, b) => b.t - a.t);
 
-    for (const { f } of files.slice(config.BACKUP_KEEP)) {
+    const older = files.filter(({ f }) => f !== protectedName);
+    for (const { f } of older.slice(Math.max(0, config.BACKUP_KEEP - 1))) {
       fs.rmSync(path.join(backupsDir, f), { force: true });
     }
-  } catch {
-    // la rotazione non deve mai far fallire il backup
+  } catch (error) {
+    // La rotazione non invalida un backup gia' riuscito, ma non deve restare
+    // invisibile agli operatori che controllano i log del processo.
+    console.warn("Rotazione backup non riuscita:", error.message);
   }
 }
 

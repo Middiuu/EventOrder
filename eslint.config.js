@@ -15,7 +15,7 @@ module.exports = [
   },
   js.configs.recommended,
   {
-    files: ["src/**/*.js", "test/**/*.js", "eslint.config.js"],
+    files: ["src/**/*.js", "test/**/*.js", "eslint.config.js", "playwright.config.js"],
     languageOptions: {
       ecmaVersion: "latest",
       sourceType: "commonjs",

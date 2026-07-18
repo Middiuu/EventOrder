@@ -145,10 +145,18 @@ test("flussi vendite, report, export, backup e annullo funzionano insieme", asyn
       assert.match(exportRes.text, /total_revenue_eur/);
       assert.match(exportRes.text, new RegExp(product.name));
 
-      const backupRes = await request({ url: "/api/reports/backup" });
+      const backupCreated = await request({ method: "POST", url: "/api/reports/backup" });
+      assert.equal(backupCreated.status, 201);
+      const backupRes = await request({ url: backupCreated.json().download_url });
       assert.equal(backupRes.status, 200);
       assert.match(String(backupRes.headers["content-disposition"]), /-backup-\d{8}-/);
       assert.ok(backupRes.buffer.length > 0);
+      assert.equal(Number(backupRes.headers["content-length"]), backupRes.buffer.length);
+      assert.equal(backupCreated.json().size_bytes, backupRes.buffer.length);
+      assert.equal(backupRes.headers["cache-control"], "no-store");
+      const unsafeGet = await request({ url: "/api/reports/backup" });
+      assert.equal(unsafeGet.status, 405);
+      assert.equal(unsafeGet.headers.allow, "POST");
 
       const voidRes = await request({
         method: "POST",
@@ -338,7 +346,12 @@ test("restore backup: valida il file, blocca il turno aperto e sostituisce il DB
       });
 
       assert.equal((await createProduct("Presente nel backup")).status, 200);
-      const backup = await request({ url: "/api/reports/backup" });
+      const instanceBeforeRestore = (await request({
+        url: "/api/sessions/current",
+      })).json().database_instance_id;
+      const backupCreated = await request({ method: "POST", url: "/api/reports/backup" });
+      assert.equal(backupCreated.status, 201);
+      const backup = await request({ url: backupCreated.json().download_url });
       assert.equal(backup.status, 200);
       assert.equal((await createProduct("Creato dopo il backup")).status, 200);
 
@@ -346,6 +359,16 @@ test("restore backup: valida il file, blocca il turno aperto e sostituisce il DB
         "Content-Type": "application/octet-stream",
         "X-EventOrder-Restore": "RESTORE",
       };
+      const unsupported = await request({
+        method: "POST",
+        url: "/api/reports/restore",
+        headers: {
+          "Content-Type": "text/plain",
+          "X-EventOrder-Restore": "RESTORE",
+        },
+        body: Buffer.from("non sqlite"),
+      });
+      assert.equal(unsupported.status, 415);
       const invalid = await request({
         method: "POST",
         url: "/api/reports/restore",
@@ -354,6 +377,10 @@ test("restore backup: valida il file, blocca il turno aperto e sostituisce il DB
       });
       assert.equal(invalid.status, 400);
       assert.match(invalid.json().error, /SQLite EventOrder valido/);
+      assert.equal(
+        fs.readdirSync(harness.tempDir).some(name => name.includes("restore-upload")),
+        false
+      );
 
       assert.equal((await request({
         method: "POST",
@@ -394,6 +421,10 @@ test("restore backup: valida il file, blocca il turno aperto e sostituisce il DB
       const products = (await request({ url: "/api/products/all" })).json();
       assert.equal(products.some(p => p.name === "Presente nel backup"), true);
       assert.equal(products.some(p => p.name === "Creato dopo il backup"), false);
+      const instanceAfterRestore = (await request({
+        url: "/api/sessions/current",
+      })).json().database_instance_id;
+      assert.notEqual(instanceAfterRestore, instanceBeforeRestore);
 
       // Le route devono usare subito la nuova connessione, incluse le
       // transazioni di vendita e storno create prima del restore.
@@ -521,11 +552,11 @@ test("un restore non puo' iniziare mentre un backup e' in corso", async () => {
   const harness = createHarness();
   try {
     await harness.withServer(async ({ request }) => {
-      const backupRequest = request({ url: "/api/reports/backup" });
+      const backupRequest = request({ method: "POST", url: "/api/reports/backup" });
       await backupStarted;
 
       try {
-        const secondBackup = await request({ url: "/api/reports/backup" });
+        const secondBackup = await request({ method: "POST", url: "/api/reports/backup" });
         assert.equal(secondBackup.status, 503);
         assert.equal(secondBackup.headers["retry-after"], "2");
         assert.match(secondBackup.json().error, /backup o ripristino/i);
@@ -547,7 +578,7 @@ test("un restore non puo' iniziare mentre un backup e' in corso", async () => {
       }
 
       const backup = await backupRequest;
-      assert.equal(backup.status, 200);
+      assert.equal(backup.status, 201);
     });
   } finally {
     releaseBackup();

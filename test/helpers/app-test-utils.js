@@ -102,6 +102,7 @@ function createHarness(options = {}) {
 
       try {
         return await run({
+          baseUrl,
           request: (reqOptions) => requestHttp(baseUrl, reqOptions),
         });
       } finally {

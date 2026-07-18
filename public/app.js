@@ -168,18 +168,31 @@ async function refreshShellData() {
 // ---- Navigazione client-side: niente reload/flash tra le sezioni
 const APP_PAGES = new Set(["/cassa.html", "/products.html", "/sales.html", "/reports.html"]);
 
+const scriptLoads = new Map();
+
 function ensureScript(src) {
-  return new Promise((resolve) => {
-    if ([...document.scripts].some(s => s.src.includes(src))) return resolve();
+  if (scriptLoads.has(src)) return scriptLoads.get(src);
+  const load = new Promise((resolve, reject) => {
+    const existing = [...document.scripts].find(script => script.src.endsWith(src));
+    if (existing?.dataset.loaded === "true") return resolve();
+    if (existing) existing.remove();
     const el = document.createElement("script");
     el.src = src;
-    el.onload = () => resolve();
-    el.onerror = () => resolve();
+    el.onload = () => {
+      el.dataset.loaded = "true";
+      resolve();
+    };
+    el.onerror = () => reject(new Error(`Risorsa frontend non disponibile: ${src}`));
     document.body.appendChild(el);
   });
+  scriptLoads.set(src, load);
+  load.catch(() => scriptLoads.delete(src));
+  return load;
 }
 
 let pageInitController = null;
+let navigationController = null;
+let navigationSequence = 0;
 
 async function runPageInits() {
   pageInitController?.abort();
@@ -208,9 +221,21 @@ function setActiveNav(url) {
 }
 
 async function clientNavigate(url, push = true) {
+  navigationController?.abort();
+  navigationController = new AbortController();
+  const { signal } = navigationController;
+  const sequence = ++navigationSequence;
   let html;
-  try { html = await (await fetch(url)).text(); }
-  catch { location.href = url; return; }
+  try {
+    const response = await fetch(url, { signal });
+    if (!response.ok) throw new Error(`Navigazione non riuscita (${response.status})`);
+    html = await response.text();
+  } catch (error) {
+    if (error.name === "AbortError") return;
+    location.href = url;
+    return;
+  }
+  if (signal.aborted || sequence !== navigationSequence) return;
 
   const doc = new DOMParser().parseFromString(html, "text/html");
   const newMain = doc.querySelector(".main");
@@ -226,8 +251,14 @@ async function clientNavigate(url, push = true) {
   window.scrollTo(0, 0);
 
   const page = document.body.dataset.page;
-  if (page === "prodotti") await ensureScript("/vendor/sortablejs/Sortable.min.js");
-  if (page === "report") await ensureScript("/vendor/chart.js/dist/chart.umd.min.js");
+  try {
+    if (page === "prodotti") await ensureScript("/vendor/sortablejs/Sortable.min.js");
+    if (page === "report") await ensureScript("/vendor/chart.js/dist/chart.umd.min.js");
+  } catch (error) {
+    console.error(error);
+    await uiAlert("Una risorsa della pagina non è disponibile. Alcune funzioni potrebbero essere disabilitate.", "Caricamento incompleto");
+  }
+  if (signal.aborted || sequence !== navigationSequence) return;
   await runPageInits();
   await refreshShellData();
 }
@@ -683,6 +714,7 @@ async function initCassa(signal) {
   let suspendAttempt = null;
   let resumeAttempt = null;
   let session = null;
+  let databaseInstanceId = null;
   let payMethod = "cash";
   let discType = "none"; // none | percent | amount | gift
   let movDirection = "out"; // out = prelievo | in = versamento
@@ -700,7 +732,9 @@ async function initCassa(signal) {
     try {
       const value = JSON.parse(localStorage.getItem(storageKey) || "null");
       if (!value) return null;
-      if (value.session_id !== session?.id || typeof value.requestId !== "string") {
+      if (value.session_id !== session?.id
+        || value.database_instance_id !== databaseInstanceId
+        || typeof value.requestId !== "string") {
         persistAttempt(storageKey, null);
         return null;
       }
@@ -713,22 +747,30 @@ async function initCassa(signal) {
 
   function setCheckoutAttempt(value) {
     checkoutAttempt = value;
-    persistAttempt(CHECKOUT_ATTEMPT_KEY, value ? { ...value, session_id: session?.id } : null);
+    persistAttempt(CHECKOUT_ATTEMPT_KEY, value ? {
+      ...value, session_id: session?.id, database_instance_id: databaseInstanceId,
+    } : null);
   }
 
   function setMovementAttempt(value) {
     movementAttempt = value;
-    persistAttempt(MOVEMENT_ATTEMPT_KEY, value ? { ...value, session_id: session?.id } : null);
+    persistAttempt(MOVEMENT_ATTEMPT_KEY, value ? {
+      ...value, session_id: session?.id, database_instance_id: databaseInstanceId,
+    } : null);
   }
 
   function setSuspendAttempt(value) {
     suspendAttempt = value;
-    persistAttempt(SUSPEND_ATTEMPT_KEY, value ? { ...value, session_id: session?.id } : null);
+    persistAttempt(SUSPEND_ATTEMPT_KEY, value ? {
+      ...value, session_id: session?.id, database_instance_id: databaseInstanceId,
+    } : null);
   }
 
   function setResumeAttempt(value) {
     resumeAttempt = value;
-    persistAttempt(RESUME_ATTEMPT_KEY, value ? { ...value, session_id: session?.id } : null);
+    persistAttempt(RESUME_ATTEMPT_KEY, value ? {
+      ...value, session_id: session?.id, database_instance_id: databaseInstanceId,
+    } : null);
   }
 
   function restoreCheckoutUi() {
@@ -836,6 +878,7 @@ async function initCassa(signal) {
       }
       localStorage.setItem(CART_DRAFT_KEY, JSON.stringify({
         session_id: session?.id ?? null,
+        database_instance_id: databaseInstanceId,
         saved_at: new Date().toISOString(),
         note: orderNoteEl?.value.trim() || null,
         items: Array.from(cart.values()).map(it => ({
@@ -859,7 +902,8 @@ async function initCassa(signal) {
       return { recovered: false, skipped: [] };
     }
     if (!draft || !Array.isArray(draft.items)) return { recovered: false, skipped: [] };
-    if (draft.session_id != null && draft.session_id !== session?.id) {
+    if (draft.database_instance_id !== databaseInstanceId
+      || (draft.session_id != null && draft.session_id !== session?.id)) {
       try { localStorage.removeItem(CART_DRAFT_KEY); } catch {}
       return { recovered: false, skipped: [] };
     }
@@ -959,8 +1003,10 @@ async function initCassa(signal) {
     try {
       const data = await api("/api/sessions/current");
       session = data.session || null;
+      databaseInstanceId = data.database_instance_id;
     } catch {
       session = null;
+      databaseInstanceId = null;
     }
     renderSession();
     renderCart();
@@ -2623,6 +2669,7 @@ async function initReportExport() {
   const btn = document.querySelector("#downloadCsvBtn");
   const txBtn = document.querySelector("#downloadTxCsvBtn");
   const itemsBtn = document.querySelector("#downloadItemsCsvBtn");
+  const createBackupBtn = document.querySelector("#createBackupBtn");
   const restoreFile = document.querySelector("#restoreFile");
   const selectRestoreFileBtn = document.querySelector("#selectRestoreFileBtn");
   const restoreBackupBtn = document.querySelector("#restoreBackupBtn");
@@ -2668,6 +2715,29 @@ async function initReportExport() {
   btn.onclick = () => download("/api/reports/export.csv", "CSV prodotti");
   if (txBtn) txBtn.onclick = () => download("/api/reports/transactions.csv", "CSV transazioni");
   if (itemsBtn) itemsBtn.onclick = () => download("/api/reports/items.csv", "CSV righe vendute");
+
+  if (createBackupBtn) {
+    createBackupBtn.onclick = async () => {
+      const previousLabel = createBackupBtn.textContent;
+      createBackupBtn.disabled = true;
+      createBackupBtn.textContent = "Creazione in corso…";
+      try {
+        const created = await api("/api/reports/backup", { method: "POST" });
+        const link = document.createElement("a");
+        link.href = created.download_url;
+        link.download = created.backup_name;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        showToast(`Backup creato • ${created.backup_name}`);
+      } catch (error) {
+        await uiError(error);
+      } finally {
+        createBackupBtn.disabled = false;
+        createBackupBtn.textContent = previousLabel;
+      }
+    };
+  }
 
   if (selectRestoreFileBtn && restoreFile) {
     selectRestoreFileBtn.onclick = () => restoreFile.click();

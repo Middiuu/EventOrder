@@ -1,5 +1,5 @@
 const express = require("express");
-const { db, getOpenSession } = require("../db");
+const { db, getDatabaseInstanceId, getOpenSession } = require("../db");
 const { config } = require("../config");
 const { hasPendingSaleForSession } = require("../pending-sales");
 const {
@@ -160,7 +160,10 @@ router.get("/", (req, res) => {
 
 // Turno attualmente aperto (con totali live) o null
 router.get("/current", (req, res) => {
-  res.json({ session: withTotals(getOpenSession()) || null });
+  res.json({
+    session: withTotals(getOpenSession()) || null,
+    database_instance_id: getDatabaseInstanceId(),
+  });
 });
 
 // Dettaglio/report di un turno specifico
