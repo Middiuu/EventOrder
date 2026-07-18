@@ -1,6 +1,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createHarness } = require("./helpers/app-test-utils");
+const { allocateNetByItem } = require("../src/reporting/service");
 
 const pad2 = (n) => String(n).padStart(2, "0");
 const localYmd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
@@ -16,6 +17,21 @@ function postJson(request, url, body) {
     body: JSON.stringify(body),
   });
 }
+
+test("la ripartizione sconto usa aritmetica intera anche oltre la precisione dei prodotti Number", () => {
+  const items = [
+    { id: 1, line_total_cents: 500_000_000_001 },
+    { id: 2, line_total_cents: 499_999_999_999 },
+  ];
+  const allocation = allocateNetByItem({
+    total_cents: 999_999_999_999,
+    discount_cents: 1,
+  }, items);
+
+  assert.equal(allocation.get(1), 500_000_000_000);
+  assert.equal(allocation.get(2), 499_999_999_999);
+  assert.equal([...allocation.values()].reduce((sum, value) => sum + value, 0), 999_999_999_999);
+});
 
 test("summary: sconto ripartito sui prodotti al centesimo e filtro per data", async () => {
   const harness = createHarness({ printTicket: async () => {} });
@@ -65,6 +81,52 @@ test("summary: sconto ripartito sui prodotti al centesimo e filtro per data", as
       // date non valide -> 400
       assert.equal((await request({ url: "/api/reports/summary?from=2026-02-31" })).status, 400);
       assert.equal((await request({ url: `/api/reports/summary?from=${TOMORROW}&to=${TOMORROW}` })).status, 400);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("summary non fonde prodotti distinti con lo stesso nome storico", async () => {
+  const harness = createHarness({ printTicket: async () => {} });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const firstId = (await postJson(request, "/api/products", {
+        name: "Nome riutilizzato",
+        price_cents: 500,
+      })).json().id;
+      await postJson(request, "/api/sessions/open", { opening_float_cents: 0 });
+      await postJson(request, "/api/sales/print", {
+        items: [{ product_id: firstId, qty: 1 }],
+      });
+      const renamed = await request({
+        method: "PATCH",
+        url: `/api/products/${firstId}`,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Primo prodotto rinominato" }),
+      });
+      assert.equal(renamed.status, 200);
+
+      const secondId = (await postJson(request, "/api/products", {
+        name: "Nome riutilizzato",
+        price_cents: 700,
+      })).json().id;
+      await postJson(request, "/api/sales/print", {
+        items: [{ product_id: secondId, qty: 1 }],
+      });
+
+      const data = (await request({ url: "/api/reports/summary" })).json();
+      const reusedName = data.byProduct.filter(product => product.name === "Nome riutilizzato");
+      assert.equal(reusedName.length, 2);
+      assert.deepEqual(
+        reusedName.map(product => product.product_id).sort((a, b) => a - b),
+        [firstId, secondId]
+      );
+      assert.deepEqual(
+        reusedName.map(product => product.gross_revenue_cents).sort((a, b) => a - b),
+        [500, 700]
+      );
     });
   } finally {
     harness.cleanup();
