@@ -6,6 +6,10 @@ function escapeLikeTerm(value) {
   return value.replace(/[\\%_]/g, "\\$&");
 }
 
+function ftsPhrase(value) {
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
 function createSalesHistory({ database, getOpenSession, isSalePending, paymentMethods }) {
   function decorate(sales) {
     const itemsBySale = loadSaleItems(database, sales.map(sale => sale.id));
@@ -79,8 +83,16 @@ function createSalesHistory({ database, getOpenSession, isSalePending, paymentMe
     if (query.product) {
       const product = cleanText(String(query.product), 120);
       if (!product) throw badRequest("Prodotto non valido");
-      where.push("EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_id = sales.id AND si.product_name LIKE ? ESCAPE '\\')");
-      params.push(`%${escapeLikeTerm(product)}%`);
+      if ([...product].length < 3) {
+        throw badRequest("La ricerca prodotto richiede almeno 3 caratteri");
+      }
+      where.push(`id IN (
+        SELECT si.sale_id
+        FROM sale_items_search
+        JOIN sale_items si ON si.id = sale_items_search.rowid
+        WHERE sale_items_search MATCH ?
+      )`);
+      params.push(ftsPhrase(product));
     }
 
     if (query.method) {

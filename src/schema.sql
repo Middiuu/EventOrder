@@ -161,6 +161,15 @@ CREATE TABLE IF NOT EXISTS operation_requests (
   FOREIGN KEY (session_id) REFERENCES cash_sessions(id)
 );
 
+-- Indice derivato per la ricerca parziale nello storico. Il tokenizer trigram
+-- consente ricerche substring senza scansioni complete di sale_items.
+CREATE VIRTUAL TABLE IF NOT EXISTS sale_items_search USING fts5(
+  product_name,
+  content='sale_items',
+  content_rowid='id',
+  tokenize='trigram remove_diacritics 1'
+);
+
 CREATE INDEX IF NOT EXISTS idx_products_active ON products(active, sort_order);
 CREATE INDEX IF NOT EXISTS idx_cash_movements_session ON cash_movements(session_id);
 CREATE INDEX IF NOT EXISTS idx_operation_requests_created_at ON operation_requests(created_at);

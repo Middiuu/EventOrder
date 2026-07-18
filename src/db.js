@@ -8,7 +8,7 @@ const DB_PATH = process.env.POS_DB_PATH
   ? path.resolve(process.env.POS_DB_PATH)
   : path.join(__dirname, "..", "pos.sqlite");
 const SCHEMA_PATH = path.join(__dirname, "schema.sql");
-const DB_SCHEMA_VERSION = 9;
+const DB_SCHEMA_VERSION = 10;
 const DB_BUSY_TIMEOUT_MS = 5000;
 const RESTORE_MARKER_PATH = `${DB_PATH}.restore-state.json`;
 const MIGRATION_MARKER_PATH = `${DB_PATH}.migration-state.json`;
@@ -268,13 +268,21 @@ const DROP_TABLE_ORDER = [
   "app_state",
 ];
 
+const DERIVED_SEARCH_TABLES = [
+  "sale_items_search",
+  "sale_items_search_config",
+  "sale_items_search_data",
+  "sale_items_search_docsize",
+  "sale_items_search_idx",
+];
+
 // Ogni versione legacy supportata deve comparire una sola volta in una
 // definizione diretta verso il target corrente. A ogni bump il registro va
 // aggiornato esplicitamente, separando in piu' voci le versioni che richiedono
 // mappature vecchio->nuovo differenti.
 const CANONICAL_REBUILD_MIGRATION = Object.freeze({
-  targetVersion: 9,
-  sourceVersions: Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 8]),
+  targetVersion: 10,
+  sourceVersions: Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
   columnMappings: Object.freeze({}),
 });
 const SCHEMA_MIGRATIONS = Object.freeze([CANONICAL_REBUILD_MIGRATION]);
@@ -505,6 +513,14 @@ function migrateLegacySchema(database, schema, previousVersion) {
         `);
       }
 
+      // L'indice FTS e' derivato: non copiamo strutture o segmenti ricevuti da
+      // database legacy/restore, ma li rigeneriamo dallo snapshot canonico.
+      for (const table of DERIVED_SEARCH_TABLES) {
+        if (tableExistsIn(database, table)) {
+          database.exec(`DROP TABLE ${quoteIdentifier(table)}`);
+        }
+      }
+
       for (const table of DROP_TABLE_ORDER) {
         if (tableExistsIn(database, table)) {
           database.exec(`DROP TABLE ${quoteIdentifier(table)}`);
@@ -521,6 +537,9 @@ function migrateLegacySchema(database, schema, previousVersion) {
       // Ricrea anche indici e vincoli di unicita' prima del commit: eventuali
       // duplicati legacy fanno fallire e annullare l'intera migrazione.
       database.exec(schema);
+      database.exec(`
+        INSERT INTO sale_items_search(sale_items_search) VALUES('rebuild');
+      `);
       const foreignKeyErrors = database.pragma("foreign_key_check");
       if (foreignKeyErrors.length > 0) {
         const first = foreignKeyErrors[0];
@@ -790,13 +809,14 @@ function validateRestoreCandidate(candidatePath) {
       throw restoreError("Il file non e' un backup EventOrder supportato");
     }
 
+    const allowedTables = [...CANONICAL_TABLES, ...DERIVED_SEARCH_TABLES];
     const unexpectedTable = candidate.prepare(`
       SELECT name FROM sqlite_master
       WHERE type = 'table'
         AND name NOT LIKE 'sqlite_%'
-        AND name NOT IN (${CANONICAL_TABLES.map(() => "?").join(",")})
+        AND name NOT IN (${allowedTables.map(() => "?").join(",")})
       LIMIT 1
-    `).get(...CANONICAL_TABLES);
+    `).get(...allowedTables);
     if (unexpectedTable) {
       throw restoreError(`Backup non valido: tabella inattesa ${unexpectedTable.name}`);
     }

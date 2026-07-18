@@ -454,9 +454,9 @@ test("restore backup: valida il file, blocca il turno aperto e sostituisce il DB
   }
 });
 
-test("restore rifiuta un database v9 non canonico con dati fuori vincolo", async () => {
+test("restore rifiuta un database v10 non canonico con dati fuori vincolo", async () => {
   const harness = createHarness();
-  const candidatePath = path.join(harness.tempDir, "malformed-v9.sqlite");
+  const candidatePath = path.join(harness.tempDir, "malformed-v10.sqlite");
   const Database = require("better-sqlite3");
 
   try {
@@ -469,7 +469,7 @@ test("restore rifiuta un database v9 non canonico con dati fuori vincolo", async
       CREATE TABLE app_state (key TEXT PRIMARY KEY, int_value INTEGER);
       INSERT INTO products VALUES (1, 'Prezzo impossibile', -500, 'Test');
       INSERT INTO app_state VALUES ('sale_number', 0);
-      PRAGMA user_version = 9;
+      PRAGMA user_version = 10;
     `);
     candidate.close();
 

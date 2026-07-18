@@ -331,8 +331,11 @@ function createCheckoutService({
            options_json, note)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
+      const indexItemName = database.prepare(`
+        INSERT INTO sale_items_search(rowid, product_name) VALUES (?, ?)
+      `);
       for (const item of computedItems) {
-        insertItem.run(
+        const itemInfo = insertItem.run(
           saleId,
           item.product_id,
           item.qty,
@@ -346,6 +349,7 @@ function createCheckoutService({
           item.options_json,
           item.note
         );
+        indexItemName.run(itemInfo.lastInsertRowid, item.name);
       }
       const decrementStock = database.prepare(`
         UPDATE products SET stock = stock - ? WHERE id = ? AND stock IS NOT NULL

@@ -166,6 +166,23 @@ test("summary aggrega 100.000 vendite senza materializzarle in memoria", async (
       assert.equal(response.json().summary.sales_count, 100000);
       assert.equal(response.json().summary.revenue_cents, 10000000);
       assert.equal(response.json().byProduct[0].qty_sold, 100000);
+
+      db.prepare(`
+        UPDATE sale_items SET product_name = 'Prodotto Rarissimo'
+        WHERE id = (SELECT MAX(id) FROM sale_items)
+      `).run();
+      db.exec("INSERT INTO sale_items_search(sale_items_search) VALUES('rebuild')");
+      const searchPlan = db.prepare(`
+        EXPLAIN QUERY PLAN
+        SELECT si.sale_id
+        FROM sale_items_search
+        JOIN sale_items si ON si.id = sale_items_search.rowid
+        WHERE sale_items_search MATCH ?
+      `).all('"rarissimo"').map(row => row.detail).join(" | ");
+      assert.match(searchPlan, /VIRTUAL TABLE INDEX/);
+      const rare = (await request({ url: "/api/sales?product=rarissimo&limit=10" })).json();
+      assert.equal(rare.length, 1);
+      assert.equal(rare[0].sale_number, 100000);
     });
   } finally {
     harness.cleanup();
@@ -366,7 +383,7 @@ test("storico vendite filtrabile per numero, data, prodotto, operatore, metodo e
       assert.equal((await query("method=card")).length, 1);
       assert.equal((await query("status=voided")).length, 1);
       assert.equal((await query("status=valid")).length, 2);
-      assert.equal((await query(`product=${encodeURIComponent(pB.name)}`)).length, 1);
+      assert.equal((await query(`product=${encodeURIComponent("dotto B")}`)).length, 1);
       assert.equal((await query(`from=${TODAY}&to=${TODAY}`)).length, 3);
       assert.equal((await query(`from=${TOMORROW}`)).length, 0);
       // combinazione di filtri
@@ -376,6 +393,7 @@ test("storico vendite filtrabile per numero, data, prodotto, operatore, metodo e
       assert.equal((await request({ url: "/api/sales?status=boh" })).status, 400);
       assert.equal((await request({ url: "/api/sales?from=2026-13-01" })).status, 400);
       assert.equal((await request({ url: "/api/sales?number=-1" })).status, 400);
+      assert.equal((await request({ url: "/api/sales?product=ab" })).status, 400);
     });
   } finally {
     harness.cleanup();
