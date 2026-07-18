@@ -1119,6 +1119,15 @@ test("validazione rigorosa: rifiuta centesimi frazionari e carrelli parzialmente
       });
       assert.equal(duplicate.status, 400);
 
+      const emptyInvalidPayment = await request({
+        method: "POST",
+        url: "/api/sales/print",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: [], payment_method: "bitcoin" }),
+      });
+      assert.equal(emptyInvalidPayment.status, 400);
+      assert.equal(emptyInvalidPayment.json().error, "Carrello vuoto");
+
       const sales = (await request({ url: "/api/sales" })).json();
       assert.equal(sales.length, 0);
 
