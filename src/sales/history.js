@@ -1,0 +1,108 @@
+const { cleanText, localYmdToUtcSql, parseLocalYmd } = require("../validation");
+const { badRequest } = require("./errors");
+const { loadSaleItems } = require("./items");
+
+function escapeLikeTerm(value) {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
+function createSalesHistory({ database, getOpenSession, isSalePending, paymentMethods }) {
+  function decorate(sales) {
+    const itemsBySale = loadSaleItems(database, sales.map(sale => sale.id));
+    const openSession = getOpenSession();
+    return sales.map(sale => ({
+      ...sale,
+      can_void: !sale.voided && sale.session_id === openSession?.id,
+      can_reprint: !sale.voided && !isSalePending(sale.id),
+      items: itemsBySale.get(sale.id) || [],
+    }));
+  }
+
+  function list(query) {
+    const requestedLimit = query.limit === undefined ? 50 : Number(query.limit);
+    if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1) {
+      throw badRequest("Limite non valido");
+    }
+    const limit = Math.min(500, requestedLimit);
+    const where = [];
+    const params = [];
+
+    if (query.session !== undefined) {
+      const sessionId = Number(query.session);
+      if (!Number.isSafeInteger(sessionId) || sessionId <= 0) {
+        throw badRequest("Turno non valido");
+      }
+      where.push("session_id = ?");
+      params.push(sessionId);
+    }
+
+    if (query.number !== undefined && query.number !== "") {
+      const number = Number(query.number);
+      if (!Number.isSafeInteger(number) || number <= 0) {
+        throw badRequest("Numero vendita non valido");
+      }
+      where.push("sale_number = ?");
+      params.push(number);
+    }
+
+    if (query.from) {
+      if (!parseLocalYmd(query.from)) {
+        throw badRequest("Data 'from' non valida: usa YYYY-MM-DD");
+      }
+      where.push("created_at >= ?");
+      params.push(localYmdToUtcSql(query.from));
+    }
+    if (query.to) {
+      if (!parseLocalYmd(query.to)) {
+        throw badRequest("Data 'to' non valida: usa YYYY-MM-DD");
+      }
+      where.push("created_at < ?");
+      params.push(localYmdToUtcSql(query.to, 1));
+    }
+
+    if (query.operator) {
+      const operator = cleanText(String(query.operator), 80);
+      if (!operator) throw badRequest("Operatore non valido");
+      where.push("operator LIKE ? ESCAPE '\\'");
+      params.push(`%${escapeLikeTerm(operator)}%`);
+    }
+
+    if (query.product) {
+      const product = cleanText(String(query.product), 120);
+      if (!product) throw badRequest("Prodotto non valido");
+      where.push("EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_id = sales.id AND si.product_name LIKE ? ESCAPE '\\')");
+      params.push(`%${escapeLikeTerm(product)}%`);
+    }
+
+    if (query.method) {
+      const method = String(query.method);
+      if (!paymentMethods.has(method)) throw badRequest("Metodo di pagamento non valido");
+      where.push("payment_method = ?");
+      params.push(method);
+    }
+
+    if (query.status) {
+      const status = String(query.status);
+      if (status !== "valid" && status !== "voided") {
+        throw badRequest("Stato non valido: usa 'valid' o 'voided'");
+      }
+      where.push("voided = ?");
+      params.push(status === "voided" ? 1 : 0);
+    }
+
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const rows = database.prepare(`
+      SELECT * FROM sales ${whereSql} ORDER BY id DESC LIMIT ?
+    `).all(...params, limit);
+    return decorate(rows);
+  }
+
+  function findById(id) {
+    const sale = database.prepare("SELECT * FROM sales WHERE id = ?").get(id);
+    return sale ? decorate([sale])[0] : null;
+  }
+
+  return { findById, list };
+}
+
+module.exports = { createSalesHistory, escapeLikeTerm };

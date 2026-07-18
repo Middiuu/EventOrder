@@ -1,5 +1,4 @@
 const express = require("express");
-const crypto = require("crypto");
 const { db, getNextSaleNumber, getOpenSession } = require("../db");
 const {
   hasPendingSaleForSession,
@@ -13,23 +12,21 @@ const {
   MAX_QTY,
   cleanText,
   isValidCents,
-  localYmdToUtcSql,
-  parseLocalYmd,
 } = require("../validation");
 const { loadOptionCatalog, resolveSelectedOptions } = require("../product-options");
+const { IDEMPOTENCY_KEY_RE, fingerprint } = require("../idempotency");
+const { conflictError } = require("../sales/errors");
+const { createSalesHistory } = require("../sales/history");
+const { createSalesPrinting } = require("../sales/printing");
+const { createSaleVoiding } = require("../sales/voiding");
 
 const PAYMENT_METHODS = new Set(["cash", "card", "other"]);
-const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9._:-]{8,120}$/;
-
-function escapeLikeTerm(value) {
-  return value.replace(/[\\%_]/g, "\\$&");
-}
 
 function idempotencyFingerprint(sessionId, normalized, paymentMethod, body) {
   const discount = body?.discount && body.discount.type
     ? { type: String(body.discount.type), value: body.discount.value ?? null }
     : null;
-  const canonical = JSON.stringify({
+  return fingerprint({
     session_id: sessionId,
     items: normalized,
     payment_method: paymentMethod,
@@ -37,7 +34,6 @@ function idempotencyFingerprint(sessionId, normalized, paymentMethod, body) {
     note: body?.note ?? null,
     discount,
   });
-  return crypto.createHash("sha256").update(canonical).digest("hex");
 }
 
 function replayExistingSale(res, clientRequestId, fingerprint) {
@@ -93,191 +89,21 @@ function replayExistingSale(res, clientRequestId, fingerprint) {
   });
 }
 
-function loadItems(saleIds) {
-  if (saleIds.length === 0) return new Map();
-  const placeholders = saleIds.map(() => "?").join(",");
-  const rows = db.prepare(`
-    SELECT si.sale_id, si.product_id, si.qty, si.unit_price_cents,
-           si.base_unit_price_cents, si.options_json, si.note,
-           si.line_total_cents, si.product_name AS name,
-           si.product_category AS category
-    FROM sale_items si
-    WHERE si.sale_id IN (${placeholders})
-    ORDER BY si.id ASC
-  `).all(...saleIds);
-
-  const map = new Map();
-  for (const r of rows) {
-    try { r.options = JSON.parse(r.options_json || "[]"); } catch { r.options = []; }
-    delete r.options_json;
-    if (!map.has(r.sale_id)) map.set(r.sale_id, []);
-    map.get(r.sale_id).push(r);
-  }
-  return map;
-}
-
-function conflictError(message) {
-  const err = new Error(message);
-  err.status = 409;
-  err.publicMessage = message;
-  return err;
-}
-
-function printableError(err) {
-  const message = String(err?.message || err || "Errore stampante")
-    .replace(/[\r\n\t]+/g, " ")
-    .trim();
-  return (message || "Errore stampante").slice(0, 500);
-}
-
-function beginPrintAttempt(saleId) {
-  db.prepare(`
-    UPDATE sales
-    SET print_status='pending', print_attempts=print_attempts+1,
-        last_print_error=NULL, last_print_attempt_at=datetime('now')
-    WHERE id=? AND voided=0
-  `).run(saleId);
-}
-
-function completePrintAttempt(saleId) {
-  db.prepare(`
-    UPDATE sales
-    SET print_status='printed', last_print_error=NULL,
-        last_printed_at=datetime('now')
-    WHERE id=? AND voided=0
-  `).run(saleId);
-}
-
-function failPrintAttempt(saleId, message) {
-  db.prepare(`
-    UPDATE sales
-    SET print_status='failed', last_print_error=?
-    WHERE id=? AND voided=0
-  `).run(message, saleId);
-}
-
-function printState(saleId) {
-  return db.prepare(`
-    SELECT print_status, print_attempts, last_print_error,
-           last_print_attempt_at, last_printed_at
-    FROM sales WHERE id=?
-  `).get(saleId);
-}
-
-function expectedCashForSession(sessionId) {
-  return db.prepare(`
-    SELECT
-      cs.opening_float_cents
-      + COALESCE((
-          SELECT SUM(s.total_cents) FROM sales s
-          WHERE s.session_id = cs.id AND s.voided = 0 AND s.payment_method = 'cash'
-        ), 0)
-      + COALESCE((
-          SELECT SUM(cm.amount_cents) FROM cash_movements cm
-          WHERE cm.session_id = cs.id AND cm.direction = 'in'
-        ), 0)
-      - COALESCE((
-          SELECT SUM(cm.amount_cents) FROM cash_movements cm
-          WHERE cm.session_id = cs.id AND cm.direction = 'out'
-        ), 0) AS expected_cash_cents
-    FROM cash_sessions cs
-    WHERE cs.id = ?
-  `).get(sessionId)?.expected_cash_cents;
-}
-
-// Storno idempotente con ripristino della sola quantità effettivamente
-// decrementata alla vendita. Gli storni manuali proteggono inoltre l'invariante
-// dei contanti attesi, evitando di lasciare il turno in uno stato non chiudibile.
-function voidSale(saleId, reason, operator, protectExpectedCash = true) {
-  // La transazione viene costruita sulla connessione corrente: dopo un restore
-  // non deve restare legata all'istanza SQLite che e' stata chiusa.
-  return db.transaction(() => {
-    const sale = db.prepare(`
-      SELECT id, session_id, payment_method, total_cents, voided
-      FROM sales WHERE id = ?
-    `).get(saleId);
-    if (!sale || sale.voided) return false;
-
-    if (protectExpectedCash && sale.payment_method === "cash") {
-      const expected = expectedCashForSession(sale.session_id);
-      if (expected != null && expected - sale.total_cents < 0) {
-        throw conflictError(
-          "Lo storno renderebbe negativi i contanti attesi. Registra prima un versamento di cassa sufficiente."
-        );
-      }
-    }
-
-    const updated = db.prepare(`
-      UPDATE sales
-      SET voided=1, void_reason=?, voided_at=datetime('now'), void_operator=?
-      WHERE id=? AND voided=0
-    `).run(reason, operator, saleId);
-    if (updated.changes !== 1) return false;
-
-    const items = db.prepare(`
-      SELECT product_id, stock_decremented_qty
-      FROM sale_items WHERE sale_id=?
-    `).all(saleId);
-    const incStock = db.prepare(`
-      UPDATE products SET stock = stock + ? WHERE id = ? AND stock IS NOT NULL
-    `);
-    for (const it of items) {
-      if (it.stock_decremented_qty > 0) {
-        incStock.run(it.stock_decremented_qty, it.product_id);
-      }
-    }
-    return true;
-  })();
-}
-
 function createSalesRouter({ printTicket }) {
   const router = express.Router();
-
-  async function attemptSalePrint(saleId, sessionId, payload) {
-    markSalePending(saleId, sessionId);
-    try {
-      beginPrintAttempt(saleId);
-      await printTicket(payload);
-      completePrintAttempt(saleId);
-      return { ok: true, state: printState(saleId) };
-    } catch (err) {
-      const message = printableError(err);
-      console.error(`Stampa vendita #${payload.saleNumber} non riuscita: ${message}`);
-      failPrintAttempt(saleId, message);
-      return { ok: false, message, state: printState(saleId) };
-    } finally {
-      unmarkSalePending(saleId);
-    }
-  }
-
-  function loadPrintPayload(saleId) {
-    const sale = db.prepare(`
-      SELECT id, sale_number, created_at, total_cents, discount_cents,
-             discount_type, discount_value, payment_method,
-             cash_received_cents, change_cents, operator, session_id, note, voided
-      FROM sales WHERE id=?
-    `).get(saleId);
-    if (!sale) return null;
-    const items = loadItems([saleId]).get(saleId) || [];
-    return {
-      sale,
-      payload: {
-        saleNumber: sale.sale_number,
-        createdAt: sale.created_at,
-        items,
-        subtotalCents: sale.total_cents + sale.discount_cents,
-        discountCents: sale.discount_cents,
-        discountType: sale.discount_type,
-        discountValue: sale.discount_value,
-        totalCents: sale.total_cents,
-        paymentMethod: sale.payment_method,
-        cashReceivedCents: sale.cash_received_cents,
-        changeCents: sale.change_cents,
-        operator: sale.operator,
-        orderNote: sale.note,
-      },
-    };
-  }
+  const history = createSalesHistory({
+    database: db,
+    getOpenSession,
+    isSalePending,
+    paymentMethods: PAYMENT_METHODS,
+  });
+  const printing = createSalesPrinting({
+    database: db,
+    printTicket,
+    markSalePending,
+    unmarkSalePending,
+  });
+  const { voidSale } = createSaleVoiding(db);
 
   router.post("/print", async (req, res) => {
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
@@ -575,7 +401,7 @@ function createSalesRouter({ printTicket }) {
       }
       throw err;
     }
-    const printed = await attemptSalePrint(result.saleId, session.id, {
+    const printed = await printing.attempt(result.saleId, session.id, {
       saleNumber: result.saleNumber,
       createdAt: result.createdAt,
       items: computedItems,
@@ -614,113 +440,16 @@ function createSalesRouter({ printTicket }) {
     });
   });
 
-  // Elenco vendite recenti, filtrabile per numero, data, prodotto,
-  // operatore, metodo, stato e turno.
   router.get("/", (req, res) => {
-    const requestedLimit = req.query.limit === undefined ? 50 : Number(req.query.limit);
-    if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1) {
-      return res.status(400).json({ error: "Limite non valido" });
-    }
-    const limit = Math.min(500, requestedLimit);
-
-    const where = [];
-    const params = [];
-
-    if (req.query.session !== undefined) {
-      const sessionId = Number(req.query.session);
-      if (!Number.isSafeInteger(sessionId) || sessionId <= 0) {
-        return res.status(400).json({ error: "Turno non valido" });
-      }
-      where.push("session_id = ?");
-      params.push(sessionId);
-    }
-
-    if (req.query.number !== undefined && req.query.number !== "") {
-      const number = Number(req.query.number);
-      if (!Number.isSafeInteger(number) || number <= 0) {
-        return res.status(400).json({ error: "Numero vendita non valido" });
-      }
-      where.push("sale_number = ?");
-      params.push(number);
-    }
-
-    // Date locali inclusive (from <= giorno <= to)
-    if (req.query.from) {
-      if (!parseLocalYmd(req.query.from)) {
-        return res.status(400).json({ error: "Data 'from' non valida: usa YYYY-MM-DD" });
-      }
-      where.push("created_at >= ?");
-      params.push(localYmdToUtcSql(req.query.from));
-    }
-    if (req.query.to) {
-      if (!parseLocalYmd(req.query.to)) {
-        return res.status(400).json({ error: "Data 'to' non valida: usa YYYY-MM-DD" });
-      }
-      where.push("created_at < ?");
-      params.push(localYmdToUtcSql(req.query.to, 1));
-    }
-
-    if (req.query.operator) {
-      const operator = cleanText(String(req.query.operator), 80);
-      if (!operator) return res.status(400).json({ error: "Operatore non valido" });
-      where.push("operator LIKE ? ESCAPE '\\'");
-      params.push(`%${escapeLikeTerm(operator)}%`);
-    }
-
-    if (req.query.product) {
-      const product = cleanText(String(req.query.product), 120);
-      if (!product) return res.status(400).json({ error: "Prodotto non valido" });
-      where.push("EXISTS (SELECT 1 FROM sale_items si WHERE si.sale_id = sales.id AND si.product_name LIKE ? ESCAPE '\\')");
-      params.push(`%${escapeLikeTerm(product)}%`);
-    }
-
-    if (req.query.method) {
-      const method = String(req.query.method);
-      if (!PAYMENT_METHODS.has(method)) {
-        return res.status(400).json({ error: "Metodo di pagamento non valido" });
-      }
-      where.push("payment_method = ?");
-      params.push(method);
-    }
-
-    if (req.query.status) {
-      const status = String(req.query.status);
-      if (status !== "valid" && status !== "voided") {
-        return res.status(400).json({ error: "Stato non valido: usa 'valid' o 'voided'" });
-      }
-      where.push("voided = ?");
-      params.push(status === "voided" ? 1 : 0);
-    }
-
-    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-    const rows = db.prepare(`
-      SELECT * FROM sales ${whereSql} ORDER BY id DESC LIMIT ?
-    `).all(...params, limit);
-
-    const itemsBySale = loadItems(rows.map(r => r.id));
-    const openSession = getOpenSession();
-    res.json(rows.map(r => ({
-      ...r,
-      can_void: !r.voided && r.session_id === openSession?.id,
-      can_reprint: !r.voided && !isSalePending(r.id),
-      items: itemsBySale.get(r.id) || [],
-    })));
+    res.json(history.list(req.query));
   });
 
-  // Dettaglio singola vendita
   router.get("/:id", (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: "Id non valido" });
-    const sale = db.prepare("SELECT * FROM sales WHERE id = ?").get(id);
+    const sale = history.findById(id);
     if (!sale) return res.status(404).json({ error: "Vendita non trovata" });
-    const items = loadItems([id]).get(id) || [];
-    const openSession = getOpenSession();
-    res.json({
-      ...sale,
-      can_void: !sale.voided && sale.session_id === openSession?.id,
-      can_reprint: !sale.voided && !isSalePending(sale.id),
-      items,
-    });
+    res.json(sale);
   });
 
   // Ristampa esplicita e idempotente rispetto alla vendita: non crea una
@@ -734,13 +463,13 @@ function createSalesRouter({ printTicket }) {
       return res.status(409).json({ error: "Una stampa di questa vendita e' gia' in corso" });
     }
 
-    const loaded = loadPrintPayload(id);
+    const loaded = printing.loadPayload(id);
     if (!loaded) return res.status(404).json({ error: "Vendita non trovata" });
     if (loaded.sale.voided) {
       return res.status(409).json({ error: "Non puoi ristampare una vendita annullata" });
     }
 
-    const printed = await attemptSalePrint(
+    const printed = await printing.attempt(
       loaded.sale.id,
       loaded.sale.session_id,
       loaded.payload
