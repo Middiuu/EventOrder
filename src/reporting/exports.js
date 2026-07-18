@@ -122,7 +122,7 @@ function itemRowsForSale(sale, items) {
 }
 
 function itemRows(database, scope) {
-  const statement = iterateScopedItems(database, scope);
+  const statement = iterateScopedItems(database, scope, { includeVoided: true });
   return (function* generate() {
     let sale = null;
     let items = [];

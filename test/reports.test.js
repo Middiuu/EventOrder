@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createHarness } = require("./helpers/app-test-utils");
 const { allocateNetByItem } = require("../src/reporting/service");
+const reportQueries = require("../src/reporting/queries");
 
 const pad2 = (n) => String(n).padStart(2, "0");
 const localYmd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
@@ -133,7 +134,7 @@ test("summary non fonde prodotti distinti con lo stesso nome storico", async () 
   }
 });
 
-test("summary gestisce oltre il limite SQLite di variabili senza costruire un IN per vendita", async () => {
+test("summary aggrega 100.000 vendite senza materializzarle in memoria", async () => {
   const harness = createHarness();
 
   try {
@@ -154,7 +155,7 @@ test("summary gestisce oltre il limite SQLite di variabili senza costruire un IN
         VALUES (?, ?, 1, 100, 100, 100, ?, ?)
       `);
       db.transaction(() => {
-        for (let number = 1; number <= 33000; number += 1) {
+        for (let number = 1; number <= 100000; number += 1) {
           const sale = insertSale.run(number, session.id);
           insertItem.run(Number(sale.lastInsertRowid), product.id, product.name, product.category);
         }
@@ -162,10 +163,50 @@ test("summary gestisce oltre il limite SQLite di variabili senza costruire un IN
 
       const response = await request({ url: `/api/reports/summary?session=${session.id}` });
       assert.equal(response.status, 200);
-      assert.equal(response.json().summary.sales_count, 33000);
-      assert.equal(response.json().summary.revenue_cents, 3300000);
-      assert.equal(response.json().byProduct[0].qty_sold, 33000);
+      assert.equal(response.json().summary.sales_count, 100000);
+      assert.equal(response.json().summary.revenue_cents, 10000000);
+      assert.equal(response.json().byProduct[0].qty_sold, 100000);
     });
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("query plan report usa gli indici di data e turno senza sort temporanei", () => {
+  const harness = createHarness();
+  try {
+    const { db } = require("../src/db");
+    const explain = (statement, params) => db.prepare(`EXPLAIN QUERY PLAN ${statement.source}`)
+      .all(...params)
+      .map(row => row.detail)
+      .join(" | ");
+    const dateScope = {
+      where: "s.created_at >= ? AND s.created_at < ?",
+      params: ["2026-01-01 00:00:00", "2027-01-01 00:00:00"],
+    };
+    const sessionScope = { where: "s.session_id = ?", params: [1], sessionId: 1 };
+
+    const dateSales = explain(reportQueries.iterateScopedSales(db, dateScope), dateScope.params);
+    const dateItems = explain(
+      reportQueries.iterateScopedItems(db, dateScope, { includeVoided: false }),
+      dateScope.params
+    );
+    const sessionSales = explain(
+      reportQueries.iterateScopedSales(db, sessionScope),
+      sessionScope.params
+    );
+    const sessionItems = explain(
+      reportQueries.iterateScopedItems(db, sessionScope, { includeVoided: false }),
+      sessionScope.params
+    );
+
+    assert.match(dateSales, /idx_sales_voided/);
+    assert.match(dateItems, /idx_sales_voided/);
+    assert.match(dateItems, /idx_sale_items_sale_id/);
+    assert.match(sessionSales, /idx_sales_session/);
+    assert.match(sessionItems, /idx_sales_session/);
+    assert.match(sessionItems, /idx_sale_items_sale_id/);
+    assert.doesNotMatch(`${dateSales} ${dateItems} ${sessionSales} ${sessionItems}`, /TEMP B-TREE/);
   } finally {
     harness.cleanup();
   }

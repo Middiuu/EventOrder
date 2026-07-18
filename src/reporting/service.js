@@ -93,38 +93,64 @@ function allocateNetByItem(sale, items) {
   return net;
 }
 
-function productBreakdown(sales, itemsBySale) {
-  const aggregate = new Map();
-  for (const sale of sales) {
-    const items = itemsBySale.get(sale.id) || [];
-    const net = allocateNetByItem(sale, items);
-    for (const item of items) {
-      const identity = JSON.stringify([item.product_id, item.product_name, item.product_category]);
-      const row = aggregate.get(identity) || {
-        product_id: item.product_id,
-        name: item.product_name,
-        category: item.product_category,
-        qty_sold: 0,
-        gross_revenue_cents: 0,
-        net_revenue_cents: 0,
-        tracked_net_revenue_cents: 0,
-        cost_cents: 0,
-        tracked_items: 0,
-        untracked_items: 0,
-      };
-      row.qty_sold += item.qty;
-      row.gross_revenue_cents += item.line_total_cents;
-      row.net_revenue_cents += net.get(item.id) || 0;
-      if (item.product_cost_cents == null) {
-        row.untracked_items += 1;
-      } else {
-        row.tracked_items += 1;
-        row.tracked_net_revenue_cents += net.get(item.id) || 0;
-        row.cost_cents += item.product_cost_cents * item.qty;
-      }
-      aggregate.set(identity, row);
+function addSaleToProductBreakdown(aggregate, sale, items) {
+  const net = allocateNetByItem(sale, items);
+  for (const item of items) {
+    const identity = JSON.stringify([item.product_id, item.product_name, item.product_category]);
+    const row = aggregate.get(identity) || {
+      product_id: item.product_id,
+      name: item.product_name,
+      category: item.product_category,
+      qty_sold: 0,
+      gross_revenue_cents: 0,
+      net_revenue_cents: 0,
+      tracked_net_revenue_cents: 0,
+      cost_cents: 0,
+      tracked_items: 0,
+      untracked_items: 0,
+    };
+    row.qty_sold += item.qty;
+    row.gross_revenue_cents += item.line_total_cents;
+    row.net_revenue_cents += net.get(item.id) || 0;
+    if (item.product_cost_cents == null) {
+      row.untracked_items += 1;
+    } else {
+      row.tracked_items += 1;
+      row.tracked_net_revenue_cents += net.get(item.id) || 0;
+      row.cost_cents += item.product_cost_cents * item.qty;
     }
+    aggregate.set(identity, row);
   }
+}
+
+function productBreakdown(rows) {
+  const aggregate = new Map();
+  let sale = null;
+  let items = [];
+  for (const row of rows) {
+    if (sale && sale.id !== row.sale_id) {
+      addSaleToProductBreakdown(aggregate, sale, items);
+      items = [];
+    }
+    if (!sale || sale.id !== row.sale_id) {
+      sale = {
+        id: row.sale_id,
+        total_cents: row.total_cents,
+        discount_cents: row.discount_cents,
+      };
+    }
+    items.push({
+      id: row.item_id,
+      product_id: row.product_id,
+      qty: row.qty,
+      line_total_cents: row.line_total_cents,
+      product_name: row.product_name,
+      product_category: row.product_category,
+      product_cost_cents: row.product_cost_cents,
+    });
+  }
+  if (sale) addSaleToProductBreakdown(aggregate, sale, items);
+
   return [...aggregate.values()]
     .map(row => ({
       ...row,
@@ -142,42 +168,21 @@ function productBreakdown(sales, itemsBySale) {
 
 function createReportService(database) {
   if (!database) throw new TypeError("createReportService richiede una connessione database");
-  function loadScopedSales(scope, options) {
-    return queries.loadScopedSales(database, scope, options);
-  }
 
   function buildSummary(scope) {
-    const { sales, itemsBySale } = loadScopedSales(scope);
-    const byProduct = productBreakdown(sales, itemsBySale);
-    const trackedProducts = byProduct.filter(product => product.margin_cents !== null);
-    const trackedRevenueCents = byProduct.reduce(
-      (sum, product) => sum + product.tracked_net_revenue_cents,
-      0
-    );
-    const totalRevenueCents = sales.reduce((sum, sale) => sum + sale.total_cents, 0);
-    const marginComplete = byProduct.length > 0
-      && byProduct.every(product => product.margin_complete);
-
-    const summary = {
-      sales_count: sales.length,
-      revenue_cents: totalRevenueCents,
-      discount_cents: sales.reduce((sum, sale) => sum + sale.discount_cents, 0),
-      margin_cents: trackedProducts.length
-        ? trackedProducts.reduce((sum, product) => sum + product.margin_cents, 0)
-        : null,
-      margin_products: trackedProducts.length,
-      margin_total_products: byProduct.length,
-      margin_complete: marginComplete,
-      margin_tracked_revenue_cents: trackedRevenueCents,
-      margin_coverage_percent: totalRevenueCents > 0
-        ? Math.round(trackedRevenueCents / totalRevenueCents * 100)
-        : (marginComplete ? 100 : 0),
-    };
-
+    const salesStatement = queries.iterateScopedSales(database, scope);
     const payment = new Map();
     const hours = new Map();
     const days = new Map();
-    for (const sale of sales) {
+    let salesCount = 0;
+    let totalRevenueCents = 0;
+    let totalDiscountCents = 0;
+
+    for (const sale of salesStatement.iterate(...scope.params)) {
+      salesCount += 1;
+      totalRevenueCents += sale.total_cents;
+      totalDiscountCents += sale.discount_cents;
+
       const pay = payment.get(sale.payment_method) || {
         payment_method: sale.payment_method,
         count: 0,
@@ -197,6 +202,32 @@ function createReportService(database) {
       days.set(day, dayRow);
     }
 
+    const itemStatement = queries.iterateScopedItems(database, scope, { includeVoided: false });
+    const byProduct = productBreakdown(itemStatement.iterate(...scope.params));
+    const trackedProducts = byProduct.filter(product => product.margin_cents !== null);
+    const trackedRevenueCents = byProduct.reduce(
+      (sum, product) => sum + product.tracked_net_revenue_cents,
+      0
+    );
+    const marginComplete = byProduct.length > 0
+      && byProduct.every(product => product.margin_complete);
+
+    const summary = {
+      sales_count: salesCount,
+      revenue_cents: totalRevenueCents,
+      discount_cents: totalDiscountCents,
+      margin_cents: trackedProducts.length
+        ? trackedProducts.reduce((sum, product) => sum + product.margin_cents, 0)
+        : null,
+      margin_products: trackedProducts.length,
+      margin_total_products: byProduct.length,
+      margin_complete: marginComplete,
+      margin_tracked_revenue_cents: trackedRevenueCents,
+      margin_coverage_percent: totalRevenueCents > 0
+        ? Math.round(trackedRevenueCents / totalRevenueCents * 100)
+        : (marginComplete ? 100 : 0),
+    };
+
     return {
       summary,
       byProduct,
@@ -210,7 +241,6 @@ function createReportService(database) {
 
   return {
     buildSummary,
-    loadScopedSales,
   };
 }
 
