@@ -154,6 +154,7 @@ qualsiasi evento**, senza toccare il codice.
 APP_NAME=Sagra del Paese
 BUSINESS_NAME=Pro Loco 2026
 CURRENCY_SYMBOL=€
+CURRENCY_CODE=EUR
 OPERATORS=Anna,Luca,Marco
 # APP_PIN=1234        # opzionale: PIN numerico di massimo 8 cifre
 ```
@@ -161,12 +162,14 @@ OPERATORS=Anna,Luca,Marco
 | Variabile | Cosa fa |
 |---|---|
 | `APP_NAME` / `BUSINESS_NAME` | Nome nell'app / nome stampato sul ticket |
-| `CURRENCY_SYMBOL` / `LOCALE` | Valuta e formato di date e numeri |
+| `CURRENCY_SYMBOL` / `CURRENCY_CODE` / `LOCALE` | Valuta e formato di date e numeri |
 | `OPERATORS` | Operatori selezionabili all'apertura del turno |
 | `APP_PIN` | PIN d'accesso (vuoto = nessuna protezione) |
 | `HOST` | Interfaccia di rete (`127.0.0.1` di default; `0.0.0.0` per la LAN) |
 | `POS_SEED_DEMO` | Prodotti demo al primo avvio (`0` per disattivare) |
 | `BACKUP_KEEP` | Quanti backup conservare |
+| `PORT` | Porta HTTP (`3000` di default) |
+| `LOG_REQUESTS` | Log JSON delle richieste (`1` per attivarli) |
 
 Con `APP_PIN` impostato, l'accesso è protetto da un **PIN-pad** touch:
 
@@ -186,7 +189,7 @@ Con `APP_PIN` impostato, l'accesso è protetto da un **PIN-pad** touch:
 |---|---|
 | **Benvenuto** (`/`) | Schermata iniziale, si entra col pulsante "Inizia il servizio" |
 | **Cassa** (`/cassa.html`) | Vendita: catalogo, comanda, incasso |
-| **Prodotti** | Catalogo con riordino drag-and-drop |
+| **Prodotti** | Catalogo con riordino drag-and-drop o pulsanti da tastiera |
 | **Vendite** | Storico e storni |
 | **Report** | Numeri del giorno, export CSV, backup |
 
@@ -215,6 +218,9 @@ npm start      # avvio
 npm run lint   # analisi statica JavaScript
 npm test       # lint + suite completa
 npm run coverage # copertura backend con soglie minime
+npm run test:e2e # flussi critici in Chromium
+npm run test:scale # scenari ad alto volume
+npm run test:fault # crash e recovery
 ```
 
 **Stampa ticket**: attualmente il ticket viene scritto su console (stub); l'integrazione

@@ -7,6 +7,8 @@
     "lint": "eslint .",
     "test": "npm run lint && node --test test/*.test.js",
     "test:e2e": "playwright test",
+    "test:scale": "node --test --test-name-pattern='100\\.000|lettore esterno' test/*.test.js",
+    "test:fault": "node --test --test-name-pattern='interrott|incompatibile|backup preventivo|stampa pendente|risposta persa' test/*.test.js",
     "coverage": "node --test --experimental-test-coverage --test-coverage-include='src/**/*.js' --test-coverage-lines=90 --test-coverage-branches=70 --test-coverage-functions=90 test/*.test.js",
     "dev": "nodemon src/server.js",
     "start": "node src/server.js"
