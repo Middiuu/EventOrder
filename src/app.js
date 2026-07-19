@@ -13,6 +13,7 @@ const { authMiddleware, isAuthenticated, loginHandler, logoutHandler } = require
 const { maintenanceMiddleware } = require("./maintenance");
 const system = require("./routes/system");
 const { requestIdMiddleware, log, errorFields } = require("./observability");
+const { auditMiddleware } = require("./audit");
 
 function createApp(options = {}) {
   const printTicket = options.printTicket || printer.printTicket;
@@ -22,6 +23,7 @@ function createApp(options = {}) {
   const app = express();
   app.disable("x-powered-by");
   app.use(requestIdMiddleware);
+  app.use(auditMiddleware);
   app.use((req, res, next) => {
     res.setHeader("Content-Security-Policy", [
       "default-src 'self'",

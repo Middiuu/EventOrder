@@ -454,7 +454,7 @@ test("restore backup: valida il file, blocca il turno aperto e sostituisce il DB
   }
 });
 
-test("restore rifiuta un database v10 non canonico con dati fuori vincolo", async () => {
+test("restore rifiuta un database v11 non canonico con dati fuori vincolo", async () => {
   const harness = createHarness();
   const candidatePath = path.join(harness.tempDir, "malformed-v10.sqlite");
   const Database = require("better-sqlite3");
@@ -469,7 +469,7 @@ test("restore rifiuta un database v10 non canonico con dati fuori vincolo", asyn
       CREATE TABLE app_state (key TEXT PRIMARY KEY, int_value INTEGER);
       INSERT INTO products VALUES (1, 'Prezzo impossibile', -500, 'Test');
       INSERT INTO app_state VALUES ('sale_number', 0);
-      PRAGMA user_version = 10;
+      PRAGMA user_version = 11;
     `);
     candidate.close();
 
@@ -617,7 +617,7 @@ test("health check e request ID restano disponibili senza autenticazione", async
       assert.deepEqual(generated.json(), {
         status: "ok",
         version: "1.0.0",
-        schema_version: 10,
+        schema_version: 11,
       });
 
       const correlated = await request({
@@ -631,6 +631,44 @@ test("health check e request ID restano disponibili senza autenticazione", async
         headers: { "X-Request-ID": "invalid id with spaces" },
       });
       assert.notEqual(replaced.headers["x-request-id"], "invalid id with spaces");
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("audit trail registra esito e request ID delle mutazioni senza salvarne il payload", async () => {
+  const harness = createHarness();
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const response = await request({
+        method: "POST",
+        url: "/api/products",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Request-ID": "audit-product-001",
+        },
+        body: JSON.stringify({
+          name: "Segreto da non copiare nell'audit",
+          price_cents: 450,
+          active: 1,
+        }),
+      });
+      assert.equal(response.status, 200);
+
+      const { db } = require("../src/db");
+      const event = db.prepare(`
+        SELECT event_type, outcome, status_code, request_id FROM audit_events ORDER BY id DESC LIMIT 1
+      `).get();
+      assert.deepEqual(event, {
+        event_type: "post:products",
+        outcome: "success",
+        status_code: 200,
+        request_id: "audit-product-001",
+      });
+      const schema = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'audit_events'").get().sql;
+      assert.doesNotMatch(schema, /payload|body|cookie|pin/i);
     });
   } finally {
     harness.cleanup();

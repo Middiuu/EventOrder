@@ -8,7 +8,7 @@ const DB_PATH = process.env.POS_DB_PATH
   ? path.resolve(process.env.POS_DB_PATH)
   : path.join(__dirname, "..", "pos.sqlite");
 const SCHEMA_PATH = path.join(__dirname, "schema.sql");
-const DB_SCHEMA_VERSION = 10;
+const DB_SCHEMA_VERSION = 11;
 const DB_BUSY_TIMEOUT_MS = 5000;
 const RESTORE_MARKER_PATH = `${DB_PATH}.restore-state.json`;
 const MIGRATION_MARKER_PATH = `${DB_PATH}.migration-state.json`;
@@ -252,9 +252,15 @@ const CANONICAL_TABLES = [
   "suspended_cart_items",
   "cash_movements",
   "operation_requests",
+  "auth_sessions",
+  "login_attempts",
+  "audit_events",
 ];
 
 const DROP_TABLE_ORDER = [
+  "audit_events",
+  "login_attempts",
+  "auth_sessions",
   "operation_requests",
   "suspended_cart_items",
   "suspended_carts",
@@ -281,8 +287,8 @@ const DERIVED_SEARCH_TABLES = [
 // aggiornato esplicitamente, separando in piu' voci le versioni che richiedono
 // mappature vecchio->nuovo differenti.
 const CANONICAL_REBUILD_MIGRATION = Object.freeze({
-  targetVersion: 10,
-  sourceVersions: Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+  targetVersion: 11,
+  sourceVersions: Object.freeze([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
   columnMappings: Object.freeze({}),
 });
 const SCHEMA_MIGRATIONS = Object.freeze([CANONICAL_REBUILD_MIGRATION]);

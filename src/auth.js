@@ -1,10 +1,10 @@
 const crypto = require("crypto");
 const { config } = require("./config");
+const { db } = require("./db");
 
 const COOKIE_NAME = "pos_auth";
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_SESSIONS = 1024;
-const sessions = new Map(); // sha256(token) -> scadenza assoluta
 
 // Percorsi sempre accessibili anche senza login (per mostrare la pagina di accesso).
 // La welcome ("/"), il login e gli asset base restano accessibili senza PIN.
@@ -23,18 +23,22 @@ function tokenDigest(token) {
 }
 
 function pruneSessions(now = Date.now()) {
-  for (const [digest, expiresAt] of sessions) {
-    if (expiresAt <= now) sessions.delete(digest);
-  }
+  db.prepare("DELETE FROM auth_sessions WHERE expires_at <= ?").run(now);
 }
 
 function createSession(now = Date.now()) {
   pruneSessions(now);
-  while (sessions.size >= MAX_SESSIONS) {
-    sessions.delete(sessions.keys().next().value);
+  const count = db.prepare("SELECT COUNT(*) AS count FROM auth_sessions").get().count;
+  if (count >= MAX_SESSIONS) {
+    db.prepare(`
+      DELETE FROM auth_sessions WHERE token_digest IN (
+        SELECT token_digest FROM auth_sessions ORDER BY expires_at ASC LIMIT ?
+      )
+    `).run(count - MAX_SESSIONS + 1);
   }
   const token = crypto.randomBytes(32).toString("base64url");
-  sessions.set(tokenDigest(token), now + SESSION_TTL_MS);
+  db.prepare("INSERT INTO auth_sessions (token_digest, expires_at) VALUES (?, ?)")
+    .run(tokenDigest(token), now + SESSION_TTL_MS);
   return token;
 }
 
@@ -61,9 +65,9 @@ function isAuthenticated(req) {
   const now = Date.now();
   pruneSessions(now);
   const digest = tokenDigest(token);
-  const expiresAt = sessions.get(digest);
-  if (!expiresAt || expiresAt <= now) {
-    sessions.delete(digest);
+  const session = db.prepare("SELECT expires_at FROM auth_sessions WHERE token_digest = ?").get(digest);
+  if (!session || session.expires_at <= now) {
+    db.prepare("DELETE FROM auth_sessions WHERE token_digest = ?").run(digest);
     return false;
   }
   return true;
@@ -84,16 +88,14 @@ function authMiddleware(req, res, next) {
 // indirizzo il login resta bloccato per LOCK_MS dall'ultimo tentativo fallito.
 const MAX_ATTEMPTS = 5;
 const LOCK_MS = 5 * 60 * 1000;
-const loginAttempts = new Map(); // ip -> { count, lastFailAt }
-
 function loginBlockedMs(ip, now) {
   // pulizia pigra: le voci scadute azzerano anche il contatore
-  for (const [key, entry] of loginAttempts) {
-    if (now - entry.lastFailAt > LOCK_MS) loginAttempts.delete(key);
-  }
-  const entry = loginAttempts.get(ip);
-  if (!entry || entry.count < MAX_ATTEMPTS) return 0;
-  return LOCK_MS - (now - entry.lastFailAt);
+  db.prepare("DELETE FROM login_attempts WHERE last_fail_at < ?").run(now - LOCK_MS);
+  const entry = db.prepare(`
+    SELECT attempt_count, last_fail_at FROM login_attempts WHERE client_key = ?
+  `).get(ip);
+  if (!entry || entry.attempt_count < MAX_ATTEMPTS) return 0;
+  return LOCK_MS - (now - entry.last_fail_at);
 }
 
 function sessionCookie(token, maxAgeSeconds) {
@@ -118,12 +120,17 @@ function loginHandler(req, res) {
   const b = Buffer.from(config.APP_PIN);
   const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
   if (!ok) {
-    const entry = loginAttempts.get(ip);
-    loginAttempts.set(ip, { count: (entry?.count || 0) + 1, lastFailAt: now });
+    db.prepare(`
+      INSERT INTO login_attempts (client_key, attempt_count, last_fail_at)
+      VALUES (?, 1, ?)
+      ON CONFLICT(client_key) DO UPDATE SET
+        attempt_count = attempt_count + 1,
+        last_fail_at = excluded.last_fail_at
+    `).run(ip.slice(0, 160), now);
     return res.status(401).json({ error: "PIN errato" });
   }
 
-  loginAttempts.delete(ip);
+  db.prepare("DELETE FROM login_attempts WHERE client_key = ?").run(ip);
   const token = createSession(now);
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Set-Cookie", sessionCookie(token, SESSION_TTL_MS / 1000));
@@ -133,11 +140,21 @@ function loginHandler(req, res) {
 function logoutHandler(req, res) {
   const token = parseCookies(req.headers.cookie)[COOKIE_NAME];
   if (token && /^[A-Za-z0-9_-]{43}$/.test(token)) {
-    sessions.delete(tokenDigest(token));
+    db.prepare("DELETE FROM auth_sessions WHERE token_digest = ?").run(tokenDigest(token));
   }
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Set-Cookie", sessionCookie("", 0));
   res.json({ ok: true });
 }
 
-module.exports = { authMiddleware, isAuthenticated, loginHandler, logoutHandler };
+function clearAuthenticationState() {
+  db.exec("DELETE FROM auth_sessions; DELETE FROM login_attempts;");
+}
+
+module.exports = {
+  authMiddleware,
+  isAuthenticated,
+  loginHandler,
+  logoutHandler,
+  clearAuthenticationState,
+};

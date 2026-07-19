@@ -11,6 +11,7 @@ const {
   validateRestoreCandidate,
   restoreDatabaseFromFile,
 } = require("../db");
+const { clearAuthenticationState } = require("../auth");
 const { config } = require("../config");
 const {
   beginBackup,
@@ -249,6 +250,9 @@ router.post(
       const inspected = validateRestoreCandidate(candidatePath);
       const safety = await createDatabaseBackup("pre-restore");
       restoreDatabaseFromFile(candidatePath, safety.backupPath);
+      // Un backup non deve riattivare cookie o blocchi login appartenenti a
+      // una precedente istanza del database.
+      clearAuthenticationState();
       candidatePath = null;
 
       res.json({

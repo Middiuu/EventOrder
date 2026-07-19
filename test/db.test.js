@@ -32,7 +32,7 @@ test("initDb crea schema, seed iniziale e contatore vendite", () => {
 
     assert.equal(productCount, 4);
     assert.equal(saleCounter.int_value, 0);
-    assert.equal(db.pragma("user_version", { simple: true }), 10);
+    assert.equal(db.pragma("user_version", { simple: true }), 11);
     assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='suspended_carts'").get());
     assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='suspended_cart_items'").get());
     assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='product_option_groups'").get());
@@ -42,7 +42,7 @@ test("initDb crea schema, seed iniziale e contatore vendite", () => {
     assert.equal(db.pragma("journal_mode", { simple: true }), "wal");
     assert.equal(db.pragma("synchronous", { simple: true }), 2);
     assert.equal(db.pragma("busy_timeout", { simple: true }), DB_BUSY_TIMEOUT_MS);
-    assert.deepEqual(SUPPORTED_MIGRATION_SOURCES, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    assert.deepEqual(SUPPORTED_MIGRATION_SOURCES, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 
     db.close();
   } finally {
@@ -136,7 +136,7 @@ test("migrazione legacy aggiunge e valorizza gli snapshot prodotto prima di crea
       options_json: "[]",
       note: null,
     });
-    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 10);
+    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 11);
     assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "session_id"));
     assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "client_request_id"));
     assert.ok(dbModule.db.prepare("PRAGMA table_info(sales)").all().some(c => c.name === "request_fingerprint"));
@@ -191,7 +191,7 @@ test("migrazione v4 preserva dati, sequenze, snapshot e applica i constraint can
     const migrated = dbModule.db;
 
     const migrationBackups = fs.readdirSync(path.join(tempDir, "backups"))
-      .filter(name => /pre-migration-v4-to-v10-.*\.sqlite$/.test(name));
+      .filter(name => /pre-migration-v4-to-v11-.*\.sqlite$/.test(name));
     assert.equal(migrationBackups.length, 1);
     const migrationBackupPath = path.join(tempDir, "backups", migrationBackups[0]);
     assert.equal(fs.statSync(migrationBackupPath).mode & 0o777, 0o600);
@@ -205,7 +205,7 @@ test("migrazione v4 preserva dati, sequenze, snapshot e applica i constraint can
     backup.close();
     assert.equal(fs.existsSync(dbModule.MIGRATION_MARKER_PATH), false);
 
-    assert.equal(migrated.pragma("user_version", { simple: true }), 10);
+    assert.equal(migrated.pragma("user_version", { simple: true }), 11);
     assert.deepEqual(
       migrated.prepare("SELECT rowid FROM sale_items_search WHERE sale_items_search MATCH ?").all("dotto"),
       [{ rowid: 13 }]
@@ -307,7 +307,7 @@ test("una migrazione incompatibile fa rollback e lascia intatte le tabelle legac
     const dbModule = loadDbModule(dbPath);
     assert.throws(
       () => dbModule.initDb(),
-      /Migrazione schema v4->v10 non riuscita: CHECK constraint failed/
+      /Migrazione schema v4->v11 non riuscita: CHECK constraint failed/
     );
     assert.equal(dbModule.db.pragma("user_version", { simple: true }), 4);
     assert.equal(
@@ -327,7 +327,7 @@ test("una migrazione incompatibile fa rollback e lascia intatte le tabelle legac
     );
     assert.equal(fs.existsSync(dbModule.MIGRATION_MARKER_PATH), true);
     const migrationBackups = fs.readdirSync(path.join(tempDir, "backups"))
-      .filter(name => /pre-migration-v4-to-v10-.*\.sqlite$/.test(name));
+      .filter(name => /pre-migration-v4-to-v11-.*\.sqlite$/.test(name));
     assert.equal(migrationBackups.length, 1);
     dbModule.db.close();
   } finally {
@@ -399,7 +399,7 @@ test("un marker di migrazione recupera il backup e ripete il bump in sicurezza",
     let dbModule = loadDbModule(dbPath);
     dbModule.initDb();
     const safetyName = fs.readdirSync(path.join(tempDir, "backups"))
-      .find(name => /pre-migration-v4-to-v10-.*\.sqlite$/.test(name));
+      .find(name => /pre-migration-v4-to-v11-.*\.sqlite$/.test(name));
     const safetyBackupPath = path.join(tempDir, "backups", safetyName);
     dbModule.closeDatabase();
 
@@ -407,13 +407,13 @@ test("un marker di migrazione recupera il backup e ripete il bump in sicurezza",
     fs.writeFileSync(`${dbPath}.migration-state.json`, JSON.stringify({
       safetyBackupPath,
       fromVersion: 4,
-      toVersion: 10,
+      toVersion: 11,
       createdAt: new Date().toISOString(),
     }));
 
     dbModule = loadDbModule(dbPath);
     dbModule.initDb();
-    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 10);
+    assert.equal(dbModule.db.pragma("user_version", { simple: true }), 11);
     assert.ok(dbModule.db.prepare("SELECT 1 FROM products WHERE name = ?").get("Prima del crash"));
     assert.equal(fs.existsSync(dbModule.MIGRATION_MARKER_PATH), false);
     dbModule.closeDatabase();

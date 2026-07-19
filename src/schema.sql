@@ -161,6 +161,31 @@ CREATE TABLE IF NOT EXISTS operation_requests (
   FOREIGN KEY (session_id) REFERENCES cash_sessions(id)
 );
 
+-- Sessioni di accesso e rate limit sono persistenti per sopravvivere ai riavvii.
+-- Il token in chiaro non viene mai salvato: il cookie e' confrontato col digest.
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  token_digest TEXT PRIMARY KEY CHECK(length(token_digest) = 64),
+  expires_at INTEGER NOT NULL CHECK(typeof(expires_at) = 'integer' AND expires_at > 0),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS login_attempts (
+  client_key TEXT PRIMARY KEY CHECK(length(client_key) BETWEEN 1 AND 160),
+  attempt_count INTEGER NOT NULL CHECK(typeof(attempt_count) = 'integer' AND attempt_count > 0),
+  last_fail_at INTEGER NOT NULL CHECK(typeof(last_fail_at) = 'integer' AND last_fail_at > 0)
+);
+
+-- Registro append-only delle mutazioni HTTP. Non contiene body, PIN, cookie o
+-- altri segreti: request ID e route consentono la correlazione con i log.
+CREATE TABLE IF NOT EXISTS audit_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  occurred_at TEXT NOT NULL DEFAULT (datetime('now')),
+  event_type TEXT NOT NULL CHECK(length(event_type) BETWEEN 1 AND 160),
+  outcome TEXT NOT NULL CHECK(outcome IN ('success', 'rejected', 'error')),
+  status_code INTEGER NOT NULL CHECK(typeof(status_code) = 'integer' AND status_code BETWEEN 100 AND 599),
+  request_id TEXT CHECK(request_id IS NULL OR length(request_id) BETWEEN 8 AND 120)
+);
+
 -- Indice derivato per la ricerca parziale nello storico. Il tokenizer trigram
 -- consente ricerche substring senza scansioni complete di sale_items.
 CREATE VIRTUAL TABLE IF NOT EXISTS sale_items_search USING fts5(
@@ -173,6 +198,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS sale_items_search USING fts5(
 CREATE INDEX IF NOT EXISTS idx_products_active ON products(active, sort_order);
 CREATE INDEX IF NOT EXISTS idx_cash_movements_session ON cash_movements(session_id);
 CREATE INDEX IF NOT EXISTS idx_operation_requests_created_at ON operation_requests(created_at);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires_at ON auth_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_login_attempts_last_fail ON login_attempts(last_fail_at);
+CREATE INDEX IF NOT EXISTS idx_audit_events_occurred_at ON audit_events(occurred_at, id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_type ON audit_events(event_type, occurred_at);
 CREATE INDEX IF NOT EXISTS idx_sales_created_at ON sales(created_at);
 CREATE INDEX IF NOT EXISTS idx_sales_session ON sales(session_id);
 CREATE INDEX IF NOT EXISTS idx_sales_voided ON sales(voided, created_at);

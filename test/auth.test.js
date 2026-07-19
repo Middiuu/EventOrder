@@ -256,3 +256,33 @@ test("un cookie percent-encoded malformato viene rifiutato con 401", async () =>
     harness.cleanup();
   }
 });
+
+test("sessioni e rate limit restano nel database invece che nella memoria del processo", async () => {
+  const harness = createHarness({ env: { APP_PIN: PIN } });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const loggedIn = await login(request, PIN);
+      const cookie = authCookie(loggedIn);
+      const dbModule = require("../src/db");
+      assert.equal(dbModule.db.prepare("SELECT COUNT(*) AS count FROM auth_sessions").get().count, 1);
+
+      const authPath = require.resolve("../src/auth");
+      delete require.cache[authPath];
+      const reloadedAuth = require("../src/auth");
+      assert.equal(reloadedAuth.isAuthenticated({ headers: { cookie } }), true);
+
+      await login(request, "0000");
+      const attempt = dbModule.db.prepare(`
+        SELECT attempt_count FROM login_attempts LIMIT 1
+      `).get();
+      assert.equal(attempt.attempt_count, 1);
+
+      reloadedAuth.clearAuthenticationState();
+      assert.equal(reloadedAuth.isAuthenticated({ headers: { cookie } }), false);
+      assert.equal(dbModule.db.prepare("SELECT COUNT(*) AS count FROM login_attempts").get().count, 0);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
