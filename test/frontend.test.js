@@ -98,6 +98,13 @@ test("gli importi usano locale e codice valuta configurati", () => {
   assert.doesNotMatch(source, /\(cents \/ 100\)\.toFixed\(2\)\.replace/);
 });
 
+test("il feedback toast usa una sola implementazione condivisa", () => {
+  const publicDir = path.join(__dirname, "..", "public");
+  const sources = ["app.js", "cassa-controller.js", "products-controller.js"]
+    .map(file => fs.readFileSync(path.join(publicDir, file), "utf8"));
+  assert.equal(sources.reduce((count, source) => count + (source.match(/function showToast/g) || []).length, 0), 1);
+});
+
 test("il controller prodotti e' separato e caricato da ogni shell SPA", () => {
   const publicDir = path.join(__dirname, "..", "public");
   const appSource = fs.readFileSync(path.join(publicDir, "app.js"), "utf8");

@@ -1,5 +1,5 @@
 /* exported initProdotti */
-/* global api, closeModal, escapeHtml, euro, isTopModal, openModal, uiAlert, uiConfirm, uiError, withFormSubmitLock */
+/* global api, closeModal, escapeHtml, euro, isTopModal, openModal, showToast, uiAlert, uiConfirm, uiError, withFormSubmitLock */
 // Controller della pagina Prodotti. Script classico per restare compatibile
 // con il router SPA senza introdurre un secondo sistema di moduli.
 async function initProdotti(signal) {
@@ -9,7 +9,6 @@ async function initProdotti(signal) {
   const newBtn = document.querySelector("#newProductBtn");
   const cancelCreateBtn = document.querySelector("#cancelEditBtn");
   const searchEl = document.querySelector("#productsSearch");
-  const toastEl = document.querySelector("#toast");
   const modalEl = document.querySelector("#editProductModal");
   const editForm = document.querySelector("#editProductForm");
   const closeModalBtn = document.querySelector("#closeEditModalBtn");
@@ -40,13 +39,6 @@ async function initProdotti(signal) {
   let allRows = [];
   let filteredRows = [];
   let sortable = null;
-
-  function showToast(msg) {
-    if (!toastEl) return;
-    toastEl.textContent = msg;
-    toastEl.classList.add("show");
-    setTimeout(() => toastEl.classList.remove("show"), 1700);
-  }
 
   function centsFromEuroInput(value) {
     const n = Number(String(value).replace(",", "."));

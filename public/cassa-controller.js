@@ -1,5 +1,5 @@
 /* exported initCassa */
-/* global APP_CONFIG, api, closeModal, escapeHtml, eurToCents, euro, money, openModal, refreshShellData, topOpenModal, uiAlert, uiConfirm, uiError, uiPrompt, updateSessionCard, withFormSubmitLock */
+/* global APP_CONFIG, api, closeModal, escapeHtml, eurToCents, euro, money, openModal, refreshShellData, showToast, topOpenModal, uiAlert, uiConfirm, uiError, uiPrompt, updateSessionCard, withFormSubmitLock */
 // Controller della pagina Cassa. Lo stato operativo resta confinato alla
 // singola inizializzazione e viene annullato dal lifecycle SPA.
 async function initCassa(signal) {
@@ -10,7 +10,6 @@ async function initCassa(signal) {
   const clearBtn = document.querySelector("#clearBtn");
   const searchEl = document.querySelector("#search");
   const categoryFiltersEl = document.querySelector("#categoryFilters");
-  const toastEl = document.querySelector("#toast");
   const cartCard = document.querySelector("#cartCard");
   const cartHelper = document.querySelector("#cartHelper");
   const mobileCartBar = document.querySelector("#mobileCartBar");
@@ -246,13 +245,6 @@ async function initCassa(signal) {
     } catch {
       setCheckoutAttempt(null);
     }
-  }
-
-  function showToast(msg) {
-    if (!toastEl) return;
-    toastEl.textContent = msg;
-    toastEl.classList.add("show");
-    setTimeout(() => toastEl.classList.remove("show"), 1700);
   }
 
   function guardPendingCheckout() {

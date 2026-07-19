@@ -1,5 +1,5 @@
 /* global initCassa, initProdotti */
-/* exported eurToCents, withFormSubmitLock */
+/* exported eurToCents, showToast, withFormSubmitLock */
 // Config caricata da /api/config all'avvio (branding, valuta, locale)
 let APP_CONFIG = {
   appName: "EventOrder",
@@ -25,6 +25,13 @@ function money(cents) {
 // Alias retro-compatibile
 function euro(cents) {
   return money(cents);
+}
+
+function showToast(message, element = document.querySelector("#toast")) {
+  if (!element) return;
+  element.textContent = message;
+  element.classList.add("show");
+  setTimeout(() => element.classList.remove("show"), 1700);
 }
 
 async function loadConfig() {
@@ -886,7 +893,6 @@ async function initReportExport() {
   const selectRestoreFileBtn = document.querySelector("#selectRestoreFileBtn");
   const restoreBackupBtn = document.querySelector("#restoreBackupBtn");
   const restoreFileName = document.querySelector("#restoreFileName");
-  const toastEl = document.querySelector("#toast");
 
   const viewButtons = Array.from(document.querySelectorAll("[data-report-view]"));
   const viewPanels = Array.from(document.querySelectorAll("[data-report-panel]"));
@@ -922,13 +928,6 @@ async function initReportExport() {
   if (viewButtons.length > 0) setReportView("summary");
 
   if (!btn) return;
-
-  function showToast(msg) {
-    if (!toastEl) return;
-    toastEl.textContent = msg;
-    toastEl.classList.add("show");
-    setTimeout(() => toastEl.classList.remove("show"), 1700);
-  }
 
   // Gli export usano lo stesso perimetro della dashboard (date o turno)
   function download(endpoint, name) {
@@ -1030,7 +1029,6 @@ async function initSales() {
   const filtersForm = document.querySelector("#salesFilters");
   const resetBtn = document.querySelector("#resetSalesFilters");
   const listTitle = document.querySelector("#salesListTitle");
-  const toastEl = document.querySelector("#toast");
   const toggleFiltersBtn = document.querySelector("#toggleSalesFilters");
   const advancedFilters = document.querySelector("#advancedSalesFilters");
   const filterSummary = document.querySelector("#salesFilterSummary");
@@ -1041,13 +1039,6 @@ async function initSales() {
   let loadedSales = [];
   let nextCursor = null;
   let loading = false;
-
-  function showToast(msg) {
-    if (!toastEl) return;
-    toastEl.textContent = msg;
-    toastEl.classList.add("show");
-    setTimeout(() => toastEl.classList.remove("show"), 1700);
-  }
 
   function saleCard(sale) {
     const items = (sale.items || []).map(it => {
