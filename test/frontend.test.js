@@ -11,7 +11,7 @@ test("il frontend usa dialoghi accessibili al posto di alert, confirm e prompt n
 });
 
 test("l'azione esaurito espone istruzioni e alternativa da tastiera", () => {
-  const appSource = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+  const appSource = fs.readFileSync(path.join(__dirname, "..", "public", "cassa-controller.js"), "utf8");
   const checkoutHtml = fs.readFileSync(path.join(__dirname, "..", "public", "cassa.html"), "utf8");
 
   assert.match(checkoutHtml, /id="soldOutHint"/);
@@ -22,7 +22,7 @@ test("l'azione esaurito espone istruzioni e alternativa da tastiera", () => {
 });
 
 test("la cassa conserva il carrello, riconcilia i prezzi e gestisce le comande sospese", () => {
-  const appSource = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+  const appSource = fs.readFileSync(path.join(__dirname, "..", "public", "cassa-controller.js"), "utf8");
   const checkoutHtml = fs.readFileSync(path.join(__dirname, "..", "public", "cassa.html"), "utf8");
 
   assert.match(appSource, /eventorder-current-cart-v1/);
@@ -60,15 +60,16 @@ test("gli initializer di pagina sono isolati fra loro", () => {
 
 test("navigazione e retry persistenti mantengono i guardrail verificati in browser", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+  const cassaSource = fs.readFileSync(path.join(__dirname, "..", "public", "cassa-controller.js"), "utf8");
 
   assert.match(source, /disposePageUi\(\);\s*curMain\.replaceWith\(newMain\)/);
   assert.match(source, /modalStack\.length = 0/);
   assert.match(source, /document\.body\.style\.overflow = ""/);
-  assert.match(source, /eventorder-pending-checkout-v1/);
-  assert.match(source, /eventorder-pending-movement-v1/);
-  assert.match(source, /eventorder-pending-suspend-v1/);
-  assert.match(source, /eventorder-pending-resume-v1/);
-  assert.match(source, /restoreCheckoutUi\(\)/);
+  assert.match(cassaSource, /eventorder-pending-checkout-v1/);
+  assert.match(cassaSource, /eventorder-pending-movement-v1/);
+  assert.match(cassaSource, /eventorder-pending-suspend-v1/);
+  assert.match(cassaSource, /eventorder-pending-resume-v1/);
+  assert.match(cassaSource, /restoreCheckoutUi\(\)/);
   assert.match(source, /async function withFormSubmitLock/);
   assert.match(source, /form\.dataset\.submitting === "true"/);
   assert.match(source, /form\.setAttribute\("aria-busy", "true"\)/);
@@ -101,10 +102,13 @@ test("il controller prodotti e' separato e caricato da ogni shell SPA", () => {
   const publicDir = path.join(__dirname, "..", "public");
   const appSource = fs.readFileSync(path.join(publicDir, "app.js"), "utf8");
   const controller = fs.readFileSync(path.join(publicDir, "products-controller.js"), "utf8");
+  const cassaController = fs.readFileSync(path.join(publicDir, "cassa-controller.js"), "utf8");
   assert.doesNotMatch(appSource, /async function initProdotti/);
+  assert.doesNotMatch(appSource, /async function initCassa/);
   assert.match(controller, /async function initProdotti/);
+  assert.match(cassaController, /async function initCassa/);
   for (const file of ["cassa.html", "products.html", "sales.html", "reports.html"]) {
     const html = fs.readFileSync(path.join(publicDir, file), "utf8");
-    assert.match(html, /<script src="\/products-controller\.js"><\/script>\s*<script src="\/app\.js"><\/script>/);
+    assert.match(html, /<script src="\/cassa-controller\.js"><\/script>\s*<script src="\/products-controller\.js"><\/script>\s*<script src="\/app\.js"><\/script>/);
   }
 });

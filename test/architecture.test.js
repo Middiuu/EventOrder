@@ -28,7 +28,8 @@ test("i router backend separati rispettano il ratchet di dimensione", () => {
 
 test("i controller frontend rispettano il ratchet di dimensione", () => {
   const limits = new Map([
-    ["public/app.js", 2700],
+    ["public/app.js", 1300],
+    ["public/cassa-controller.js", 1500],
     ["public/products-controller.js", 500],
   ]);
 

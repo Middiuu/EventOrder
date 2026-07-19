@@ -132,6 +132,11 @@ function createHarness(options = {}) {
       }
     },
     cleanup() {
+      // Ogni harness carica una propria istanza del modulo DB. Chiuderla prima
+      // di svuotare require.cache evita connessioni WAL orfane tra test E2E.
+      const dbModulePath = path.join(PROJECT_ROOT, "src/db.js");
+      const loadedDb = require.cache[dbModulePath]?.exports;
+      if (loadedDb) loadedDb.closeDatabase();
       delete process.env.POS_DB_PATH;
       for (const key of Object.keys(options.env || {})) {
         delete process.env[key];
