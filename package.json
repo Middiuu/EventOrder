@@ -27,7 +27,7 @@
   "author": "Emidio Schirano <emidioschirano@gmail.com>",
   "license": "MIT",
   "dependencies": {
-    "@fontsource/jetbrains-mono": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.3.0",
     "@fontsource/onest": "^5.2.11",
     "better-sqlite3": "^12.11.1",
     "chart.js": "^4.5.1",
