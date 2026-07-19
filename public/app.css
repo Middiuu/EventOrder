@@ -483,6 +483,8 @@ select.input { appearance:none; -webkit-appearance:none; }
 .data-table tbody tr:first-child { border-top:0; }
 .data-table tbody tr.sortable-ghost { opacity:.4; }
 .data-table tbody tr.sortable-chosen { background:var(--accent-soft); }
+.reorder-actions { display:inline-flex; gap:4px; margin-left:6px; vertical-align:middle; }
+.reorder-actions .btn { min-width:32px; padding:5px 8px; }
 .table-handle { color:var(--faint); cursor:grab; user-select:none; display:inline-flex; min-width:28px; justify-content:center; letter-spacing:.14em; }
 .table-handle:active { cursor:grabbing; }
 

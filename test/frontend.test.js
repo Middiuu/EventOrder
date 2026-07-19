@@ -73,3 +73,25 @@ test("navigazione e retry persistenti mantengono i guardrail verificati in brows
   assert.match(source, /form\.dataset\.submitting === "true"/);
   assert.match(source, /form\.setAttribute\("aria-busy", "true"\)/);
 });
+
+test("toast, tab report e riordino prodotti hanno alternative accessibili", () => {
+  const publicDir = path.join(__dirname, "..", "public");
+  const appSource = fs.readFileSync(path.join(publicDir, "app.js"), "utf8");
+  for (const file of ["cassa.html", "products.html", "sales.html", "reports.html"]) {
+    const html = fs.readFileSync(path.join(publicDir, file), "utf8");
+    assert.match(html, /id="toast"[^>]*role="status"[^>]*aria-live="polite"/);
+  }
+  const reports = fs.readFileSync(path.join(publicDir, "reports.html"), "utf8");
+  assert.match(reports, /role="tab"[^>]*aria-controls="reportPanelSummary"/);
+  assert.match(reports, /role="tabpanel"[^>]*aria-labelledby="reportTabSummary"/);
+  assert.match(appSource, /event\.key === "ArrowRight"/);
+  assert.match(appSource, /data-move-product/);
+  assert.match(appSource, /aria-label="Sposta \$\{escapeHtml\(p\.name\)\} in alto"/);
+});
+
+test("gli importi usano locale e codice valuta configurati", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
+  assert.match(source, /new Intl\.NumberFormat\(locale/);
+  assert.match(source, /currency: APP_CONFIG\.currencyCode|const currency = APP_CONFIG\.currencyCode/);
+  assert.doesNotMatch(source, /\(cents \/ 100\)\.toFixed\(2\)\.replace/);
+});

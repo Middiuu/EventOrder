@@ -4,11 +4,20 @@ let APP_CONFIG = {
   businessName: "EventOrder",
   tagline: "Cassa locale",
   currencySymbol: "€",
+  currencyCode: "EUR",
   locale: "it-IT",
 };
 
 function money(cents) {
-  return APP_CONFIG.currencySymbol + " " + (cents / 100).toFixed(2).replace(".", ",");
+  const locale = APP_CONFIG.locale || "it-IT";
+  const currency = APP_CONFIG.currencyCode || "EUR";
+  const symbol = APP_CONFIG.currencySymbol;
+  const parts = new Intl.NumberFormat(locale, {
+    style: "currency",
+    currency,
+    currencyDisplay: "narrowSymbol",
+  }).formatToParts(Number(cents) / 100);
+  return parts.map(part => part.type === "currency" && symbol ? symbol : part.value).join("");
 }
 
 // Alias retro-compatibile
@@ -2204,9 +2213,16 @@ async function initProdotti(signal) {
   }
 
   function renderTable() {
-    table.innerHTML = filteredRows.map(p => `
+    const canReorder = !(searchEl?.value || "").trim();
+    table.innerHTML = filteredRows.map((p, index) => `
       <tr>
-        <td data-label="Sposta"><span class="table-handle" aria-hidden="true">⋮⋮</span></td>
+        <td data-label="Sposta">
+          <span class="table-handle" aria-hidden="true">⋮⋮</span>
+          <span class="reorder-actions">
+            <button class="btn btn-ghost btn-compact" data-move-product="${p.id}" data-direction="up" type="button" aria-label="Sposta ${escapeHtml(p.name)} in alto" ${!canReorder || index === 0 ? "disabled" : ""}>↑</button>
+            <button class="btn btn-ghost btn-compact" data-move-product="${p.id}" data-direction="down" type="button" aria-label="Sposta ${escapeHtml(p.name)} in basso" ${!canReorder || index === filteredRows.length - 1 ? "disabled" : ""}>↓</button>
+          </span>
+        </td>
         <td data-label="Stato">${statusPill(p)}</td>
         <td data-label="Nome"><b>${escapeHtml(p.name)}</b>${p.option_groups?.length ? `<div class="small">${p.option_groups.length} ${p.option_groups.length === 1 ? "gruppo opzioni" : "gruppi opzioni"}</div>` : ""}</td>
         <td data-label="Categoria">${escapeHtml(p.category)}</td>
@@ -2249,17 +2265,8 @@ async function initProdotti(signal) {
             return;
           }
 
-          const moved = filteredRows.splice(evt.oldIndex, 1)[0];
-          filteredRows.splice(evt.newIndex, 0, moved);
-          allRows = [...filteredRows];
-
           try {
-            await api("/api/products/reorder", {
-              method: "POST",
-              body: JSON.stringify({ order: allRows.map(row => row.id) })
-            });
-            showToast("Ordine prodotti aggiornato");
-            await refresh();
+            await moveProduct(evt.oldIndex, evt.newIndex);
           } catch (err) {
             await uiError(err);
             await refresh();
@@ -2271,6 +2278,23 @@ async function initProdotti(signal) {
     sortable.option("disabled", Boolean((searchEl?.value || "").trim()));
   }
 
+  async function moveProduct(fromIndex, toIndex) {
+    if ((searchEl?.value || "").trim()) {
+      showToast("Svuota la ricerca per riordinare l'elenco.");
+      return;
+    }
+    if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return;
+    const moved = filteredRows.splice(fromIndex, 1)[0];
+    filteredRows.splice(toIndex, 0, moved);
+    allRows = [...filteredRows];
+    await api("/api/products/reorder", {
+      method: "POST",
+      body: JSON.stringify({ order: allRows.map(row => row.id) })
+    });
+    showToast("Ordine prodotti aggiornato");
+    await refresh();
+  }
+
   async function refresh() {
     allRows = await api("/api/products/all");
     filteredRows = [...allRows];
@@ -2278,6 +2302,17 @@ async function initProdotti(signal) {
   }
 
   table.addEventListener("click", (e) => {
+    const moveButton = e.target?.closest?.("[data-move-product]");
+    if (moveButton) {
+      const index = allRows.findIndex(row => String(row.id) === moveButton.dataset.moveProduct);
+      const offset = moveButton.dataset.direction === "up" ? -1 : 1;
+      moveButton.disabled = true;
+      moveProduct(index, index + offset).catch(async err => {
+        await uiError(err);
+        await refresh();
+      });
+      return;
+    }
     const id = e.target?.getAttribute?.("data-edit");
     if (!id) return;
     const p = allRows.find(x => String(x.id) === String(id));
@@ -2705,6 +2740,7 @@ async function initReportExport() {
       const active = button.getAttribute("data-report-view") === view;
       button.classList.toggle("is-active", active);
       button.setAttribute("aria-selected", active ? "true" : "false");
+      button.tabIndex = active ? 0 : -1;
     });
     viewPanels.forEach(panel => {
       const active = panel.getAttribute("data-report-panel") === view;
@@ -2714,6 +2750,19 @@ async function initReportExport() {
   }
   viewButtons.forEach(button => {
     button.onclick = () => setReportView(button.getAttribute("data-report-view"));
+    button.onkeydown = event => {
+      const current = viewButtons.indexOf(button);
+      let next = null;
+      if (event.key === "ArrowRight" || event.key === "ArrowDown") next = (current + 1) % viewButtons.length;
+      if (event.key === "ArrowLeft" || event.key === "ArrowUp") next = (current - 1 + viewButtons.length) % viewButtons.length;
+      if (event.key === "Home") next = 0;
+      if (event.key === "End") next = viewButtons.length - 1;
+      if (next === null) return;
+      event.preventDefault();
+      const target = viewButtons[next];
+      setReportView(target.getAttribute("data-report-view"));
+      target.focus();
+    };
   });
   if (viewButtons.length > 0) setReportView("summary");
 

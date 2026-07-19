@@ -18,9 +18,9 @@
       </div>
 
       <div class="view-switch" role="tablist" aria-label="Sezioni report">
-        <button class="view-switch-btn is-active" type="button" role="tab" aria-selected="true" data-report-view="summary">Riepilogo</button>
-        <button class="view-switch-btn" type="button" role="tab" aria-selected="false" data-report-view="sessions">Turni</button>
-        <button class="view-switch-btn" type="button" role="tab" aria-selected="false" data-report-view="data">Dati e backup</button>
+        <button id="reportTabSummary" class="view-switch-btn is-active" type="button" role="tab" aria-selected="true" aria-controls="reportPanelSummary" data-report-view="summary">Riepilogo</button>
+        <button id="reportTabSessions" class="view-switch-btn" type="button" role="tab" aria-selected="false" aria-controls="reportPanelSessions" tabindex="-1" data-report-view="sessions">Turni</button>
+        <button id="reportTabData" class="view-switch-btn" type="button" role="tab" aria-selected="false" aria-controls="reportPanelData" tabindex="-1" data-report-view="data">Dati e backup</button>
       </div>
 
       <section class="card">
@@ -49,11 +49,11 @@
         </div>
       </section>
 
-      <div class="report-view is-active" data-report-panel="summary">
+      <div id="reportPanelSummary" class="report-view is-active" role="tabpanel" aria-labelledby="reportTabSummary" data-report-panel="summary">
         <div id="reportBox" class="stack" style="margin-top:18px"></div>
       </div>
 
-      <div class="report-view" data-report-panel="sessions" hidden>
+      <div id="reportPanelSessions" class="report-view" role="tabpanel" aria-labelledby="reportTabSessions" data-report-panel="sessions" hidden>
         <section class="card" style="margin-top:18px">
           <div class="section-heading section-heading-tight">
             <div>
@@ -72,7 +72,7 @@
         </section>
       </div>
 
-      <div class="report-view" data-report-panel="data" hidden>
+      <div id="reportPanelData" class="report-view" role="tabpanel" aria-labelledby="reportTabData" data-report-panel="data" hidden>
         <section class="card" style="margin-top:18px">
           <div class="section-heading">
             <div>
@@ -106,7 +106,7 @@
         </section>
       </div>
 
-      <div id="toast" class="toast"></div>
+      <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
     </main>
   </div>
 
