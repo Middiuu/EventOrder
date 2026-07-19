@@ -25,3 +25,15 @@ test("i router backend separati rispettano il ratchet di dimensione", () => {
     assert.ok(actual <= maximum, `${file}: ${actual} righe, massimo consentito ${maximum}`);
   }
 });
+
+test("i controller frontend rispettano il ratchet di dimensione", () => {
+  const limits = new Map([
+    ["public/app.js", 2700],
+    ["public/products-controller.js", 500],
+  ]);
+
+  for (const [file, maximum] of limits) {
+    const actual = lineCount(file);
+    assert.ok(actual <= maximum, `${file}: ${actual} righe, massimo consentito ${maximum}`);
+  }
+});

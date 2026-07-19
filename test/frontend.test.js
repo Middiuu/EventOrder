@@ -77,6 +77,7 @@ test("navigazione e retry persistenti mantengono i guardrail verificati in brows
 test("toast, tab report e riordino prodotti hanno alternative accessibili", () => {
   const publicDir = path.join(__dirname, "..", "public");
   const appSource = fs.readFileSync(path.join(publicDir, "app.js"), "utf8");
+  const productSource = fs.readFileSync(path.join(publicDir, "products-controller.js"), "utf8");
   for (const file of ["cassa.html", "products.html", "sales.html", "reports.html"]) {
     const html = fs.readFileSync(path.join(publicDir, file), "utf8");
     assert.match(html, /id="toast"[^>]*role="status"[^>]*aria-live="polite"/);
@@ -85,8 +86,8 @@ test("toast, tab report e riordino prodotti hanno alternative accessibili", () =
   assert.match(reports, /role="tab"[^>]*aria-controls="reportPanelSummary"/);
   assert.match(reports, /role="tabpanel"[^>]*aria-labelledby="reportTabSummary"/);
   assert.match(appSource, /event\.key === "ArrowRight"/);
-  assert.match(appSource, /data-move-product/);
-  assert.match(appSource, /aria-label="Sposta \$\{escapeHtml\(p\.name\)\} in alto"/);
+  assert.match(productSource, /data-move-product/);
+  assert.match(productSource, /aria-label="Sposta \$\{escapeHtml\(p\.name\)\} in alto"/);
 });
 
 test("gli importi usano locale e codice valuta configurati", () => {
@@ -94,4 +95,16 @@ test("gli importi usano locale e codice valuta configurati", () => {
   assert.match(source, /new Intl\.NumberFormat\(locale/);
   assert.match(source, /currency: APP_CONFIG\.currencyCode|const currency = APP_CONFIG\.currencyCode/);
   assert.doesNotMatch(source, /\(cents \/ 100\)\.toFixed\(2\)\.replace/);
+});
+
+test("il controller prodotti e' separato e caricato da ogni shell SPA", () => {
+  const publicDir = path.join(__dirname, "..", "public");
+  const appSource = fs.readFileSync(path.join(publicDir, "app.js"), "utf8");
+  const controller = fs.readFileSync(path.join(publicDir, "products-controller.js"), "utf8");
+  assert.doesNotMatch(appSource, /async function initProdotti/);
+  assert.match(controller, /async function initProdotti/);
+  for (const file of ["cassa.html", "products.html", "sales.html", "reports.html"]) {
+    const html = fs.readFileSync(path.join(publicDir, file), "utf8");
+    assert.match(html, /<script src="\/products-controller\.js"><\/script>\s*<script src="\/app\.js"><\/script>/);
+  }
 });
