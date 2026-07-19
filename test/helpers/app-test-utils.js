@@ -15,6 +15,7 @@ function clearAppModules() {
     path.join(PROJECT_ROOT, "src/carts/repository.js"),
     path.join(PROJECT_ROOT, "src/config.js"),
     path.join(PROJECT_ROOT, "src/auth.js"),
+    path.join(PROJECT_ROOT, "src/observability.js"),
     path.join(PROJECT_ROOT, "src/maintenance.js"),
     path.join(PROJECT_ROOT, "src/printer.js"),
     path.join(PROJECT_ROOT, "src/pending-sales.js"),
@@ -36,6 +37,7 @@ function clearAppModules() {
     path.join(PROJECT_ROOT, "src/routes/database-maintenance.js"),
     path.join(PROJECT_ROOT, "src/routes/shell.js"),
     path.join(PROJECT_ROOT, "src/routes/carts.js"),
+    path.join(PROJECT_ROOT, "src/routes/system.js"),
     path.join(PROJECT_ROOT, "src/server.js"),
   ];
 

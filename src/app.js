@@ -11,6 +11,8 @@ const printer = require("./printer");
 const { publicConfig } = require("./config");
 const { authMiddleware, isAuthenticated, loginHandler, logoutHandler } = require("./auth");
 const { maintenanceMiddleware } = require("./maintenance");
+const system = require("./routes/system");
+const { requestIdMiddleware, log, errorFields } = require("./observability");
 
 function createApp(options = {}) {
   const printTicket = options.printTicket || printer.printTicket;
@@ -19,6 +21,7 @@ function createApp(options = {}) {
 
   const app = express();
   app.disable("x-powered-by");
+  app.use(requestIdMiddleware);
   app.use((req, res, next) => {
     res.setHeader("Content-Security-Policy", [
       "default-src 'self'",
@@ -44,6 +47,7 @@ function createApp(options = {}) {
   app.get("/api/config", (req, res) => res.json(publicConfig({
     includeOperators: isAuthenticated(req),
   })));
+  app.use("/api", system);
   // Login (attivo solo se APP_PIN e' impostato) — deve precedere il gate
   app.post("/api/auth/login", loginHandler);
 
@@ -73,7 +77,14 @@ function createApp(options = {}) {
   app.use((err, req, res, next) => {
     if (res.headersSent) return next(err);
     const status = err.status || 500;
-    if (status >= 500) console.error("Errore non gestito:", err);
+    if (status >= 500) {
+      log("error", "unhandled_request_error", {
+        request_id: req.requestId,
+        method: req.method,
+        path: req.path,
+        ...errorFields(err),
+      });
+    }
     const message = status < 500 && err.publicMessage
       ? err.publicMessage
       : "Errore interno del server";

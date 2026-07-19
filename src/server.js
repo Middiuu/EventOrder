@@ -4,7 +4,6 @@ const { createApp } = require("./app");
 const { config } = require("./config");
 const { closeDatabase } = require("./db");
 
-const PORT = process.env.PORT || 3000;
 const app = createApp();
 let server;
 let shuttingDown = false;
@@ -33,8 +32,9 @@ function shutdown(signal) {
 
 function startServer() {
   if (server) return server;
-  server = app.listen(PORT, config.HOST, () => {
-    console.log(`${config.APP_NAME} avviato su http://${config.HOST}:${PORT}`);
+  server = app.listen(config.PORT, config.HOST, () => {
+    const actualPort = server.address().port;
+    console.log(`${config.APP_NAME} avviato su http://${config.HOST}:${actualPort}`);
   });
   process.once("SIGINT", () => shutdown("SIGINT"));
   process.once("SIGTERM", () => shutdown("SIGTERM"));

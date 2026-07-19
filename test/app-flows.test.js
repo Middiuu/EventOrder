@@ -598,7 +598,39 @@ test("GET /api/config espone branding, valuta e locale al frontend", async () =>
       assert.ok(typeof cfg.appName === "string" && cfg.appName.length > 0);
       assert.ok(typeof cfg.businessName === "string" && cfg.businessName.length > 0);
       assert.ok(typeof cfg.currencySymbol === "string" && cfg.currencySymbol.length > 0);
+      assert.equal(cfg.currencyCode, "EUR");
       assert.ok(typeof cfg.locale === "string" && cfg.locale.length > 0);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("health check e request ID restano disponibili senza autenticazione", async () => {
+  const harness = createHarness({ env: { APP_PIN: "1234" } });
+
+  try {
+    await harness.withServer(async ({ request }) => {
+      const generated = await request({ url: "/api/health" });
+      assert.equal(generated.status, 200);
+      assert.match(generated.headers["x-request-id"], /^[0-9a-f-]{36}$/);
+      assert.deepEqual(generated.json(), {
+        status: "ok",
+        version: "1.0.0",
+        schema_version: 10,
+      });
+
+      const correlated = await request({
+        url: "/api/config",
+        headers: { "X-Request-ID": "tablet-cassa-001" },
+      });
+      assert.equal(correlated.headers["x-request-id"], "tablet-cassa-001");
+
+      const replaced = await request({
+        url: "/api/config",
+        headers: { "X-Request-ID": "invalid id with spaces" },
+      });
+      assert.notEqual(replaced.headers["x-request-id"], "invalid id with spaces");
     });
   } finally {
     harness.cleanup();

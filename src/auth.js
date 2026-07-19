@@ -9,7 +9,7 @@ const sessions = new Map(); // sha256(token) -> scadenza assoluta
 // Percorsi sempre accessibili anche senza login (per mostrare la pagina di accesso).
 // La welcome ("/"), il login e gli asset base restano accessibili senza PIN.
 const PUBLIC_PATHS = new Set([
-  "/", "/index.html", "/api/config", "/api/auth/login", "/login.html",
+  "/", "/index.html", "/api/config", "/api/health", "/api/auth/login", "/login.html",
   "/app.css", "/fonts.css", "/theme-init.js", "/welcome.js", "/login.js",
 ]);
 

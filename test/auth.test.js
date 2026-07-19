@@ -190,6 +190,9 @@ test("HOST non locale richiede APP_PIN all'avvio", () => {
   assert.match(exposed.stderr, /APP_PIN e' obbligatorio/);
 
   assert.equal(run("0.0.0.0", PIN).status, 0);
+  const weakPin = run("0.0.0.0", "12");
+  assert.notEqual(weakPin.status, 0);
+  assert.match(weakPin.stderr, /almeno 4 cifre/);
   assert.equal(run("127.0.0.1", "").status, 0);
 });
 
