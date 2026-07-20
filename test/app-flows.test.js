@@ -674,6 +674,22 @@ test("audit trail registra esito e request ID delle mutazioni senza salvarne il 
         status_code: 200,
         request_id: "audit-product-001",
       });
+
+      const normalized = await request({
+        method: "POST",
+        url: "/api//missing///route",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      assert.equal(normalized.status, 404);
+      const normalizedEvent = db.prepare(`
+        SELECT event_type, outcome FROM audit_events ORDER BY id DESC LIMIT 1
+      `).get();
+      assert.deepEqual(normalizedEvent, {
+        event_type: "post:missing/route",
+        outcome: "rejected",
+      });
+
       const schema = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'audit_events'").get().sql;
       assert.doesNotMatch(schema, /payload|body|cookie|pin/i);
     });

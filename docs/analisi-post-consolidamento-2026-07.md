@@ -278,3 +278,19 @@ scale e fault restano verdi rispettivamente 16/16 e 18/18.
 Restano quindi R5, subordinato a un bisogno reale di configurare la durata delle sessioni,
 R6, da accorpare a un futuro bump dello schema, e i rilievi minori R7. Questo paragrafo
 sostituisce lo stato di R4 riportato nell'addendum immediatamente precedente.
+
+### Chiusura rilievi R7 azionabili — 20 luglio 2026
+
+I primi due rilievi R7 sono chiusi:
+
+- `eventType` normalizza globalmente le sequenze di slash e rimuove anche slash ripetuti
+  subito dopo `/api/`; un test HTTP verifica la chiave canonica risultante;
+- `@fontsource/onest` e `@fontsource/jetbrains-mono` sono aggiornati a 5.3.0. Gli asset
+  usati dal frontend conservano gli stessi percorsi, `npm outdated` non segnala altri
+  aggiornamenti ed E2E resta verde 10/10.
+
+Gli altri rilievi R7 restano osservazioni, non attività pianificate: ottimizzare
+`pruneSessions` soltanto se compare nel profiling; mantenere in memoria l'export aggregato
+finché resta limitato dal catalogo; ampliare gli E2E oltre Chromium soltanto in presenza di
+un requisito di compatibilità browser. Restano quindi come possibili interventi futuri
+soltanto R5 e R6, oltre a stampa hardware e TLS gia' deliberatamente rinviati.

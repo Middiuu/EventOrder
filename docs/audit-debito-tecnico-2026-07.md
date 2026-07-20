@@ -4,7 +4,7 @@
 
 **Baseline storica analizzata:** `645fe5f` (`main`, "Harden frontend and quality gates")
 
-**Stato implementazione:** quinta tranche su `main` (20 luglio 2026; base `14be3f5`)
+**Stato implementazione:** sesta tranche su `main` (20 luglio 2026; base `9977607`)
 
 **Ambito:** frontend, backend, database, backup/restore, sicurezza, test, dipendenze e CI
 
@@ -33,7 +33,7 @@ restano come evidenza storica dei problemi originariamente rilevati.
 ### Gate verificati sullo stato corrente
 
 - `npm test`: 114/114 test verdi;
-- `npm run coverage`: 93,28% righe, 78,88% branch, 97,48% funzioni;
+- `npm run coverage`: 93,32% righe, 78,95% branch, 97,48% funzioni;
 - `npm run test:e2e`: 10/10 flussi verdi dopo la separazione dei controller;
 - `npm run test:scale`: 16/16, inclusi aggregazione su 100.000 vendite e contesa WAL;
 - `npm run test:fault`: 18/18, inclusi migrazioni/restore interrotti, backup preventivo e stampa pendente.
@@ -117,6 +117,19 @@ La copertura di `observability.js` sale dal 37,78% all'86,67% delle linee; quell
 `reporting/exports.js` arriva al 98,11% delle linee e al 94,74% delle funzioni. Il debito
 residuo post-consolidamento resta limitato a R5 e R6, entrambi rinviati a un'esigenza
 operativa o a un futuro bump dello schema, oltre ai rilievi minori R7.
+
+### Integrazione post-consolidamento — igiene R7
+
+La sesta tranche chiude i due rilievi R7 immediatamente azionabili:
+
+| Rilievo | Stato | Evidenza |
+|---|---|---|
+| La chiave audit normalizzava solo la prima sequenza di slash | Chiuso | normalizzazione globale e test HTTP con percorso contenente più sequenze ripetute |
+| I due pacchetti `@fontsource` erano fermi alla serie 5.2 | Chiuso | `@fontsource/onest` e `@fontsource/jetbrains-mono` aggiornati a 5.3.0; `npm outdated` vuoto ed E2E 10/10 |
+
+Gli altri tre rilievi R7 non giustificano modifiche preventive: il pruning delle sessioni
+va ottimizzato solo su evidenza di profiling, l'export aggregato e' limitato dal catalogo
+e la matrice browser va ampliata solo se cresce il perimetro di compatibilita'.
 
 ## Verdetto esecutivo
 

@@ -4,7 +4,7 @@ const { log, errorFields } = require("./observability");
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 function eventType(req) {
-  const route = req.originalUrl.split("?")[0].replace(/^\/api\//, "").replace(/\/+/, "/");
+  const route = req.originalUrl.split("?")[0].replace(/^\/api\/+/, "").replace(/\/+/g, "/");
   return `${req.method.toLowerCase()}:${route}`.slice(0, 160);
 }
 
