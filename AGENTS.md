@@ -42,6 +42,7 @@
 ## Working boundaries
 
 - Preserve unrelated worktree changes and stage explicit paths.
+- Do not raise architecture ratchets to fit new code; extract a focused module instead.
 - Do not commit `pos.sqlite`, `pos.sqlite-wal`, `pos.sqlite-shm`, backups, or restore/migration markers.
 - Keep historical sale snapshots immutable; product edits must not rewrite sold items.
 - Keep comments concise and focused on invariants, hazards, or non-obvious intent.

@@ -23,11 +23,14 @@ test("l'azione esaurito espone istruzioni e alternativa da tastiera", () => {
 
 test("la cassa conserva il carrello, riconcilia i prezzi e gestisce le comande sospese", () => {
   const appSource = fs.readFileSync(path.join(__dirname, "..", "public", "cassa-controller.js"), "utf8");
+  const cartSource = fs.readFileSync(path.join(__dirname, "..", "public", "cart-model.js"), "utf8");
   const checkoutHtml = fs.readFileSync(path.join(__dirname, "..", "public", "cassa.html"), "utf8");
 
-  assert.match(appSource, /eventorder-current-cart-v1/);
+  assert.match(cartSource, /eventorder-current-cart-v1/);
   assert.match(appSource, /expected_unit_price_cents: it\.unit_price_cents/);
   assert.match(appSource, /reconcileCartWithCatalog\(\)/);
+  assert.match(appSource, /EventOrderCart\.createCartModel\(localStorage\)/);
+  assert.doesNotMatch(appSource, /function buildCartItem/);
   assert.match(appSource, /api\("\/api\/carts"\)/);
   assert.match(checkoutHtml, /id="suspendCartBtn"/);
   assert.match(checkoutHtml, /id="suspendedCartsModal"[^>]*hidden/);
@@ -116,6 +119,6 @@ test("il controller prodotti e' separato e caricato da ogni shell SPA", () => {
   assert.match(cassaController, /async function initCassa/);
   for (const file of ["cassa.html", "products.html", "sales.html", "reports.html"]) {
     const html = fs.readFileSync(path.join(publicDir, file), "utf8");
-    assert.match(html, /<script src="\/cassa-controller\.js"><\/script>\s*<script src="\/products-controller\.js"><\/script>\s*<script src="\/app\.js"><\/script>/);
+    assert.match(html, /<script src="\/cart-model\.js"><\/script>\s*<script src="\/cassa-controller\.js"><\/script>\s*<script src="\/products-controller\.js"><\/script>\s*<script src="\/app\.js"><\/script>/);
   }
 });

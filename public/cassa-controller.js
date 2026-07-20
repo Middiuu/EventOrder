@@ -1,5 +1,5 @@
 /* exported initCassa */
-/* global APP_CONFIG, api, closeModal, escapeHtml, eurToCents, euro, money, openModal, refreshShellData, showToast, topOpenModal, uiAlert, uiConfirm, uiError, uiPrompt, updateSessionCard, withFormSubmitLock */
+/* global APP_CONFIG, EventOrderCart, api, closeModal, escapeHtml, eurToCents, euro, money, openModal, refreshShellData, showToast, topOpenModal, uiAlert, uiConfirm, uiError, uiPrompt, updateSessionCard, withFormSubmitLock */
 // Controller della pagina Cassa. Lo stato operativo resta confinato alla
 // singola inizializzazione e viene annullato dal lifecycle SPA.
 async function initCassa(signal) {
@@ -143,13 +143,13 @@ async function initCassa(signal) {
     }
   }
 
-  const cart = new Map();
-  const CART_DRAFT_KEY = "eventorder-current-cart-v1";
+  const cartModel = EventOrderCart.createCartModel(localStorage);
+  const cart = cartModel.items;
+  const productAvailable = EventOrderCart.productAvailable;
   const CHECKOUT_ATTEMPT_KEY = "eventorder-pending-checkout-v1";
   const MOVEMENT_ATTEMPT_KEY = "eventorder-pending-movement-v1";
   const SUSPEND_ATTEMPT_KEY = "eventorder-pending-suspend-v1";
   const RESUME_ATTEMPT_KEY = "eventorder-pending-resume-v1";
-  let cartPersistenceReady = false;
   let suspendedCarts = [];
   let itemEditor = null;
   let isPrinting = false;
@@ -255,165 +255,26 @@ async function initCassa(signal) {
     return true;
   }
 
-  function cartTotal() {
-    let total = 0;
-    for (const it of cart.values()) total += it.qty * it.unit_price_cents;
-    return total;
-  }
-
-  function buildCartItem(product, qty, selectedIds = [], note = null) {
-    const normalizedIds = [...new Set(selectedIds.map(Number))].sort((a, b) => a - b);
-    const selectedSet = new Set(normalizedIds);
-    const groups = product.option_groups || [];
-    const known = new Set(groups.flatMap(group => group.options.map(option => option.id)));
-    if (normalizedIds.some(id => !known.has(id))) return { error: "Opzione non più disponibile" };
-    const selectedOptions = [];
-    for (const group of groups) {
-      const selected = group.options.filter(option => selectedSet.has(option.id));
-      if (group.required && selected.length === 0) return { error: `Scegli un'opzione per ${group.name}` };
-      if (group.selection_type === "single" && selected.length > 1) return { error: `Scegli una sola opzione per ${group.name}` };
-      for (const option of selected) {
-        selectedOptions.push({
-          group_id: group.id,
-          group_name: group.name,
-          value_id: option.id,
-          name: option.name,
-          price_delta_cents: option.price_delta_cents,
-        });
-      }
-    }
-    const cleanNote = String(note || "").trim().slice(0, 240) || null;
-    const unitPrice = product.price_cents
-      + selectedOptions.reduce((sum, option) => sum + option.price_delta_cents, 0);
-    if (!Number.isSafeInteger(unitPrice) || unitPrice < 0) return { error: "Prezzo finale non valido" };
-    const key = JSON.stringify([product.id, normalizedIds, cleanNote]);
-    return {
-      key,
-      item: {
-        product,
-        qty,
-        selected_option_value_ids: normalizedIds,
-        selected_options: selectedOptions,
-        note: cleanNote,
-        unit_price_cents: unitPrice,
-      },
-    };
-  }
-
-  function cartQtyForProduct(productId, exceptKey = null) {
-    let qty = 0;
-    for (const [key, item] of cart) {
-      if (key !== exceptKey && item.product.id === productId) qty += item.qty;
-    }
-    return qty;
-  }
-
   function persistCurrentCart() {
-    if (!cartPersistenceReady) return;
-    try {
-      if (cart.size === 0) {
-        localStorage.removeItem(CART_DRAFT_KEY);
-        return;
-      }
-      localStorage.setItem(CART_DRAFT_KEY, JSON.stringify({
-        session_id: session?.id ?? null,
-        database_instance_id: databaseInstanceId,
-        saved_at: new Date().toISOString(),
-        note: orderNoteEl?.value.trim() || null,
-        items: Array.from(cart.values()).map(it => ({
-          product_id: it.product.id,
-          qty: it.qty,
-          selected_option_value_ids: it.selected_option_value_ids,
-          note: it.note,
-        })),
-      }));
-    } catch {
-      // Lo storage locale può essere disabilitato: il POS resta utilizzabile.
-    }
+    cartModel.persist({
+      sessionId: session?.id,
+      databaseInstanceId,
+      note: orderNoteEl?.value,
+    });
   }
 
   function recoverCurrentCart() {
-    let draft;
-    try {
-      draft = JSON.parse(localStorage.getItem(CART_DRAFT_KEY) || "null");
-    } catch {
-      try { localStorage.removeItem(CART_DRAFT_KEY); } catch {}
-      return { recovered: false, skipped: [] };
-    }
-    if (!draft || !Array.isArray(draft.items)) return { recovered: false, skipped: [] };
-    if (draft.database_instance_id !== databaseInstanceId
-      || (draft.session_id != null && draft.session_id !== session?.id)) {
-      try { localStorage.removeItem(CART_DRAFT_KEY); } catch {}
-      return { recovered: false, skipped: [] };
-    }
-
-    const byId = new Map(products.map(product => [product.id, product]));
-    let recovered = 0;
-    const skipped = [];
-    const usedStock = new Map();
-    if (orderNoteEl) orderNoteEl.value = String(draft.note || "").slice(0, 500);
-    for (const item of draft.items) {
-      const product = byId.get(item?.product_id);
-      if (!product || !Number.isSafeInteger(item?.qty) || item.qty <= 0 || !productAvailable(product)) {
-        skipped.push(product?.name || `Prodotto #${item?.product_id || "?"}`);
-        continue;
-      }
-      const built = buildCartItem(product, item.qty, item.selected_option_value_ids || [], item.note);
-      if (built.error) {
-        skipped.push(product.name);
-        continue;
-      }
-      const alreadyUsed = usedStock.get(product.id) || 0;
-      const qty = product.stock == null ? item.qty : Math.min(item.qty, Math.max(0, product.stock - alreadyUsed));
-      if (qty <= 0) {
-        skipped.push(product.name);
-        continue;
-      }
-      if (qty !== item.qty) skipped.push(product.name);
-      built.item.qty = qty;
-      cart.set(built.key, built.item);
-      usedStock.set(product.id, alreadyUsed + qty);
-      recovered += qty;
-    }
-    return { recovered: recovered > 0, skipped: [...new Set(skipped)] };
+    const recovery = cartModel.recover({
+      products,
+      sessionId: session?.id,
+      databaseInstanceId,
+    });
+    if (orderNoteEl && recovery.note !== undefined) orderNoteEl.value = recovery.note;
+    return recovery;
   }
 
   function reconcileCartWithCatalog() {
-    const byId = new Map(products.map(product => [product.id, product]));
-    const oldTotal = cartTotal();
-    const priceChanges = [];
-    const removed = [];
-    const unavailable = [];
-
-    const reconciled = new Map();
-    const requestedStock = new Map();
-    for (const item of cart.values()) {
-      const current = byId.get(item.product.id);
-      if (!current) {
-        removed.push(item.product.name);
-        continue;
-      }
-      const built = buildCartItem(current, item.qty, item.selected_option_value_ids, item.note);
-      if (built.error) {
-        removed.push(`${current.name} (${built.error})`);
-        continue;
-      }
-      if (built.item.unit_price_cents !== item.unit_price_cents) {
-        priceChanges.push({ name: current.name, from: item.unit_price_cents, to: built.item.unit_price_cents });
-      }
-      reconciled.set(built.key, built.item);
-      requestedStock.set(current.id, (requestedStock.get(current.id) || 0) + item.qty);
-      if (!productAvailable(current)) {
-        unavailable.push(current.name);
-      }
-    }
-    cart.clear();
-    for (const [key, item] of reconciled) cart.set(key, item);
-    for (const [productId, qty] of requestedStock) {
-      const product = byId.get(productId);
-      if (product?.stock != null && qty > product.stock) unavailable.push(product.name);
-    }
-    return { oldTotal, newTotal: cartTotal(), priceChanges, removed, unavailable };
+    return cartModel.reconcile(products);
   }
 
   // ---- Turno di cassa
@@ -621,11 +482,6 @@ async function initCassa(signal) {
     });
   });
 
-  // Disponibilità derivata: esaurito manuale oppure scorte tracciate a zero
-  function productAvailable(p) {
-    return !p.sold_out && !(p.stock != null && p.stock <= 0);
-  }
-
   async function setSoldOut(p, soldOut) {
     try {
       await api(`/api/products/${p.id}`, { method: "PATCH", body: JSON.stringify({ sold_out: soldOut ? 1 : 0 }) });
@@ -781,11 +637,11 @@ async function initCassa(signal) {
 
   function addProduct(p) {
     if (guardPendingCheckout()) return;
-    const built = buildCartItem(p, 1, [], null);
+    const built = cartModel.buildItem(p, 1, [], null);
     if (built.error) return void uiAlert(built.error);
     const cur = cart.get(built.key);
     const nextQty = (cur?.qty || 0) + 1;
-    if (p.stock != null && cartQtyForProduct(p.id) + 1 > p.stock) {
+    if (p.stock != null && cartModel.quantityForProduct(p.id) + 1 > p.stock) {
       showToast(`Disponibili solo ${p.stock} di "${p.name}"`);
       return;
     }
@@ -808,7 +664,7 @@ async function initCassa(signal) {
     const cur = cart.get(key);
     if (!cur) return;
     const p = cur.product;
-    if (p.stock != null && cartQtyForProduct(p.id) + 1 > p.stock) {
+    if (p.stock != null && cartModel.quantityForProduct(p.id) + 1 > p.stock) {
       showToast(`Disponibili solo ${p.stock} di "${p.name}"`);
       return;
     }
@@ -829,7 +685,7 @@ async function initCassa(signal) {
     if (!itemEditor || !itemOptionsForm) return;
     const selectedIds = [...itemOptionsForm.querySelectorAll("input[data-option-id]:checked")]
       .map(input => Number(input.value)).filter(Boolean);
-    const built = buildCartItem(itemEditor.product, 1, selectedIds, itemNoteEl?.value);
+    const built = cartModel.buildItem(itemEditor.product, 1, selectedIds, itemNoteEl?.value);
     if (itemOptionsPrice) itemOptionsPrice.textContent = built.error ? "—" : money(built.item.unit_price_cents);
   }
 
@@ -870,10 +726,10 @@ async function initCassa(signal) {
     if (!itemEditor) return;
     const selectedIds = [...itemOptionsForm.querySelectorAll("input[data-option-id]:checked")]
       .map(input => Number(input.value)).filter(Boolean);
-    const built = buildCartItem(itemEditor.product, itemEditor.qty, selectedIds, itemNoteEl?.value);
+    const built = cartModel.buildItem(itemEditor.product, itemEditor.qty, selectedIds, itemNoteEl?.value);
     if (built.error) return uiAlert(built.error);
     const existingAtTarget = cart.get(built.key);
-    const otherQty = cartQtyForProduct(itemEditor.product.id, itemEditor.lineKey);
+    const otherQty = cartModel.quantityForProduct(itemEditor.product.id, itemEditor.lineKey);
     const mergedQty = existingAtTarget && built.key !== itemEditor.lineKey
       ? existingAtTarget.qty + itemEditor.qty
       : itemEditor.qty;
@@ -1020,7 +876,9 @@ async function initCassa(signal) {
     const restored = entry.items.map(item => {
       const product = byId.get(item.product_id);
       const selectedIds = (item.selected_options || []).map(option => option.value_id);
-      const built = product ? buildCartItem(product, item.qty, selectedIds, item.note) : { error: "Prodotto non disponibile" };
+      const built = product
+        ? cartModel.buildItem(product, item.qty, selectedIds, item.note)
+        : { error: "Prodotto non disponibile" };
       return { item, product, built };
     });
     const requested = new Map();
@@ -1091,7 +949,7 @@ async function initCassa(signal) {
 
   // ---- Sconto / omaggio
   function currentDiscountCents() {
-    const subtotal = cartTotal();
+    const subtotal = cartModel.total();
     if (discType === "gift") return subtotal;
     if (discType === "percent") {
       const pct = Number(String(discValueEl?.value || "").replace(",", "."));
@@ -1107,7 +965,7 @@ async function initCassa(signal) {
   }
 
   function payableTotal() {
-    return cartTotal() - currentDiscountCents();
+    return cartModel.total() - currentDiscountCents();
   }
 
   function setDiscount(type) {
@@ -1397,7 +1255,7 @@ async function initCassa(signal) {
   suspendAttempt = loadAttempt(SUSPEND_ATTEMPT_KEY);
   resumeAttempt = loadAttempt(RESUME_ATTEMPT_KEY);
   const recovery = recoverCurrentCart();
-  cartPersistenceReady = true;
+  cartModel.enablePersistence();
   renderCart();
   restoreCheckoutUi();
   if (resumeAttempt && cart.size === 0) {

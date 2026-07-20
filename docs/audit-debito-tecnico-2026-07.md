@@ -4,7 +4,7 @@
 
 **Baseline storica analizzata:** `645fe5f` (`main`, "Harden frontend and quality gates")
 
-**Stato implementazione:** terza tranche su `main` (20 luglio 2026; base `2400491`)
+**Stato implementazione:** quarta tranche su `main` (20 luglio 2026; base `c6febe2`)
 
 **Ambito:** frontend, backend, database, backup/restore, sicurezza, test, dipendenze e CI
 
@@ -15,11 +15,11 @@
 Questa sezione sostituisce il verdetto operativo della baseline; le sezioni successive
 restano come evidenza storica dei problemi originariamente rilevati.
 
-| Area | Stato al `6710180` | Evidenza principale |
+| Area | Stato corrente | Evidenza principale |
 |---|---|---|
 | P0.1–P0.4 | Chiuso | restore canonico, retry persistenti, idempotenza mutazioni, report 100.000 vendite |
 | P1.1–P1.2 | Chiuso | lifecycle SPA e 10 flussi Playwright critici |
-| P1.3 | Chiuso strutturalmente | `app.js` 1.215 righe; controller Cassa/Prodotti separati e ratchet automatici |
+| P1.3 | Chiuso strutturalmente | `app.js` 1.215 righe; controller Cassa/Prodotti separati; modello carrello isolato e ratchet automatici |
 | P1.4–P1.5 | Chiuso | migrazioni esplicite con backup/recovery; backup e restore in streaming con lock e controllo spazio |
 | P1.6–P1.8 | Chiuso | aggregazioni incrementali, cursor pagination, FTS trigram, CSV streaming e neutralizzazione formule |
 | P1.9 | Differito per decisione prodotto | stampa mantenuta intenzionalmente come stub console fino alla scelta della stampante |
@@ -32,11 +32,11 @@ restano come evidenza storica dei problemi originariamente rilevati.
 
 ### Gate verificati sullo stato corrente
 
-- `npm test`: 107/107 test verdi;
+- `npm test`: 111/111 test verdi;
 - `npm run coverage`: 92,62% righe, 78,70% branch, 96,60% funzioni;
 - `npm run test:e2e`: 10/10 flussi verdi dopo la separazione dei controller;
-- `npm run test:scale`: 13/13, inclusi aggregazione su 100.000 vendite e contesa WAL;
-- `npm run test:fault`: 15/15, inclusi migrazioni/restore interrotti, backup preventivo e stampa pendente.
+- `npm run test:scale`: 14/14, inclusi aggregazione su 100.000 vendite e contesa WAL;
+- `npm run test:fault`: 16/16, inclusi migrazioni/restore interrotti, backup preventivo e stampa pendente.
 
 Il solo elemento del backlog originario intenzionalmente non implementato e' P1.9. Non va
 riaperto finche' non viene scelto il prodotto di stampa e definito il relativo protocollo
@@ -86,6 +86,22 @@ La terza tranche chiude i residui operativi R1 e R2 e completa il controllo FTS:
 La retention non elimina mai vendite, articoli venduti, movimenti di cassa o turni. I replay
 dei turni ancora aperti vengono conservati indipendentemente dall'eta'. File `.sqlite` con
 nomi sconosciuti e link simbolici non partecipano alla rotazione automatica.
+
+### Integrazione post-consolidamento — modello carrello frontend
+
+La quarta tranche riduce l'hotspot R3 senza riprendere il precedente refactoring a moduli
+ES cancellato. Il frontend resta una SPA vanilla senza build step e carica il nuovo helper
+globale prima del controller Cassa in tutte le shell di ingresso.
+
+| Intervento | Stato | Evidenza |
+|---|---|---|
+| Stato e calcoli del carrello erano incorporati nel controller UI | Chiuso | `public/cart-model.js` possiede righe canoniche, quantità, totale, disponibilità e riconciliazione catalogo |
+| Recovery e persistenza del draft erano difficili da testare isolatamente | Chiuso | il modello mantiene l'isolamento per istanza DB e turno; tre test comportamentali coprono recovery, stock, prezzi e prodotti rimossi |
+| `cassa-controller.js` era vicino al limite di 1.500 righe | Chiuso per questa tranche | ridotto da 1.419 a 1.277 righe; ratchet abbassato a 1.300 e nuovo helper limitato a 260 |
+| `src/db.js` non aveva un limite dedicato | Chiuso come guardrail | ratchet esplicito a 950 righe sul valore corrente di 927 |
+
+I ratchet sono limiti di non-regressione: non vanno alzati per ospitare nuove feature; la
+logica aggiuntiva va estratta nel modulo di dominio o servizio piu' vicino.
 
 ## Verdetto esecutivo
 

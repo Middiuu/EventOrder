@@ -29,7 +29,8 @@ test("i router backend separati rispettano il ratchet di dimensione", () => {
 test("i controller frontend rispettano il ratchet di dimensione", () => {
   const limits = new Map([
     ["public/app.js", 1300],
-    ["public/cassa-controller.js", 1500],
+    ["public/cassa-controller.js", 1300],
+    ["public/cart-model.js", 260],
     ["public/products-controller.js", 500],
   ]);
 
@@ -37,4 +38,8 @@ test("i controller frontend rispettano il ratchet di dimensione", () => {
     const actual = lineCount(file);
     assert.ok(actual <= maximum, `${file}: ${actual} righe, massimo consentito ${maximum}`);
   }
+});
+
+test("l'orchestratore database non cresce oltre il ratchet corrente", () => {
+  assert.ok(lineCount("src/db.js") <= 950, "src/db.js supera il limite di 950 righe");
 });
