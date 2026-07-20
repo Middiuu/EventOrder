@@ -176,12 +176,20 @@ test("le sessioni scadono anche lato server", async () => {
   }
 });
 
-test("HOST non locale richiede APP_PIN all'avvio", () => {
+test("HOST non locale richiede APP_PIN, host consentiti e origin pubblico all'avvio", () => {
   const projectRoot = path.join(__dirname, "..");
   const configPath = path.join(projectRoot, "src", "config.js");
-  const run = (host, pin) => spawnSync(process.execPath, ["-e", `require(${JSON.stringify(configPath)})`], {
+  const run = (host, pin, extra = {}) => spawnSync(process.execPath, ["-e", `require(${JSON.stringify(configPath)})`], {
     cwd: projectRoot,
-    env: { ...process.env, HOST: host, APP_PIN: pin },
+    env: {
+      ...process.env,
+      HOST: host,
+      APP_PIN: pin,
+      ALLOWED_HOSTS: "",
+      PUBLIC_ORIGIN: "",
+      TRUST_PROXY: "",
+      ...extra,
+    },
     encoding: "utf8",
   });
 
@@ -189,11 +197,129 @@ test("HOST non locale richiede APP_PIN all'avvio", () => {
   assert.notEqual(exposed.status, 0);
   assert.match(exposed.stderr, /APP_PIN e' obbligatorio/);
 
-  assert.equal(run("0.0.0.0", PIN).status, 0);
   const weakPin = run("0.0.0.0", "12");
   assert.notEqual(weakPin.status, 0);
   assert.match(weakPin.stderr, /almeno 4 cifre/);
+
+  const missingHosts = run("0.0.0.0", PIN);
+  assert.notEqual(missingHosts.status, 0);
+  assert.match(missingHosts.stderr, /ALLOWED_HOSTS e' obbligatorio/);
+
+  const missingOrigin = run("0.0.0.0", PIN, { ALLOWED_HOSTS: "192.168.1.20" });
+  assert.notEqual(missingOrigin.status, 0);
+  assert.match(missingOrigin.stderr, /PUBLIC_ORIGIN e' obbligatorio/);
+
+  assert.equal(run("0.0.0.0", PIN, {
+    ALLOWED_HOSTS: "192.168.1.20,pos.example.test",
+    PUBLIC_ORIGIN: "http://192.168.1.20:3000",
+  }).status, 0);
   assert.equal(run("127.0.0.1", "").status, 0);
+});
+
+test("il cookie e' Secure solo quando HTTPS e' attestato da un proxy attendibile", async () => {
+  const plainHarness = createHarness({ env: { APP_PIN: PIN } });
+  try {
+    await plainHarness.withServer(async ({ request }) => {
+      const plain = await request({
+        method: "POST",
+        url: "/api/auth/login",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Forwarded-Proto": "https",
+        },
+        body: JSON.stringify({ pin: PIN }),
+      });
+      assert.equal(plain.status, 200);
+      assert.doesNotMatch(String(plain.headers["set-cookie"]), /; Secure(?:;|$)/);
+    });
+  } finally {
+    plainHarness.cleanup();
+  }
+
+  const proxyHarness = createHarness({ env: { APP_PIN: PIN, TRUST_PROXY: "loopback" } });
+  try {
+    await proxyHarness.withServer(async ({ request }) => {
+      const proxied = await request({
+        method: "POST",
+        url: "/api/auth/login",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Forwarded-Proto": "https",
+        },
+        body: JSON.stringify({ pin: PIN }),
+      });
+      assert.equal(proxied.status, 200);
+      assert.match(String(proxied.headers["set-cookie"]), /; Secure(?:;|$)/);
+    });
+  } finally {
+    proxyHarness.cleanup();
+  }
+});
+
+test("X-Forwarded-For non aggira il rate limit senza un proxy attendibile", async () => {
+  const harness = createHarness({ env: { APP_PIN: PIN } });
+  try {
+    await harness.withServer(async ({ request }) => {
+      for (let i = 0; i < 5; i++) {
+        const wrong = await request({
+          method: "POST",
+          url: "/api/auth/login",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Forwarded-For": `203.0.113.${i + 1}`,
+          },
+          body: JSON.stringify({ pin: "0000" }),
+        });
+        assert.equal(wrong.status, 401);
+      }
+
+      const blocked = await request({
+        method: "POST",
+        url: "/api/auth/login",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Forwarded-For": "198.51.100.50",
+        },
+        body: JSON.stringify({ pin: PIN }),
+      });
+      assert.equal(blocked.status, 429);
+    });
+  } finally {
+    harness.cleanup();
+  }
+});
+
+test("un proxy loopback attendibile separa il rate limit per IP client", async () => {
+  const harness = createHarness({ env: { APP_PIN: PIN, TRUST_PROXY: "loopback" } });
+  try {
+    await harness.withServer(async ({ request }) => {
+      for (let i = 0; i < 5; i++) {
+        const wrong = await request({
+          method: "POST",
+          url: "/api/auth/login",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Forwarded-For": "203.0.113.10",
+          },
+          body: JSON.stringify({ pin: "0000" }),
+        });
+        assert.equal(wrong.status, 401);
+      }
+
+      const otherClient = await request({
+        method: "POST",
+        url: "/api/auth/login",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Forwarded-For": "198.51.100.20",
+        },
+        body: JSON.stringify({ pin: PIN }),
+      });
+      assert.equal(otherClient.status, 200);
+    });
+  } finally {
+    harness.cleanup();
+  }
 });
 
 test("rate limiting: dopo 5 PIN errati il login e' bloccato anche col PIN giusto", async () => {

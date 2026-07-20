@@ -2,6 +2,8 @@
 // Tutti i valori sono sovrascrivibili via variabili d'ambiente (.env),
 // così lo stesso software puo' essere usato per qualsiasi attivita'/evento.
 
+const net = require("node:net");
+
 function slugify(value) {
   return String(value || "pos")
     .toLowerCase()
@@ -62,14 +64,76 @@ if (APP_PIN && !/^\d{1,8}$/.test(APP_PIN)) {
 }
 
 // Per sicurezza l'app ascolta solo sulla macchina locale. Per l'uso da tablet
-// sulla LAN va impostato esplicitamente HOST=0.0.0.0 (e configurato APP_PIN).
+// sulla LAN va impostato esplicitamente HOST=0.0.0.0 con le guardie qui sotto.
 const HOST = String(process.env.HOST || "127.0.0.1").trim() || "127.0.0.1";
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1", "localhost"]);
-if (!LOOPBACK_HOSTS.has(HOST.toLowerCase()) && !APP_PIN) {
+const isLoopback = LOOPBACK_HOSTS.has(HOST.toLowerCase());
+if (!isLoopback && !APP_PIN) {
   throw new Error("APP_PIN e' obbligatorio quando HOST espone l'app fuori dal loopback");
 }
-if (!LOOPBACK_HOSTS.has(HOST.toLowerCase()) && APP_PIN.length < 4) {
+if (!isLoopback && APP_PIN.length < 4) {
   throw new Error("APP_PIN deve contenere almeno 4 cifre quando l'app e' esposta in LAN");
+}
+
+function normalizeAllowedHost(value) {
+  let host = String(value || "").trim().toLowerCase();
+  if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
+  if (host.endsWith(".")) host = host.slice(0, -1);
+  if (net.isIP(host)) return host;
+  if (host.length > 253 || !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(host)) return null;
+  if (host.split(".").some(label => !label
+      || label.length > 63 || label.startsWith("-") || label.endsWith("-"))) {
+    return null;
+  }
+  return host;
+}
+
+const rawAllowedHosts = String(process.env.ALLOWED_HOSTS || "").trim();
+const ALLOWED_HOSTS = rawAllowedHosts
+  ? [...new Set(rawAllowedHosts.split(",").map(value => {
+    const normalized = normalizeAllowedHost(value);
+    if (!normalized) throw new Error(`ALLOWED_HOSTS contiene un host non valido: ${value.trim()}`);
+    return normalized;
+  }))]
+  : (isLoopback ? ["127.0.0.1", "::1", "localhost"] : []);
+if (!isLoopback && ALLOWED_HOSTS.length === 0) {
+  throw new Error("ALLOWED_HOSTS e' obbligatorio quando HOST espone l'app fuori dal loopback");
+}
+
+function normalizePublicOrigin(value) {
+  if (!value) return "";
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("PUBLIC_ORIGIN deve essere un origin HTTP/HTTPS senza percorso");
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)
+      || parsed.username || parsed.password
+      || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+    throw new Error("PUBLIC_ORIGIN deve essere un origin HTTP/HTTPS senza percorso");
+  }
+  return parsed.origin;
+}
+
+const PUBLIC_ORIGIN = normalizePublicOrigin(String(process.env.PUBLIC_ORIGIN || "").trim());
+if (!isLoopback && !PUBLIC_ORIGIN) {
+  throw new Error("PUBLIC_ORIGIN e' obbligatorio quando HOST espone l'app fuori dal loopback");
+}
+if (PUBLIC_ORIGIN) {
+  const publicHost = normalizeAllowedHost(new URL(PUBLIC_ORIGIN).hostname);
+  if (!ALLOWED_HOSTS.includes(publicHost)) {
+    throw new Error("L'host di PUBLIC_ORIGIN deve essere incluso in ALLOWED_HOSTS");
+  }
+}
+
+const rawTrustProxy = String(process.env.TRUST_PROXY || "").trim().toLowerCase();
+if (rawTrustProxy && rawTrustProxy !== "loopback") {
+  throw new Error("TRUST_PROXY ammette solo il valore 'loopback'");
+}
+const TRUST_PROXY = rawTrustProxy || false;
+if (PUBLIC_ORIGIN.startsWith("https://") && TRUST_PROXY !== "loopback") {
+  throw new Error("TRUST_PROXY=loopback e' obbligatorio quando PUBLIC_ORIGIN usa HTTPS");
 }
 
 const workerCount = Number(process.env.WEB_CONCURRENCY || 1);
@@ -89,6 +153,9 @@ const config = {
   OPERATORS,
   APP_PIN,
   HOST,
+  ALLOWED_HOSTS,
+  PUBLIC_ORIGIN,
+  TRUST_PROXY,
   PORT,
   LOG_REQUESTS,
   SLUG: slugify(APP_NAME),

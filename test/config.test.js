@@ -13,6 +13,9 @@ function loadConfig(env) {
       ...process.env,
       HOST: "127.0.0.1",
       APP_PIN: "",
+      ALLOWED_HOSTS: "",
+      PUBLIC_ORIGIN: "",
+      TRUST_PROXY: "",
       WEB_CONCURRENCY: "",
       NODE_UNIQUE_ID: "",
       ...env,
@@ -45,4 +48,29 @@ test("rifiuta configurazioni multi-processo incompatibili con SQLite locale", ()
   const result = loadConfig({ WEB_CONCURRENCY: "2" });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /un solo processo/);
+});
+
+test("valida host, origin pubblico e proxy attendibile", () => {
+  const valid = loadConfig({
+    ALLOWED_HOSTS: "pos.example.test,192.168.1.20",
+    PUBLIC_ORIGIN: "https://pos.example.test",
+    TRUST_PROXY: "loopback",
+  });
+  assert.equal(valid.status, 0, valid.stderr);
+  const config = JSON.parse(valid.stdout);
+  assert.deepEqual(config.ALLOWED_HOSTS, ["pos.example.test", "192.168.1.20"]);
+  assert.equal(config.PUBLIC_ORIGIN, "https://pos.example.test");
+  assert.equal(config.TRUST_PROXY, "loopback");
+
+  for (const [name, value, message] of [
+    ["ALLOWED_HOSTS", "*.example.test", /ALLOWED_HOSTS contiene un host non valido/],
+    ["ALLOWED_HOSTS", "pos..example.test", /ALLOWED_HOSTS contiene un host non valido/],
+    ["PUBLIC_ORIGIN", "https://pos.example.test/path", /PUBLIC_ORIGIN deve essere un origin HTTP\/HTTPS/],
+    ["PUBLIC_ORIGIN", "file:///tmp/pos", /PUBLIC_ORIGIN deve essere un origin HTTP\/HTTPS/],
+    ["TRUST_PROXY", "true", /TRUST_PROXY ammette solo/],
+  ]) {
+    const result = loadConfig({ [name]: value });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, message);
+  }
 });

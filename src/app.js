@@ -8,8 +8,9 @@ const sessions = require("./routes/sessions");
 const shell = require("./routes/shell");
 const carts = require("./routes/carts");
 const printer = require("./printer");
-const { publicConfig } = require("./config");
+const { config, publicConfig } = require("./config");
 const { authMiddleware, isAuthenticated, loginHandler, logoutHandler } = require("./auth");
+const { requestSecurityMiddleware } = require("./request-security");
 const { maintenanceMiddleware } = require("./maintenance");
 const system = require("./routes/system");
 const { requestIdMiddleware, log, errorFields } = require("./observability");
@@ -22,6 +23,7 @@ function createApp(options = {}) {
 
   const app = express();
   app.disable("x-powered-by");
+  app.set("trust proxy", config.TRUST_PROXY);
   app.use(requestIdMiddleware);
   app.use(auditMiddleware);
   app.use((req, res, next) => {
@@ -43,6 +45,7 @@ function createApp(options = {}) {
     res.setHeader("Referrer-Policy", "no-referrer");
     next();
   });
+  app.use(requestSecurityMiddleware);
   app.use(express.json());
 
   // Config pubblica per il frontend (branding, valuta, locale) — sempre accessibile

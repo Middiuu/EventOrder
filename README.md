@@ -166,6 +166,9 @@ OPERATORS=Anna,Luca,Marco
 | `OPERATORS` | Operatori selezionabili all'apertura del turno |
 | `APP_PIN` | PIN d'accesso (vuoto = nessuna protezione) |
 | `HOST` | Interfaccia di rete (`127.0.0.1` di default; `0.0.0.0` per la LAN) |
+| `ALLOWED_HOSTS` | Hostname/IP accettati dal server, obbligatori in LAN |
+| `PUBLIC_ORIGIN` | Origin completo del browser, obbligatorio in LAN |
+| `TRUST_PROXY` | `loopback` solo per un reverse proxy sulla stessa macchina |
 | `POS_SEED_DEMO` | Prodotti demo al primo avvio (`0` per disattivare) |
 | `BACKUP_KEEP` | Quanti backup conservare |
 | `PORT` | Porta HTTP (`3000` di default) |
@@ -178,8 +181,10 @@ Con `APP_PIN` impostato, l'accesso è protetto da un **PIN-pad** touch:
 </div>
 
 > **Accesso da tablet in LAN:** imposta `HOST=0.0.0.0` e configura sempre
-> `APP_PIN`; senza PIN il server rifiuta l'avvio su interfacce non locali.
-> Il server usa HTTP: su reti non fidate va pubblicato dietro HTTPS.
+> `APP_PIN`, `ALLOWED_HOSTS` e `PUBLIC_ORIGIN`; senza questi valori il server
+> rifiuta l'avvio. Se HTTPS termina su nginx/Caddy nella stessa macchina,
+> imposta anche `TRUST_PROXY=loopback`: il cookie diventa `Secure` e il rate
+> limiting usa l'IP client inoltrato dal proxy attendibile.
 
 <br>
 

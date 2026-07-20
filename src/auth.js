@@ -98,8 +98,16 @@ function loginBlockedMs(ip, now) {
   return LOCK_MS - (now - entry.last_fail_at);
 }
 
-function sessionCookie(token, maxAgeSeconds) {
-  return `${COOKIE_NAME}=${token}; HttpOnly; Path=/; SameSite=Strict; Max-Age=${maxAgeSeconds}`;
+function sessionCookie(token, maxAgeSeconds, secure) {
+  const attributes = [
+    `${COOKIE_NAME}=${token}`,
+    "HttpOnly",
+    "Path=/",
+    "SameSite=Strict",
+    `Max-Age=${maxAgeSeconds}`,
+  ];
+  if (secure) attributes.push("Secure");
+  return attributes.join("; ");
 }
 
 // Handler di login: verifica il PIN e crea una sessione casuale, non derivata
@@ -133,7 +141,7 @@ function loginHandler(req, res) {
   db.prepare("DELETE FROM login_attempts WHERE client_key = ?").run(ip);
   const token = createSession(now);
   res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Set-Cookie", sessionCookie(token, SESSION_TTL_MS / 1000));
+  res.setHeader("Set-Cookie", sessionCookie(token, SESSION_TTL_MS / 1000, req.secure));
   res.json({ ok: true });
 }
 
@@ -143,7 +151,7 @@ function logoutHandler(req, res) {
     db.prepare("DELETE FROM auth_sessions WHERE token_digest = ?").run(tokenDigest(token));
   }
   res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Set-Cookie", sessionCookie("", 0));
+  res.setHeader("Set-Cookie", sessionCookie("", 0, req.secure));
   res.json({ ok: true });
 }
 

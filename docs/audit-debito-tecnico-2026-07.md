@@ -24,7 +24,7 @@ restano come evidenza storica dei problemi originariamente rilevati.
 | P1.6–P1.8 | Chiuso | aggregazioni incrementali, cursor pagination, FTS trigram, CSV streaming e neutralizzazione formule |
 | P1.9 | Differito per decisione prodotto | stampa mantenuta intenzionalmente come stub console fino alla scelta della stampante |
 | P2.1 | Chiuso | router sottili e servizi di dominio; ratchet dimensionali backend |
-| P2.2 | Chiuso per il modello locale | PIN LAN minimo, sessioni/rate limit persistenti, singolo processo imposto; HTTPS resta responsabilita' del deployment |
+| P2.2 | Chiuso per il modello locale | PIN LAN minimo, origin/Host verificati, proxy loopback esplicito, cookie Secure su HTTPS, sessioni/rate limit persistenti e singolo processo imposto |
 | P2.3–P2.4 | Chiuso | live region, tab e riordino da tastiera; porta/retention/locale/codice valuta validati |
 | P2.5 | Chiuso | request ID, health check, log JSON opzionali e audit trail SQLite senza payload sensibili |
 | P2.6 | Chiuso | CI unit/coverage/E2E/scale/fault, smoke macOS e Dependabot |
@@ -32,14 +32,30 @@ restano come evidenza storica dei problemi originariamente rilevati.
 
 ### Gate verificati sullo stato corrente
 
-- `npm test`: 85/85 test verdi;
-- `npm run coverage`: 92,15% righe, 77,69% branch, 96,31% funzioni sulla tranche schema/audit;
+- `npm test`: 94/94 test verdi;
+- `npm run coverage`: 92,16% righe, 77,80% branch, 96,44% funzioni;
 - `npm run test:e2e`: 10/10 flussi verdi dopo la separazione dei controller;
 - `npm run test:scale`: aggregazione su 100.000 vendite e contesa WAL verdi;
 - `npm run test:fault`: migrazioni/restore interrotti, backup preventivo e stampa pendente verdi.
 
-Il solo elemento intenzionalmente non implementato e' P1.9. Non va riaperto finche' non
-viene scelto il prodotto di stampa e definito il relativo protocollo USB/LAN.
+Il solo elemento del backlog originario intenzionalmente non implementato e' P1.9. Non va
+riaperto finche' non viene scelto il prodotto di stampa e definito il relativo protocollo
+USB/LAN.
+
+### Integrazione post-consolidamento — sicurezza HTTP
+
+La prima tranche dei rilievi emersi dopo il consolidamento e' chiusa:
+
+| Rilievo | Stato | Evidenza |
+|---|---|---|
+| Mutazioni cross-site possibili senza `APP_PIN` | Chiuso | guardia sulle mutazioni API con Fetch Metadata e verifica `Origin`; la riproduzione avversariale riceve 403 e non annulla la vendita |
+| DNS rebinding / Host arbitrario | Chiuso | allowlist `ALLOWED_HOSTS`; richieste con Host non autorizzato ricevono 421 |
+| Contratto reverse proxy incompleto | Chiuso per proxy sulla stessa macchina | `TRUST_PROXY=loopback`, cookie `Secure` quando HTTPS e' attestato dal proxy, `X-Forwarded-For` ignorato senza trust e usato per-client con trust |
+| Form cross-site con content type semplice | Chiuso | i body delle mutazioni accettano JSON; il restore mantiene esclusivamente i MIME SQLite previsti |
+
+Per l'esposizione LAN sono ora obbligatori `APP_PIN`, `ALLOWED_HOSTS` e `PUBLIC_ORIGIN`.
+Se `PUBLIC_ORIGIN` usa HTTPS, il server richiede anche `TRUST_PROXY=loopback`; la
+terminazione TLS resta responsabilita' del deployment.
 
 ## Verdetto esecutivo
 
