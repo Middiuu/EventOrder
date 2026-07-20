@@ -5,6 +5,8 @@ const Database = require("better-sqlite3");
 const { config } = require("./config");
 const { validateCanonicalDatabase } = require("./database-validation");
 const { fsyncDirectory } = require("./fs-durability");
+const { pruneBackupFiles } = require("./backup-files");
+const { pruneServiceData } = require("./service-data-retention");
 
 const DB_PATH = process.env.POS_DB_PATH
   ? path.resolve(process.env.POS_DB_PATH)
@@ -599,6 +601,16 @@ function createPreMigrationBackup(database, fromVersion, toVersion) {
     try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
     fs.renameSync(tempPath, backupPath);
     fsyncDirectory(backupsDir);
+    try {
+      pruneBackupFiles(backupsDir, {
+        slug: config.SLUG,
+        keepOperational: 0,
+        keepPreMigration: config.PRE_MIGRATION_BACKUP_KEEP,
+        protectedNames: [backupName],
+      });
+    } catch (error) {
+      console.warn("Rotazione backup pre-migrazione non riuscita:", error.message);
+    }
     return backupPath;
   } finally {
     try { verification?.close(); } catch {}
@@ -684,6 +696,11 @@ function initDb() {
     INSERT OR IGNORE INTO app_state (key, int_value)
     VALUES ('database_instance_id', ?)
   `).run(newDatabaseInstanceId());
+
+  pruneServiceData(db, {
+    auditRetentionDays: config.AUDIT_RETENTION_DAYS,
+    operationRetentionDays: config.OPERATION_REQUEST_RETENTION_DAYS,
+  });
 }
 
 function newDatabaseInstanceId() {

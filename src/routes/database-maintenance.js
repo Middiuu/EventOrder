@@ -13,6 +13,7 @@ const {
 } = require("../db");
 const { clearAuthenticationState } = require("../auth");
 const { config } = require("../config");
+const { isDownloadableBackupName, pruneBackupFiles } = require("../backup-files");
 const {
   beginBackup,
   endBackup,
@@ -39,17 +40,13 @@ function getBackupsDir() {
 }
 
 function pruneBackups(backupsDir, protectedName) {
-  if (!config.BACKUP_KEEP) return;
   try {
-    const files = fs.readdirSync(backupsDir)
-      .filter(file => file.endsWith(".sqlite"))
-      .map(file => ({ file, modifiedAt: fs.statSync(path.join(backupsDir, file)).mtimeMs }))
-      .sort((left, right) => right.modifiedAt - left.modifiedAt);
-
-    const older = files.filter(({ file }) => file !== protectedName);
-    for (const { file } of older.slice(Math.max(0, config.BACKUP_KEEP - 1))) {
-      fs.rmSync(path.join(backupsDir, file), { force: true });
-    }
+    pruneBackupFiles(backupsDir, {
+      slug: config.SLUG,
+      keepOperational: config.BACKUP_KEEP,
+      keepPreMigration: config.PRE_MIGRATION_BACKUP_KEEP,
+      protectedNames: [protectedName],
+    });
   } catch (error) {
     console.warn("Rotazione backup non riuscita:", error.message);
   }
@@ -109,10 +106,7 @@ router.get("/backup", (req, res) => {
 
 router.get("/backup/:filename", async (req, res, next) => {
   const filename = String(req.params.filename || "");
-  const allowedName = new RegExp(
-    `^${config.SLUG}-(?:backup|pre-restore)-\\d{8}-\\d{6}(?:-\\d+)?\\.sqlite$`
-  );
-  if (!allowedName.test(filename)) {
+  if (!isDownloadableBackupName(filename, config.SLUG)) {
     return res.status(400).json({ error: "Nome backup non valido" });
   }
 

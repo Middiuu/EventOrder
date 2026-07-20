@@ -177,6 +177,41 @@ test("un database v11 con relazioni orfane fallisce foreign_key_check", () => {
   }
 });
 
+test("un database v11 con indice FTS disallineato viene rifiutato", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
+  const dbPath = path.join(tempDir, "pos.sqlite");
+  const Database = require("better-sqlite3");
+
+  try {
+    const malformed = new Database(dbPath);
+    malformed.exec(fs.readFileSync(path.join(__dirname, "..", "src", "schema.sql"), "utf8"));
+    malformed.exec(`
+      INSERT INTO products (id, name, price_cents) VALUES (1, 'Prodotto FTS', 500);
+      INSERT INTO sales (id, sale_number, total_cents) VALUES (1, 1, 500);
+      INSERT INTO sale_items (
+        id, sale_id, product_id, qty, unit_price_cents, line_total_cents, product_name
+      ) VALUES (1, 1, 1, 1, 500, 500, 'Prodotto FTS');
+      PRAGMA user_version = 11;
+    `);
+    malformed.close();
+
+    const dbModule = loadDbModule(dbPath);
+    assert.throws(
+      () => dbModule.initDb(),
+      /Database attivo non valido: integrity-check FTS fallito/i
+    );
+    assert.equal(dbModule.db.prepare("SELECT COUNT(*) AS count FROM sale_items").get().count, 1);
+    assert.equal(
+      dbModule.db.prepare("SELECT COUNT(*) AS count FROM sale_items_search WHERE sale_items_search MATCH 'Prodotto'").get().count,
+      0
+    );
+    dbModule.db.close();
+  } finally {
+    delete process.env.POS_DB_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("getNextSaleNumber incrementa in modo progressivo e resta allineato alle vendite esistenti", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
   const dbPath = path.join(tempDir, "pos.sqlite");
@@ -200,6 +235,36 @@ test("getNextSaleNumber incrementa in modo progressivo e resta allineato alle ve
 
     assert.equal(dbModule.getNextSaleNumber(), 9);
 
+    dbModule.db.close();
+  } finally {
+    delete process.env.POS_DB_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("initDb applica la retention ai dati di servizio scaduti", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
+  const dbPath = path.join(tempDir, "pos.sqlite");
+
+  try {
+    let dbModule = loadDbModule(dbPath);
+    dbModule.initDb();
+    dbModule.db.exec(`
+      INSERT INTO cash_sessions (id, opened_at, closed_at)
+      VALUES (1, '2020-01-01 00:00:00', '2020-01-01 01:00:00');
+      INSERT INTO operation_requests
+        (operation, request_id, request_fingerprint, session_id, response_json, created_at)
+      VALUES
+        ('cash_movement', 'expired-request', '${"d".repeat(64)}', 1, '{}', '2020-01-01 00:00:00');
+      INSERT INTO audit_events (event_type, outcome, status_code, occurred_at)
+      VALUES ('post:expired', 'success', 200, '2020-01-01 00:00:00');
+    `);
+    dbModule.db.close();
+
+    dbModule = loadDbModule(dbPath);
+    dbModule.initDb();
+    assert.equal(dbModule.db.prepare("SELECT COUNT(*) AS count FROM operation_requests").get().count, 0);
+    assert.equal(dbModule.db.prepare("SELECT COUNT(*) AS count FROM audit_events").get().count, 0);
     dbModule.db.close();
   } finally {
     delete process.env.POS_DB_PATH;

@@ -170,7 +170,10 @@ OPERATORS=Anna,Luca,Marco
 | `PUBLIC_ORIGIN` | Origin completo del browser, obbligatorio in LAN |
 | `TRUST_PROXY` | `loopback` solo per un reverse proxy sulla stessa macchina |
 | `POS_SEED_DEMO` | Prodotti demo al primo avvio (`0` per disattivare) |
-| `BACKUP_KEEP` | Quanti backup conservare |
+| `BACKUP_KEEP` | Quanti backup manuali/pre-restore conservare (`0` = illimitati) |
+| `PRE_MIGRATION_BACKUP_KEEP` | Quanti backup pre-migrazione conservare separatamente |
+| `AUDIT_RETENTION_DAYS` | Giorni di audit operativo da conservare (`0` = illimitato) |
+| `OPERATION_REQUEST_RETENTION_DAYS` | Giorni di replay idempotenti dei turni chiusi (`0` = illimitati) |
 | `PORT` | Porta HTTP (`3000` di default) |
 | `LOG_REQUESTS` | Log JSON delle richieste (`1` per attivarli) |
 

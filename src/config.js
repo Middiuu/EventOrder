@@ -48,6 +48,13 @@ function integerEnv(name, fallback, { min, max }) {
 }
 
 const BACKUP_KEEP = integerEnv("BACKUP_KEEP", 20, { min: 0, max: 10000 });
+const PRE_MIGRATION_BACKUP_KEEP = integerEnv(
+  "PRE_MIGRATION_BACKUP_KEEP", 3, { min: 0, max: 10000 }
+);
+const AUDIT_RETENTION_DAYS = integerEnv("AUDIT_RETENTION_DAYS", 90, { min: 0, max: 36500 });
+const OPERATION_REQUEST_RETENTION_DAYS = integerEnv(
+  "OPERATION_REQUEST_RETENTION_DAYS", 30, { min: 0, max: 36500 }
+);
 const PORT = integerEnv("PORT", 3000, { min: 0, max: 65535 });
 const LOG_REQUESTS = process.env.LOG_REQUESTS === "1";
 
@@ -150,6 +157,9 @@ const config = {
   LOCALE,
   SEED_DEMO,
   BACKUP_KEEP,
+  PRE_MIGRATION_BACKUP_KEEP,
+  AUDIT_RETENTION_DAYS,
+  OPERATION_REQUEST_RETENTION_DAYS,
   OPERATORS,
   APP_PIN,
   HOST,

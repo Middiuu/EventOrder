@@ -18,6 +18,10 @@ function loadConfig(env) {
       TRUST_PROXY: "",
       WEB_CONCURRENCY: "",
       NODE_UNIQUE_ID: "",
+      BACKUP_KEEP: "",
+      PRE_MIGRATION_BACKUP_KEEP: "",
+      AUDIT_RETENTION_DAYS: "",
+      OPERATION_REQUEST_RETENTION_DAYS: "",
       ...env,
     },
     encoding: "utf8",
@@ -25,17 +29,31 @@ function loadConfig(env) {
 }
 
 test("valida porta, retention, locale e codice valuta", () => {
-  const valid = loadConfig({ PORT: "0", BACKUP_KEEP: "0", LOCALE: "en-GB", CURRENCY_CODE: "gbp" });
+  const valid = loadConfig({
+    PORT: "0",
+    BACKUP_KEEP: "0",
+    PRE_MIGRATION_BACKUP_KEEP: "2",
+    AUDIT_RETENTION_DAYS: "0",
+    OPERATION_REQUEST_RETENTION_DAYS: "45",
+    LOCALE: "en-GB",
+    CURRENCY_CODE: "gbp",
+  });
   assert.equal(valid.status, 0, valid.stderr);
   const config = JSON.parse(valid.stdout);
   assert.equal(config.PORT, 0);
   assert.equal(config.BACKUP_KEEP, 0);
+  assert.equal(config.PRE_MIGRATION_BACKUP_KEEP, 2);
+  assert.equal(config.AUDIT_RETENTION_DAYS, 0);
+  assert.equal(config.OPERATION_REQUEST_RETENTION_DAYS, 45);
   assert.equal(config.CURRENCY_CODE, "GBP");
 
   for (const [name, value, message] of [
     ["PORT", "abc", /PORT deve essere un numero intero/],
     ["PORT", "65536", /PORT deve essere compreso/],
     ["BACKUP_KEEP", "-1", /BACKUP_KEEP deve essere un numero intero/],
+    ["PRE_MIGRATION_BACKUP_KEEP", "10001", /PRE_MIGRATION_BACKUP_KEEP deve essere compreso/],
+    ["AUDIT_RETENTION_DAYS", "-1", /AUDIT_RETENTION_DAYS deve essere un numero intero/],
+    ["OPERATION_REQUEST_RETENTION_DAYS", "abc", /OPERATION_REQUEST_RETENTION_DAYS deve essere un numero intero/],
     ["CURRENCY_CODE", "NOPE", /LOCALE o CURRENCY_CODE non validi/],
   ]) {
     const result = loadConfig({ [name]: value });

@@ -4,7 +4,7 @@
 
 **Baseline storica analizzata:** `645fe5f` (`main`, "Harden frontend and quality gates")
 
-**Stato implementazione:** seconda tranche su `main` (20 luglio 2026; base `2b0468b`)
+**Stato implementazione:** terza tranche su `main` (20 luglio 2026; base `2400491`)
 
 **Ambito:** frontend, backend, database, backup/restore, sicurezza, test, dipendenze e CI
 
@@ -32,11 +32,11 @@ restano come evidenza storica dei problemi originariamente rilevati.
 
 ### Gate verificati sullo stato corrente
 
-- `npm test`: 101/101 test verdi;
-- `npm run coverage`: 92,36% righe, 78,08% branch, 96,53% funzioni;
+- `npm test`: 107/107 test verdi;
+- `npm run coverage`: 92,62% righe, 78,70% branch, 96,60% funzioni;
 - `npm run test:e2e`: 10/10 flussi verdi dopo la separazione dei controller;
-- `npm run test:scale`: 11/11, inclusi aggregazione su 100.000 vendite e contesa WAL;
-- `npm run test:fault`: 13/13, inclusi migrazioni/restore interrotti, backup preventivo e stampa pendente.
+- `npm run test:scale`: 13/13, inclusi aggregazione su 100.000 vendite e contesa WAL;
+- `npm run test:fault`: 15/15, inclusi migrazioni/restore interrotti, backup preventivo e stampa pendente.
 
 Il solo elemento del backlog originario intenzionalmente non implementato e' P1.9. Non va
 riaperto finche' non viene scelto il prodotto di stampa e definito il relativo protocollo
@@ -72,6 +72,20 @@ Il database corrente non viene riparato implicitamente quando dichiara gia' la v
 canonica: in caso di schema o dati non validi l'operatore riceve un errore esplicito e deve
 ripristinare un backup compatibile. Le verifiche sono state ripetute su Node 24.14.0 in
 una copia temporanea isolata; `pos.sqlite` e i sidecar reali non sono stati modificati.
+
+### Integrazione post-consolidamento — ciclo di vita operativo
+
+La terza tranche chiude i residui operativi R1 e R2 e completa il controllo FTS:
+
+| Rilievo | Stato | Evidenza |
+|---|---|---|
+| L'indice FTS poteva essere strutturalmente valido ma disallineato da `sale_items` | Chiuso | il validatore esegue anche `integrity-check` FTS5 con confronto del contenuto esterno; una fixture con riga non indicizzata viene rifiutata prima dell'avvio |
+| `audit_events` e `operation_requests` crescevano senza limite | Chiuso | retention atomica all'avvio: audit 90 giorni, replay 30 giorni e solo per turni chiusi; entrambi configurabili con `0` per conservazione illimitata |
+| I backup pre-migrazione non erano scaricabili e competevano nella rotazione ordinaria | Chiuso | whitelist condivisa, download HTTP ammesso, quota separata pre-migrazione (default 3) e rotazione limitata ai soli nomi EventOrder riconosciuti |
+
+La retention non elimina mai vendite, articoli venduti, movimenti di cassa o turni. I replay
+dei turni ancora aperti vengono conservati indipendentemente dall'eta'. File `.sqlite` con
+nomi sconosciuti e link simbolici non partecipano alla rotazione automatica.
 
 ## Verdetto esecutivo
 

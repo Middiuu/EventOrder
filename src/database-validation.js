@@ -81,6 +81,16 @@ function validateCanonicalDatabase(database, schema, expectedVersion, { fullInte
     const first = foreignKeyErrors[0];
     throw new Error(`foreign_key_check fallito: ${first.table}, riga ${first.rowid}`);
   }
+
+  try {
+    // Con rank=1 FTS5 confronta anche l'indice esterno con sale_items.
+    database.prepare(`
+      INSERT INTO sale_items_search(sale_items_search, rank)
+      VALUES('integrity-check', 1)
+    `).run();
+  } catch (err) {
+    throw new Error(`integrity-check FTS fallito: ${err.message}`, { cause: err });
+  }
 }
 
 module.exports = { validateCanonicalDatabase };

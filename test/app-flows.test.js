@@ -154,6 +154,13 @@ test("flussi vendite, report, export, backup e annullo funzionano insieme", asyn
       assert.equal(Number(backupRes.headers["content-length"]), backupRes.buffer.length);
       assert.equal(backupCreated.json().size_bytes, backupRes.buffer.length);
       assert.equal(backupRes.headers["cache-control"], "no-store");
+      const migrationName = "eventorder-pre-migration-v4-to-v11-20260720-120000.sqlite";
+      fs.writeFileSync(path.join(harness.tempDir, "backups", migrationName), backupRes.buffer);
+      const migrationBackup = await request({
+        url: `/api/reports/backup/${migrationName}`,
+      });
+      assert.equal(migrationBackup.status, 200);
+      assert.equal(migrationBackup.buffer.length, backupRes.buffer.length);
       const unsafeGet = await request({ url: "/api/reports/backup" });
       assert.equal(unsafeGet.status, 405);
       assert.equal(unsafeGet.headers.allow, "POST");
