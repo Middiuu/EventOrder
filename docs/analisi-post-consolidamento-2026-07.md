@@ -258,3 +258,23 @@ Restano aperti R4 (copertura di logging JSON e disconnessione durante CSV stream
 accorpare a un futuro bump dello schema). R7 resta un elenco di rilievi minori. Stampa
 hardware e terminazione TLS restano deliberatamente fuori perimetro secondo le decisioni
 di progetto gia' documentate.
+
+### Completamento R4 — 20 luglio 2026
+
+R4 e' chiuso con tre test mirati e nessuna modifica al comportamento applicativo:
+
+- il middleware con `LOG_REQUESTS=1` emette al `finish` un record JSON verificato campo
+  per campo, inclusi request ID, metodo, path, status e durata;
+- lo streaming CSV sotto backpressure riprende dopo `drain`, rimuove i listener e termina
+  normalmente;
+- se il client emette `close`, lo stream interrompe subito il generatore, non legge righe
+  successive, rimuove i listener e non chiama `res.end()`.
+
+La copertura complessiva `src/**` e' ora 93,28% linee / 78,88% rami / 97,48% funzioni;
+`observability.js` passa dal 37,78% all'86,67% delle linee e
+`reporting/exports.js` raggiunge il 98,11% delle linee. La suite conta 114/114 test verdi;
+scale e fault restano verdi rispettivamente 16/16 e 18/18.
+
+Restano quindi R5, subordinato a un bisogno reale di configurare la durata delle sessioni,
+R6, da accorpare a un futuro bump dello schema, e i rilievi minori R7. Questo paragrafo
+sostituisce lo stato di R4 riportato nell'addendum immediatamente precedente.

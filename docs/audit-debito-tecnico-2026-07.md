@@ -4,7 +4,7 @@
 
 **Baseline storica analizzata:** `645fe5f` (`main`, "Harden frontend and quality gates")
 
-**Stato implementazione:** quarta tranche su `main` (20 luglio 2026; base `c6febe2`)
+**Stato implementazione:** quinta tranche su `main` (20 luglio 2026; base `14be3f5`)
 
 **Ambito:** frontend, backend, database, backup/restore, sicurezza, test, dipendenze e CI
 
@@ -32,11 +32,11 @@ restano come evidenza storica dei problemi originariamente rilevati.
 
 ### Gate verificati sullo stato corrente
 
-- `npm test`: 111/111 test verdi;
-- `npm run coverage`: 92,62% righe, 78,70% branch, 96,60% funzioni;
+- `npm test`: 114/114 test verdi;
+- `npm run coverage`: 93,28% righe, 78,88% branch, 97,48% funzioni;
 - `npm run test:e2e`: 10/10 flussi verdi dopo la separazione dei controller;
-- `npm run test:scale`: 14/14, inclusi aggregazione su 100.000 vendite e contesa WAL;
-- `npm run test:fault`: 16/16, inclusi migrazioni/restore interrotti, backup preventivo e stampa pendente.
+- `npm run test:scale`: 16/16, inclusi aggregazione su 100.000 vendite e contesa WAL;
+- `npm run test:fault`: 18/18, inclusi migrazioni/restore interrotti, backup preventivo e stampa pendente.
 
 Il solo elemento del backlog originario intenzionalmente non implementato e' P1.9. Non va
 riaperto finche' non viene scelto il prodotto di stampa e definito il relativo protocollo
@@ -102,6 +102,21 @@ globale prima del controller Cassa in tutte le shell di ingresso.
 
 I ratchet sono limiti di non-regressione: non vanno alzati per ospitare nuove feature; la
 logica aggiuntiva va estratta nel modulo di dominio o servizio piu' vicino.
+
+### Integrazione post-consolidamento — percorsi d'errore osservabilita' ed export
+
+La quinta tranche chiude R4 con test mirati, senza modifiche al codice applicativo:
+
+| Punto cieco | Stato | Evidenza |
+|---|---|---|
+| Il logging HTTP con `LOG_REQUESTS=1` non era esercitato | Chiuso | il test esegue il middleware reale, attende `finish` e valida il record JSON con request ID, metodo, path, status e durata |
+| Lo streaming CSV non era testato sotto backpressure | Chiuso | una risposta simulata emette `drain`; lo stream riprende, scrive le righe successive, rimuove i listener e termina |
+| La disconnessione durante lo streaming non era testata | Chiuso | una risposta simulata emette `close`; il generatore non legge altre righe, i listener vengono rimossi e `res.end()` non viene chiamato |
+
+La copertura di `observability.js` sale dal 37,78% all'86,67% delle linee; quella di
+`reporting/exports.js` arriva al 98,11% delle linee e al 94,74% delle funzioni. Il debito
+residuo post-consolidamento resta limitato a R5 e R6, entrambi rinviati a un'esigenza
+operativa o a un futuro bump dello schema, oltre ai rilievi minori R7.
 
 ## Verdetto esecutivo
 
