@@ -51,6 +51,132 @@ test("initDb crea schema, seed iniziale e contatore vendite", () => {
   }
 });
 
+test("un database v11 con schema imitato viene rifiutato senza essere modificato", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
+  const dbPath = path.join(tempDir, "pos.sqlite");
+  const Database = require("better-sqlite3");
+
+  try {
+    const malformed = new Database(dbPath);
+    malformed.exec(`
+      CREATE TABLE products (
+        id INTEGER PRIMARY KEY,
+        name TEXT,
+        price_cents INTEGER,
+        category TEXT
+      );
+      INSERT INTO products VALUES (1, 'Prezzo impossibile', -500, 'Test');
+      PRAGMA user_version = 11;
+    `);
+    malformed.close();
+
+    const dbModule = loadDbModule(dbPath);
+    assert.throws(
+      () => dbModule.initDb(),
+      /Database attivo non valido: schema SQLite non canonico.*products/i
+    );
+    assert.equal(dbModule.db.prepare("SELECT price_cents FROM products").get().price_cents, -500);
+    assert.doesNotMatch(
+      dbModule.db.prepare("SELECT sql FROM sqlite_master WHERE name='products'").get().sql,
+      /CHECK\s*\(/i
+    );
+    assert.equal(
+      dbModule.db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name='cash_sessions'").get().count,
+      0
+    );
+    dbModule.db.close();
+  } finally {
+    delete process.env.POS_DB_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("un database v11 canonico con dati fuori vincolo fallisce quick_check", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
+  const dbPath = path.join(tempDir, "pos.sqlite");
+  const Database = require("better-sqlite3");
+
+  try {
+    const malformed = new Database(dbPath);
+    malformed.exec(fs.readFileSync(path.join(__dirname, "..", "src", "schema.sql"), "utf8"));
+    malformed.exec(`
+      PRAGMA ignore_check_constraints = ON;
+      INSERT INTO products (name, price_cents) VALUES ('Prezzo impossibile', -500);
+      PRAGMA ignore_check_constraints = OFF;
+      PRAGMA user_version = 11;
+    `);
+    malformed.close();
+
+    const dbModule = loadDbModule(dbPath);
+    assert.throws(
+      () => dbModule.initDb(),
+      /Database attivo non valido: quick_check.*products/i
+    );
+    assert.equal(dbModule.db.prepare("SELECT price_cents FROM products").get().price_cents, -500);
+    dbModule.db.close();
+  } finally {
+    delete process.env.POS_DB_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("un database v11 privo di un indice canonico viene rifiutato", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
+  const dbPath = path.join(tempDir, "pos.sqlite");
+  const Database = require("better-sqlite3");
+
+  try {
+    const malformed = new Database(dbPath);
+    malformed.exec(fs.readFileSync(path.join(__dirname, "..", "src", "schema.sql"), "utf8"));
+    malformed.exec("DROP INDEX idx_products_active; PRAGMA user_version = 11;");
+    malformed.close();
+
+    const dbModule = loadDbModule(dbPath);
+    assert.throws(
+      () => dbModule.initDb(),
+      /Database attivo non valido: schema SQLite non canonico.*idx_products_active/i
+    );
+    assert.equal(
+      dbModule.db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name='idx_products_active'").get().count,
+      0
+    );
+    dbModule.db.close();
+  } finally {
+    delete process.env.POS_DB_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("un database v11 con relazioni orfane fallisce foreign_key_check", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
+  const dbPath = path.join(tempDir, "pos.sqlite");
+  const Database = require("better-sqlite3");
+
+  try {
+    const malformed = new Database(dbPath);
+    malformed.exec(fs.readFileSync(path.join(__dirname, "..", "src", "schema.sql"), "utf8"));
+    malformed.exec(`
+      PRAGMA foreign_keys = OFF;
+      INSERT INTO sale_items (
+        sale_id, product_id, qty, unit_price_cents, line_total_cents
+      ) VALUES (999, 999, 1, 500, 500);
+      PRAGMA user_version = 11;
+    `);
+    malformed.close();
+
+    const dbModule = loadDbModule(dbPath);
+    assert.throws(
+      () => dbModule.initDb(),
+      /Database attivo non valido: foreign_key_check.*sale_items/i
+    );
+    assert.equal(dbModule.db.prepare("SELECT COUNT(*) AS count FROM sale_items").get().count, 1);
+    dbModule.db.close();
+  } finally {
+    delete process.env.POS_DB_PATH;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("getNextSaleNumber incrementa in modo progressivo e resta allineato alle vendite esistenti", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-test-"));
   const dbPath = path.join(tempDir, "pos.sqlite");

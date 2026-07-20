@@ -4,7 +4,7 @@
 
 **Baseline storica analizzata:** `645fe5f` (`main`, "Harden frontend and quality gates")
 
-**Stato implementazione:** `6710180` (`main`, 18 luglio 2026)
+**Stato implementazione:** seconda tranche su `main` (20 luglio 2026; base `2b0468b`)
 
 **Ambito:** frontend, backend, database, backup/restore, sicurezza, test, dipendenze e CI
 
@@ -32,11 +32,11 @@ restano come evidenza storica dei problemi originariamente rilevati.
 
 ### Gate verificati sullo stato corrente
 
-- `npm test`: 94/94 test verdi;
-- `npm run coverage`: 92,16% righe, 77,80% branch, 96,44% funzioni;
+- `npm test`: 101/101 test verdi;
+- `npm run coverage`: 92,36% righe, 78,08% branch, 96,53% funzioni;
 - `npm run test:e2e`: 10/10 flussi verdi dopo la separazione dei controller;
-- `npm run test:scale`: aggregazione su 100.000 vendite e contesa WAL verdi;
-- `npm run test:fault`: migrazioni/restore interrotti, backup preventivo e stampa pendente verdi.
+- `npm run test:scale`: 11/11, inclusi aggregazione su 100.000 vendite e contesa WAL;
+- `npm run test:fault`: 13/13, inclusi migrazioni/restore interrotti, backup preventivo e stampa pendente.
 
 Il solo elemento del backlog originario intenzionalmente non implementato e' P1.9. Non va
 riaperto finche' non viene scelto il prodotto di stampa e definito il relativo protocollo
@@ -56,6 +56,22 @@ La prima tranche dei rilievi emersi dopo il consolidamento e' chiusa:
 Per l'esposizione LAN sono ora obbligatori `APP_PIN`, `ALLOWED_HOSTS` e `PUBLIC_ORIGIN`.
 Se `PUBLIC_ORIGIN` usa HTTPS, il server richiede anche `TRUST_PROXY=loopback`; la
 terminazione TLS resta responsabilita' del deployment.
+
+### Integrazione post-consolidamento — integrita' del database attivo
+
+La seconda tranche dei rilievi emersi dopo il consolidamento e' chiusa:
+
+| Rilievo | Stato | Evidenza |
+|---|---|---|
+| Un DB che dichiara `user_version=11` poteva essere completato con `CREATE ... IF NOT EXISTS` senza verificarne l'equivalenza | Chiuso | l'avvio confronta tabelle, indici, viste, trigger e strutture FTS con un database canonico generato da `schema.sql`; una differenza causa fail-closed prima di WAL, seed o altre scritture |
+| Vincoli violati o relazioni orfane nel DB attivo non bloccavano l'avvio | Chiuso | `quick_check` e `foreign_key_check` sono obbligatori; test avversariali coprono prezzo negativo e `sale_items` orfana |
+| Migrazione e restore avevano controlli finali non uniformi | Chiuso | migrazione, creazione iniziale e copia canonicalizzata del restore riusano lo stesso validatore; il restore usa `integrity_check` completo |
+| `fsync` della directory ignorava qualsiasi eccezione | Chiuso | sono tollerati soltanto `EINVAL`, `ENOTSUP` ed `EOPNOTSUPP`; errori reali come `EIO` ed `EACCES` vengono propagati e testati |
+
+Il database corrente non viene riparato implicitamente quando dichiara gia' la versione
+canonica: in caso di schema o dati non validi l'operatore riceve un errore esplicito e deve
+ripristinare un backup compatibile. Le verifiche sono state ripetute su Node 24.14.0 in
+una copia temporanea isolata; `pos.sqlite` e i sidecar reali non sono stati modificati.
 
 ## Verdetto esecutivo
 

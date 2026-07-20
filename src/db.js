@@ -3,6 +3,8 @@ const path = require("path");
 const crypto = require("crypto");
 const Database = require("better-sqlite3");
 const { config } = require("./config");
+const { validateCanonicalDatabase } = require("./database-validation");
+const { fsyncDirectory } = require("./fs-durability");
 
 const DB_PATH = process.env.POS_DB_PATH
   ? path.resolve(process.env.POS_DB_PATH)
@@ -13,19 +15,6 @@ const DB_BUSY_TIMEOUT_MS = 5000;
 const RESTORE_MARKER_PATH = `${DB_PATH}.restore-state.json`;
 const MIGRATION_MARKER_PATH = `${DB_PATH}.migration-state.json`;
 const DB_SIDECAR_PATHS = [`${DB_PATH}-wal`, `${DB_PATH}-shm`];
-
-function fsyncDirectory(dirPath) {
-  let fd;
-  try {
-    fd = fs.openSync(dirPath, "r");
-    fs.fsyncSync(fd);
-  } catch {
-    // Alcuni filesystem non consentono fsync sulle directory. I file sono
-    // comunque sincronizzati singolarmente prima di ogni rename.
-  } finally {
-    if (fd !== undefined) fs.closeSync(fd);
-  }
-}
 
 // I sidecar WAL appartengono esattamente al file DB corrente. Li rimuoviamo
 // solo al boot, prima di recuperare un database da un marker di restore e
@@ -628,10 +617,23 @@ function initDb() {
   if (previousVersion > DB_SCHEMA_VERSION) {
     throw new Error(`Database creato da una versione piu' recente (${previousVersion})`);
   }
-  configureDurability();
 
   const hasLegacyTables = CANONICAL_TABLES.some(table => tableExistsIn(db, table));
-  if (hasLegacyTables && previousVersion < DB_SCHEMA_VERSION) {
+  if (previousVersion === DB_SCHEMA_VERSION) {
+    try {
+      // Un file che dichiara la versione corrente non deve essere corretto
+      // implicitamente: prima dell'avvio deve gia' rispettare lo schema.
+      validateCanonicalDatabase(db, schema, DB_SCHEMA_VERSION);
+    } catch (err) {
+      throw new Error(
+        `Database attivo non valido: ${err.message}. ` +
+        "Ripristina un backup compatibile prima di avviare EventOrder.",
+        { cause: err }
+      );
+    }
+    configureDurability();
+  } else if (hasLegacyTables) {
+    configureDurability();
     const migration = migrationForSource(previousVersion);
     const safetyBackupPath = createPreMigrationBackup(
       db,
@@ -640,16 +642,13 @@ function initDb() {
     );
     writeMigrationMarker(safetyBackupPath, previousVersion, migration.targetVersion);
     migrateLegacySchema(db, schema, previousVersion);
-    const quickCheck = db.pragma("quick_check");
-    if (quickCheck.length !== 1 || quickCheck[0].quick_check !== "ok") {
-      throw new Error("Il database migrato non supera quick_check");
-    }
+    validateCanonicalDatabase(db, schema, DB_SCHEMA_VERSION);
     completeMigrationMarker();
   } else {
+    configureDurability();
     db.exec(schema);
-    if (previousVersion < DB_SCHEMA_VERSION) {
-      db.pragma(`user_version = ${DB_SCHEMA_VERSION}`);
-    }
+    db.pragma(`user_version = ${DB_SCHEMA_VERSION}`);
+    validateCanonicalDatabase(db, schema, DB_SCHEMA_VERSION);
   }
 
   // seed demo generico se non ci sono prodotti (disattivabile con POS_SEED_DEMO=0)
@@ -763,13 +762,7 @@ function canonicalizeRestoreCandidate(candidatePath, sourceVersion) {
     const schema = fs.readFileSync(SCHEMA_PATH, "utf8");
     migrateLegacySchema(validationDb, schema, sourceVersion);
 
-    const integrity = validationDb.pragma("integrity_check");
-    if (integrity.length !== 1 || integrity[0].integrity_check !== "ok") {
-      throw new Error("controllo di integrita' fallito dopo la canonicalizzazione");
-    }
-    if (validationDb.pragma("foreign_key_check").length > 0) {
-      throw new Error("relazioni non valide dopo la canonicalizzazione");
-    }
+    validateCanonicalDatabase(validationDb, schema, DB_SCHEMA_VERSION, { fullIntegrity: true });
     validationDb.pragma("journal_mode = DELETE");
     validationDb.close();
     validationDb = null;
