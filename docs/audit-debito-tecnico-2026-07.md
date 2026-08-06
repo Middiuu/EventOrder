@@ -4,7 +4,7 @@
 
 **Baseline storica analizzata:** `645fe5f` (`main`, "Harden frontend and quality gates")
 
-**Stato implementazione:** settima tranche su `main` (6 agosto 2026; base `6668414`)
+**Stato implementazione:** ottava tranche su `main` (6 agosto 2026; base `ad7e3c2`)
 
 **Ambito:** frontend, backend, database, backup/restore, sicurezza, test, dipendenze e CI
 
@@ -32,11 +32,11 @@ restano come evidenza storica dei problemi originariamente rilevati.
 
 ### Gate verificati sullo stato corrente
 
-- `npm test`: 114/114 test verdi;
-- `npm run coverage`: 93,32% righe, 78,95% branch, 97,48% funzioni;
+- `npm test`: 119/119 test verdi;
+- `npm run coverage`: 93,53% righe, 79,24% branch, 97,80% funzioni;
 - `npm run test:e2e`: 10/10 flussi verdi dopo la separazione dei controller;
-- `npm run test:scale`: 16/16, inclusi aggregazione su 100.000 vendite e contesa WAL;
-- `npm run test:fault`: 18/18, inclusi migrazioni/restore interrotti, backup preventivo e stampa pendente.
+- `npm run test:scale`: 17/17, inclusi aggregazione su 100.000 vendite e contesa WAL;
+- `npm run test:fault`: 19/19, inclusi migrazioni/restore interrotti, backup preventivo e stampa pendente.
 
 Il solo elemento del backlog originario intenzionalmente non implementato e' P1.9. Non va
 riaperto finche' non viene scelto il prodotto di stampa e definito il relativo protocollo
@@ -147,6 +147,23 @@ La settima tranche chiude i rilievi di supply chain e igiene emersi nella verifi
 Gate rieseguiti su Node 24.19.0: `npm test` 114/114, coverage 93,32% righe,
 78,95% branch e 97,48% funzioni, Playwright 10/10, scala 16/16 e fault/recovery
 18/18. `npm ci` non segnala script di installazione non approvati.
+
+### Manutenzione post-audit — estrazioni e osservabilita'
+
+L'ottava tranche prosegue la riduzione degli hotspot con moduli focalizzati, senza
+riprendere il precedente refactoring ES-module annullato:
+
+| Intervento | Stato | Evidenza |
+|---|---|---|
+| Tentativi idempotenti incorporati nel controller Cassa | Chiuso | nuovo `public/operation-attempts.js` puro e testato; chiavi, payload e contesto DB/turno restano identici nei retry |
+| Recovery e marker incorporati nell'orchestratore DB | Chiuso | nuovo `src/database-recovery.js`; restore, migrazione, sidecar e recovery legacy mantengono i test avversariali |
+| Hotspot vicini ai ratchet | Ridotti | `cassa-controller.js` 1.277 -> 1.239 righe, ratchet 1.250; `src/db.js` 927 -> 782, ratchet 800 |
+| Percorsi marginali di osservabilita' | Chiuso | `errorFields` copre anche valori non-`Error`; logging stderr strutturato testato; modulo al 100% righe/branch/funzioni |
+| Report di verifica non versionato | Archiviato | conservato in `docs/archive/` con indicazione esplicita del commit storico `6668414` |
+
+I nuovi helper hanno ratchet dedicati: 80 righe per i tentativi frontend e 180 per il
+recovery database. I gate correnti salgono a 119/119 test, coverage 93,53% righe,
+79,24% branch e 97,80% funzioni, E2E 10/10, scala 17/17 e fault/recovery 19/19.
 
 ## Verdetto esecutivo
 

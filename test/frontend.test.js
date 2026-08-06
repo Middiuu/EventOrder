@@ -64,14 +64,16 @@ test("gli initializer di pagina sono isolati fra loro", () => {
 test("navigazione e retry persistenti mantengono i guardrail verificati in browser", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "public", "app.js"), "utf8");
   const cassaSource = fs.readFileSync(path.join(__dirname, "..", "public", "cassa-controller.js"), "utf8");
+  const attemptSource = fs.readFileSync(path.join(__dirname, "..", "public", "operation-attempts.js"), "utf8");
 
   assert.match(source, /disposePageUi\(\);\s*curMain\.replaceWith\(newMain\)/);
   assert.match(source, /modalStack\.length = 0/);
   assert.match(source, /document\.body\.style\.overflow = ""/);
-  assert.match(cassaSource, /eventorder-pending-checkout-v1/);
-  assert.match(cassaSource, /eventorder-pending-movement-v1/);
-  assert.match(cassaSource, /eventorder-pending-suspend-v1/);
-  assert.match(cassaSource, /eventorder-pending-resume-v1/);
+  assert.match(attemptSource, /eventorder-pending-checkout-v1/);
+  assert.match(attemptSource, /eventorder-pending-movement-v1/);
+  assert.match(attemptSource, /eventorder-pending-suspend-v1/);
+  assert.match(attemptSource, /eventorder-pending-resume-v1/);
+  assert.match(cassaSource, /EventOrderAttempts\.createAttemptStore\(localStorage\)/);
   assert.match(cassaSource, /restoreCheckoutUi\(\)/);
   assert.match(source, /async function withFormSubmitLock/);
   assert.match(source, /form\.dataset\.submitting === "true"/);
@@ -119,6 +121,6 @@ test("il controller prodotti e' separato e caricato da ogni shell SPA", () => {
   assert.match(cassaController, /async function initCassa/);
   for (const file of ["cassa.html", "products.html", "sales.html", "reports.html"]) {
     const html = fs.readFileSync(path.join(publicDir, file), "utf8");
-    assert.match(html, /<script src="\/cart-model\.js"><\/script>\s*<script src="\/cassa-controller\.js"><\/script>\s*<script src="\/products-controller\.js"><\/script>\s*<script src="\/app\.js"><\/script>/);
+    assert.match(html, /<script src="\/cart-model\.js"><\/script>\s*<script src="\/operation-attempts\.js"><\/script>\s*<script src="\/cassa-controller\.js"><\/script>\s*<script src="\/products-controller\.js"><\/script>\s*<script src="\/app\.js"><\/script>/);
   }
 });

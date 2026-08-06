@@ -7,6 +7,7 @@ const { validateCanonicalDatabase } = require("./database-validation");
 const { fsyncDirectory } = require("./fs-durability");
 const { pruneBackupFiles } = require("./backup-files");
 const { pruneServiceData } = require("./service-data-retention");
+const { createDatabaseRecovery } = require("./database-recovery");
 
 const DB_PATH = process.env.POS_DB_PATH
   ? path.resolve(process.env.POS_DB_PATH)
@@ -14,158 +15,18 @@ const DB_PATH = process.env.POS_DB_PATH
 const SCHEMA_PATH = path.join(__dirname, "schema.sql");
 const DB_SCHEMA_VERSION = 11;
 const DB_BUSY_TIMEOUT_MS = 5000;
-const RESTORE_MARKER_PATH = `${DB_PATH}.restore-state.json`;
-const MIGRATION_MARKER_PATH = `${DB_PATH}.migration-state.json`;
-const DB_SIDECAR_PATHS = [`${DB_PATH}-wal`, `${DB_PATH}-shm`];
-
-// I sidecar WAL appartengono esattamente al file DB corrente. Li rimuoviamo
-// solo al boot, prima di recuperare un database da un marker di restore e
-// quando nessuna connessione di questo processo e' ancora stata aperta.
-function removeDatabaseSidecars() {
-  for (const sidecarPath of DB_SIDECAR_PATHS) {
-    if (!fs.existsSync(sidecarPath)) continue;
-    const stat = fs.lstatSync(sidecarPath);
-    if (!stat.isFile() && !stat.isSymbolicLink()) {
-      throw new Error(`Sidecar SQLite non valido: ${sidecarPath}`);
-    }
-    fs.unlinkSync(sidecarPath);
-  }
-}
-
-function verifiedSafetyBackup(safetyBackupPath) {
-  const resolved = path.resolve(String(safetyBackupPath || ""));
-  const backupsDir = path.resolve(path.dirname(DB_PATH), "backups");
-  if (path.dirname(resolved) !== backupsDir) {
-    throw new Error("Percorso del backup di sicurezza non valido");
-  }
-  const stat = fs.lstatSync(resolved);
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new Error("Backup di sicurezza non valido");
-  }
-  return resolved;
-}
-
-function writeRestoreMarker(safetyBackupPath) {
-  const verified = verifiedSafetyBackup(safetyBackupPath);
-  const tempPath = `${RESTORE_MARKER_PATH}.${process.pid}.tmp`;
-  const fd = fs.openSync(tempPath, "wx", 0o600);
-  try {
-    fs.writeFileSync(fd, JSON.stringify({ safetyBackupPath: verified, createdAt: new Date().toISOString() }));
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  fs.renameSync(tempPath, RESTORE_MARKER_PATH);
-  fsyncDirectory(path.dirname(DB_PATH));
-}
-
-function recoverFromRestoreMarker() {
-  if (!fs.existsSync(RESTORE_MARKER_PATH)) return false;
-
-  let marker;
-  try {
-    marker = JSON.parse(fs.readFileSync(RESTORE_MARKER_PATH, "utf8"));
-  } catch {
-    throw new Error(
-      `Ripristino interrotto: marker non leggibile (${RESTORE_MARKER_PATH}). Intervento manuale richiesto.`
-    );
-  }
-  const safetyBackupPath = verifiedSafetyBackup(marker.safetyBackupPath);
-  const recoveryPath = `${DB_PATH}.restore-recovery-${process.pid}-${Date.now()}`;
-  fs.copyFileSync(safetyBackupPath, recoveryPath, fs.constants.COPYFILE_EXCL);
-
-  const fd = fs.openSync(recoveryPath, "r");
-  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-  removeDatabaseSidecars();
-  fs.renameSync(recoveryPath, DB_PATH);
-  fs.rmSync(RESTORE_MARKER_PATH, { force: true });
-  fsyncDirectory(path.dirname(DB_PATH));
-  console.warn("Rilevato un ripristino interrotto: recuperato automaticamente il backup pre-restore.");
-  return true;
-}
-
-function writeMigrationMarker(safetyBackupPath, fromVersion, toVersion) {
-  const verified = verifiedSafetyBackup(safetyBackupPath);
-  const tempPath = `${MIGRATION_MARKER_PATH}.${process.pid}.tmp`;
-  const fd = fs.openSync(tempPath, "wx", 0o600);
-  try {
-    fs.writeFileSync(fd, JSON.stringify({
-      safetyBackupPath: verified,
-      fromVersion,
-      toVersion,
-      createdAt: new Date().toISOString(),
-    }));
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  fs.renameSync(tempPath, MIGRATION_MARKER_PATH);
-  fsyncDirectory(path.dirname(DB_PATH));
-}
-
-function recoverFromMigrationMarker() {
-  if (!fs.existsSync(MIGRATION_MARKER_PATH)) return false;
-
-  let marker;
-  try {
-    marker = JSON.parse(fs.readFileSync(MIGRATION_MARKER_PATH, "utf8"));
-  } catch {
-    throw new Error(
-      `Migrazione interrotta: marker non leggibile (${MIGRATION_MARKER_PATH}). Intervento manuale richiesto.`
-    );
-  }
-  if (!Number.isSafeInteger(marker.fromVersion) || !Number.isSafeInteger(marker.toVersion)) {
-    throw new Error("Migrazione interrotta: versioni del marker non valide. Intervento manuale richiesto.");
-  }
-  const safetyBackupPath = verifiedSafetyBackup(marker.safetyBackupPath);
-  const recoveryPath = `${DB_PATH}.migration-recovery-${process.pid}-${Date.now()}`;
-  fs.copyFileSync(safetyBackupPath, recoveryPath, fs.constants.COPYFILE_EXCL);
-  const fd = fs.openSync(recoveryPath, "r");
-  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
-
-  removeDatabaseSidecars();
-  fs.renameSync(recoveryPath, DB_PATH);
-  fs.rmSync(MIGRATION_MARKER_PATH, { force: true });
-  fsyncDirectory(path.dirname(DB_PATH));
-  console.warn(
-    `Rilevata una migrazione v${marker.fromVersion}->v${marker.toVersion} interrotta: ` +
-    "recuperato automaticamente il backup pre-migrazione."
-  );
-  return true;
-}
-
-// Compatibilita' con la prima implementazione del restore: se un crash e'
-// avvenuto fra i due rename, recupera l'originale invece di creare un DB vuoto.
-function recoverLegacyRestoreOriginal() {
-  if (fs.existsSync(DB_PATH)) return false;
-  const dir = path.dirname(DB_PATH);
-  const prefix = `${path.basename(DB_PATH)}.restore-original-`;
-  const candidates = fs.readdirSync(dir)
-    .filter(name => name.startsWith(prefix))
-    .map(name => {
-      const candidatePath = path.join(dir, name);
-      const stat = fs.lstatSync(candidatePath);
-      return stat.isFile() && !stat.isSymbolicLink()
-        ? { candidatePath, mtimeMs: stat.mtimeMs }
-        : null;
-    })
-    .filter(Boolean)
-    .sort((a, b) => b.mtimeMs - a.mtimeMs);
-  if (candidates.length === 0) return false;
-
-  removeDatabaseSidecars();
-  fs.renameSync(candidates[0].candidatePath, DB_PATH);
-  fsyncDirectory(dir);
-  console.warn("Recuperato automaticamente un database lasciato da un restore interrotto.");
-  return true;
-}
-
-if (fs.existsSync(RESTORE_MARKER_PATH) && fs.existsSync(MIGRATION_MARKER_PATH)) {
-  throw new Error("Stato ambiguo: presenti marker di restore e migrazione. Intervento manuale richiesto.");
-}
-recoverFromRestoreMarker();
-recoverFromMigrationMarker();
-recoverLegacyRestoreOriginal();
+const {
+  completeMigrationMarker,
+  completeRestoreMarker,
+  migrationMarkerPath: MIGRATION_MARKER_PATH,
+  recoverAtStartup,
+  recoverFromRestoreMarker,
+  restoreMarkerPath: RESTORE_MARKER_PATH,
+  sidecarPaths: DB_SIDECAR_PATHS,
+  writeMigrationMarker,
+  writeRestoreMarker,
+} = createDatabaseRecovery(DB_PATH);
+recoverAtStartup();
 
 function openConnection() {
   const next = new Database(DB_PATH);
@@ -618,11 +479,6 @@ function createPreMigrationBackup(database, fromVersion, toVersion) {
   }
 }
 
-function completeMigrationMarker() {
-  fs.rmSync(MIGRATION_MARKER_PATH, { force: true });
-  fsyncDirectory(path.dirname(DB_PATH));
-}
-
 function initDb() {
   const schema = fs.readFileSync(SCHEMA_PATH, "utf8");
   const previousVersion = db.pragma("user_version", { simple: true });
@@ -897,8 +753,7 @@ function restoreDatabaseFromFile(candidatePath, safetyBackupPath) {
       throw new Error("Il database ripristinato non supera il controllo delle relazioni");
     }
 
-    fs.rmSync(RESTORE_MARKER_PATH, { force: true });
-    fsyncDirectory(path.dirname(DB_PATH));
+    completeRestoreMarker();
     return;
   } catch (err) {
     try { if (connection?.open) connection.close(); } catch {}

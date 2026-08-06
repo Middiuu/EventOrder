@@ -53,3 +53,37 @@ test("LOG_REQUESTS emette un record JSON completo alla fine della risposta", (t)
   assert.ok(Number.isFinite(record.duration_ms));
   assert.match(record.timestamp, /^\d{4}-\d{2}-\d{2}T/);
 });
+
+test("errorFields normalizza Error, stringhe e valori null", () => {
+  const { errorFields } = require(observabilityPath);
+
+  assert.deepEqual(errorFields(new TypeError("input non valido")), {
+    error_name: "TypeError",
+    error_message: "input non valido",
+  });
+  assert.deepEqual(errorFields("errore testuale"), {
+    error_name: "Error",
+    error_message: "errore testuale",
+  });
+  assert.deepEqual(errorFields(null), {
+    error_name: "Error",
+    error_message: "null",
+  });
+});
+
+test("log invia gli eventi di errore al canale stderr strutturato", (t) => {
+  const { log } = require(observabilityPath);
+  const output = [];
+  const originalError = console.error;
+  console.error = line => output.push(line);
+  t.after(() => { console.error = originalError; });
+
+  log("error", "errore_test", { request_id: "request-test-456" });
+
+  assert.equal(output.length, 1);
+  const record = JSON.parse(output[0]);
+  assert.equal(record.level, "error");
+  assert.equal(record.event, "errore_test");
+  assert.equal(record.request_id, "request-test-456");
+  assert.match(record.timestamp, /^\d{4}-\d{2}-\d{2}T/);
+});

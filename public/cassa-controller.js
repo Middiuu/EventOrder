@@ -1,5 +1,5 @@
 /* exported initCassa */
-/* global APP_CONFIG, EventOrderCart, api, closeModal, escapeHtml, eurToCents, euro, money, openModal, refreshShellData, showToast, topOpenModal, uiAlert, uiConfirm, uiError, uiPrompt, updateSessionCard, withFormSubmitLock */
+/* global APP_CONFIG, EventOrderAttempts, EventOrderCart, api, closeModal, escapeHtml, eurToCents, euro, money, openModal, refreshShellData, showToast, topOpenModal, uiAlert, uiConfirm, uiError, uiPrompt, updateSessionCard, withFormSubmitLock */
 // Controller della pagina Cassa. Lo stato operativo resta confinato alla
 // singola inizializzazione e viene annullato dal lifecycle SPA.
 async function initCassa(signal) {
@@ -124,11 +124,6 @@ async function initCassa(signal) {
     }
   }
 
-  function newCheckoutRequestId() {
-    if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
-    return `eo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  }
-
   async function loadFreshProducts() {
     products = await api("/api/products");
     renderCategoryFilters();
@@ -146,10 +141,7 @@ async function initCassa(signal) {
   const cartModel = EventOrderCart.createCartModel(localStorage);
   const cart = cartModel.items;
   const productAvailable = EventOrderCart.productAvailable;
-  const CHECKOUT_ATTEMPT_KEY = "eventorder-pending-checkout-v1";
-  const MOVEMENT_ATTEMPT_KEY = "eventorder-pending-movement-v1";
-  const SUSPEND_ATTEMPT_KEY = "eventorder-pending-suspend-v1";
-  const RESUME_ATTEMPT_KEY = "eventorder-pending-resume-v1";
+  const attemptStore = EventOrderAttempts.createAttemptStore(localStorage);
   let suspendedCarts = [];
   let itemEditor = null;
   let isPrinting = false;
@@ -165,58 +157,28 @@ async function initCassa(signal) {
   let discType = "none"; // none | percent | amount | gift
   let movDirection = "out"; // out = prelievo | in = versamento
 
-  function persistAttempt(storageKey, value) {
-    try {
-      if (value) localStorage.setItem(storageKey, JSON.stringify(value));
-      else localStorage.removeItem(storageKey);
-    } catch {
-      // Il server resta idempotente anche se lo storage del browser e' disabilitato.
-    }
-  }
-
-  function loadAttempt(storageKey) {
-    try {
-      const value = JSON.parse(localStorage.getItem(storageKey) || "null");
-      if (!value) return null;
-      if (value.session_id !== session?.id
-        || value.database_instance_id !== databaseInstanceId
-        || typeof value.requestId !== "string") {
-        persistAttempt(storageKey, null);
-        return null;
-      }
-      return value;
-    } catch {
-      persistAttempt(storageKey, null);
-      return null;
-    }
+  function attemptContext() {
+    return { sessionId: session?.id, databaseInstanceId };
   }
 
   function setCheckoutAttempt(value) {
     checkoutAttempt = value;
-    persistAttempt(CHECKOUT_ATTEMPT_KEY, value ? {
-      ...value, session_id: session?.id, database_instance_id: databaseInstanceId,
-    } : null);
+    attemptStore.save("checkout", value, attemptContext());
   }
 
   function setMovementAttempt(value) {
     movementAttempt = value;
-    persistAttempt(MOVEMENT_ATTEMPT_KEY, value ? {
-      ...value, session_id: session?.id, database_instance_id: databaseInstanceId,
-    } : null);
+    attemptStore.save("movement", value, attemptContext());
   }
 
   function setSuspendAttempt(value) {
     suspendAttempt = value;
-    persistAttempt(SUSPEND_ATTEMPT_KEY, value ? {
-      ...value, session_id: session?.id, database_instance_id: databaseInstanceId,
-    } : null);
+    attemptStore.save("suspend", value, attemptContext());
   }
 
   function setResumeAttempt(value) {
     resumeAttempt = value;
-    persistAttempt(RESUME_ATTEMPT_KEY, value ? {
-      ...value, session_id: session?.id, database_instance_id: databaseInstanceId,
-    } : null);
+    attemptStore.save("resume", value, attemptContext());
   }
 
   function restoreCheckoutUi() {
@@ -460,7 +422,7 @@ async function initCassa(signal) {
     if (!reason) return uiAlert("Indica il motivo del movimento.");
     if (!movementAttempt) {
       setMovementAttempt({
-        requestId: newCheckoutRequestId(),
+        requestId: EventOrderAttempts.newRequestId(),
         payload: JSON.stringify({ direction: movDirection, amount_cents: amount, reason }),
       });
     }
@@ -830,7 +792,7 @@ async function initCassa(signal) {
       );
       if (label === null) return;
       setSuspendAttempt({
-        requestId: newCheckoutRequestId(),
+        requestId: EventOrderAttempts.newRequestId(),
         payload: JSON.stringify({
           label,
           note: orderNoteEl?.value.trim() || null,
@@ -927,7 +889,7 @@ async function initCassa(signal) {
         return;
       }
       try {
-        setResumeAttempt({ requestId: newCheckoutRequestId(), entry });
+        setResumeAttempt({ requestId: EventOrderAttempts.newRequestId(), entry });
         await completeResumeAttempt();
       } catch (err) {
         if (err.status !== undefined && err.data?.retryable !== true) setResumeAttempt(null);
@@ -1139,7 +1101,7 @@ async function initCassa(signal) {
         }
       }
       setCheckoutAttempt({
-        requestId: newCheckoutRequestId(),
+        requestId: EventOrderAttempts.newRequestId(),
         payload: JSON.stringify(body),
       });
     }
@@ -1250,10 +1212,10 @@ async function initCassa(signal) {
   applySearch();
   renderCart();
   await refreshSession();
-  checkoutAttempt = loadAttempt(CHECKOUT_ATTEMPT_KEY);
-  movementAttempt = loadAttempt(MOVEMENT_ATTEMPT_KEY);
-  suspendAttempt = loadAttempt(SUSPEND_ATTEMPT_KEY);
-  resumeAttempt = loadAttempt(RESUME_ATTEMPT_KEY);
+  checkoutAttempt = attemptStore.load("checkout", attemptContext());
+  movementAttempt = attemptStore.load("movement", attemptContext());
+  suspendAttempt = attemptStore.load("suspend", attemptContext());
+  resumeAttempt = attemptStore.load("resume", attemptContext());
   const recovery = recoverCurrentCart();
   cartModel.enablePersistence();
   renderCart();
