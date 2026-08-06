@@ -19,6 +19,8 @@ function clearAppModules() {
     path.join(PROJECT_ROOT, "src/observability.js"),
     path.join(PROJECT_ROOT, "src/audit.js"),
     path.join(PROJECT_ROOT, "src/maintenance.js"),
+    path.join(PROJECT_ROOT, "src/operational-status.js"),
+    path.join(PROJECT_ROOT, "src/server-lifecycle.js"),
     path.join(PROJECT_ROOT, "src/printer.js"),
     path.join(PROJECT_ROOT, "src/pending-sales.js"),
     path.join(PROJECT_ROOT, "src/idempotency.js"),

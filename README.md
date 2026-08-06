@@ -174,6 +174,8 @@ OPERATORS=Anna,Luca,Marco
 | `PRE_MIGRATION_BACKUP_KEEP` | Quanti backup pre-migrazione conservare separatamente |
 | `AUDIT_RETENTION_DAYS` | Giorni di audit operativo da conservare (`0` = illimitato) |
 | `OPERATION_REQUEST_RETENTION_DAYS` | Giorni di replay idempotenti dei turni chiusi (`0` = illimitati) |
+| `MIN_FREE_DISK_MB` | Spazio minimo libero richiesto dalla readiness (`128` MiB di default) |
+| `SHUTDOWN_TIMEOUT_MS` | Attesa massima prima di forzare lo shutdown (`30000` ms di default) |
 | `PORT` | Porta HTTP (`3000` di default) |
 | `LOG_REQUESTS` | Log JSON delle richieste (`1` per attivarli) |
 
@@ -218,6 +220,7 @@ Con `APP_PIN` impostato, l'accesso è protetto da un **PIN-pad** touch:
 - Backup con copia **online consistente** di SQLite, rotazione automatica e
   ripristino verificato con backup di sicurezza preventivo.
 - Branding/valuta esposti al frontend via `GET /api/config`.
+- Liveness su `GET /api/health/live` e readiness DB/manutenzione/disco su `GET /api/health/ready`.
 - Suite di test con `node:test` su database e flussi applicativi.
 
 ```bash

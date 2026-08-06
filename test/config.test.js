@@ -22,6 +22,8 @@ function loadConfig(env) {
       PRE_MIGRATION_BACKUP_KEEP: "",
       AUDIT_RETENTION_DAYS: "",
       OPERATION_REQUEST_RETENTION_DAYS: "",
+      MIN_FREE_DISK_MB: "",
+      SHUTDOWN_TIMEOUT_MS: "",
       ...env,
     },
     encoding: "utf8",
@@ -35,6 +37,8 @@ test("valida porta, retention, locale e codice valuta", () => {
     PRE_MIGRATION_BACKUP_KEEP: "2",
     AUDIT_RETENTION_DAYS: "0",
     OPERATION_REQUEST_RETENTION_DAYS: "45",
+    MIN_FREE_DISK_MB: "256",
+    SHUTDOWN_TIMEOUT_MS: "45000",
     LOCALE: "en-GB",
     CURRENCY_CODE: "gbp",
   });
@@ -45,6 +49,8 @@ test("valida porta, retention, locale e codice valuta", () => {
   assert.equal(config.PRE_MIGRATION_BACKUP_KEEP, 2);
   assert.equal(config.AUDIT_RETENTION_DAYS, 0);
   assert.equal(config.OPERATION_REQUEST_RETENTION_DAYS, 45);
+  assert.equal(config.MIN_FREE_DISK_MB, 256);
+  assert.equal(config.SHUTDOWN_TIMEOUT_MS, 45000);
   assert.equal(config.CURRENCY_CODE, "GBP");
 
   for (const [name, value, message] of [
@@ -54,6 +60,8 @@ test("valida porta, retention, locale e codice valuta", () => {
     ["PRE_MIGRATION_BACKUP_KEEP", "10001", /PRE_MIGRATION_BACKUP_KEEP deve essere compreso/],
     ["AUDIT_RETENTION_DAYS", "-1", /AUDIT_RETENTION_DAYS deve essere un numero intero/],
     ["OPERATION_REQUEST_RETENTION_DAYS", "abc", /OPERATION_REQUEST_RETENTION_DAYS deve essere un numero intero/],
+    ["MIN_FREE_DISK_MB", "0", /MIN_FREE_DISK_MB deve essere compreso/],
+    ["SHUTDOWN_TIMEOUT_MS", "99", /SHUTDOWN_TIMEOUT_MS deve essere compreso/],
     ["CURRENCY_CODE", "NOPE", /LOCALE o CURRENCY_CODE non validi/],
   ]) {
     const result = loadConfig({ [name]: value });

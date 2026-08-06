@@ -17,8 +17,8 @@ const { isDownloadableBackupName, pruneBackupFiles } = require("../backup-files"
 const {
   beginBackup,
   endBackup,
-  beginRestore,
-  endRestore,
+  acquireRestoreLock,
+  releaseRestoreLock,
 } = require("../maintenance");
 
 const router = express.Router();
@@ -115,25 +115,35 @@ router.get("/backup/:filename", async (req, res, next) => {
   if (path.dirname(backupPath) !== backupsDir) {
     return res.status(400).json({ error: "Percorso backup non valido" });
   }
-  let stat;
+  let handle;
+  if (!Number.isInteger(fs.constants.O_NOFOLLOW)) {
+    return res.status(503).json({ error: "Download sicuro dei backup non supportato" });
+  }
   try {
-    stat = fs.lstatSync(backupPath);
+    handle = await fs.promises.open(
+      backupPath,
+      fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW
+    );
   } catch (error) {
     if (error.code === "ENOENT") return res.status(404).json({ error: "Backup non trovato" });
+    if (error.code === "ELOOP") return res.status(400).json({ error: "Backup non valido" });
     return next(error);
   }
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    return res.status(400).json({ error: "Backup non valido" });
-  }
-
-  res.setHeader("Content-Type", "application/x-sqlite3");
-  res.setHeader("Content-Length", stat.size);
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
   try {
-    await pipeline(fs.createReadStream(backupPath), res);
+    const stat = await handle.stat();
+    if (!stat.isFile()) return res.status(400).json({ error: "Backup non valido" });
+
+    res.setHeader("Content-Type", "application/x-sqlite3");
+    res.setHeader("Content-Length", stat.size);
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    // Lo stream usa il descriptor gia' aperto con O_NOFOLLOW: anche uno swap
+    // concorrente del path non puo' deviare il download verso un altro file.
+    await pipeline(handle.createReadStream({ autoClose: false }), res);
   } catch (error) {
     if (!req.destroyed && !res.destroyed) next(error);
+  } finally {
+    await handle.close();
   }
 });
 
@@ -184,6 +194,7 @@ async function streamRestoreUpload(req, res, next) {
     next();
   } catch (error) {
     fs.rmSync(candidatePath, { force: true });
+    releaseRestoreLock(req);
     next(error);
   }
 }
@@ -207,25 +218,9 @@ function requireRestoreConfirmation(req, res, next) {
   next();
 }
 
-function acquireRestoreLock(req, res, next) {
-  if (!beginRestore()) {
-    return res.status(409).json({
-      error: "Attendi la conclusione del backup o ripristino gia' in corso",
-    });
-  }
-  let released = false;
-  const release = () => {
-    if (released) return;
-    released = true;
-    endRestore();
-  };
-  res.once("finish", release);
-  res.once("close", release);
-  next();
-}
-
 function requireClosedSession(req, res, next) {
   if (getOpenSession()) {
+    releaseRestoreLock(req);
     return res.status(409).json({ error: "Chiudi la cassa prima di ripristinare un backup" });
   }
   next();
@@ -258,6 +253,7 @@ router.post(
       next(error);
     } finally {
       if (candidatePath) fs.rmSync(candidatePath, { force: true });
+      releaseRestoreLock(req);
     }
   }
 );

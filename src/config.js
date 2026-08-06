@@ -56,6 +56,8 @@ const OPERATION_REQUEST_RETENTION_DAYS = integerEnv(
   "OPERATION_REQUEST_RETENTION_DAYS", 30, { min: 0, max: 36500 }
 );
 const PORT = integerEnv("PORT", 3000, { min: 0, max: 65535 });
+const MIN_FREE_DISK_MB = integerEnv("MIN_FREE_DISK_MB", 128, { min: 1, max: 1048576 });
+const SHUTDOWN_TIMEOUT_MS = integerEnv("SHUTDOWN_TIMEOUT_MS", 30000, { min: 100, max: 600000 });
 const LOG_REQUESTS = process.env.LOG_REQUESTS === "1";
 
 // Elenco operatori selezionabili all'apertura del turno (vuoto = campo libero).
@@ -167,6 +169,8 @@ const config = {
   PUBLIC_ORIGIN,
   TRUST_PROXY,
   PORT,
+  MIN_FREE_DISK_MB,
+  SHUTDOWN_TIMEOUT_MS,
   LOG_REQUESTS,
   SLUG: slugify(APP_NAME),
 };

@@ -9,7 +9,8 @@ const MAX_SESSIONS = 1024;
 // Percorsi sempre accessibili anche senza login (per mostrare la pagina di accesso).
 // La welcome ("/"), il login e gli asset base restano accessibili senza PIN.
 const PUBLIC_PATHS = new Set([
-  "/", "/index.html", "/api/config", "/api/health", "/api/auth/login", "/login.html",
+  "/", "/index.html", "/api/config", "/api/health", "/api/health/live", "/api/health/ready",
+  "/api/auth/login", "/login.html",
   "/app.css", "/fonts.css", "/theme-init.js", "/welcome.js", "/login.js",
 ]);
 
