@@ -4,7 +4,7 @@
 
 **Baseline storica analizzata:** `645fe5f` (`main`, "Harden frontend and quality gates")
 
-**Stato implementazione:** sesta tranche su `main` (20 luglio 2026; base `9977607`)
+**Stato implementazione:** settima tranche su `main` (6 agosto 2026; base `6668414`)
 
 **Ambito:** frontend, backend, database, backup/restore, sicurezza, test, dipendenze e CI
 
@@ -130,6 +130,23 @@ La sesta tranche chiude i due rilievi R7 immediatamente azionabili:
 Gli altri tre rilievi R7 non giustificano modifiche preventive: il pruning delle sessioni
 va ottimizzato solo su evidenza di profiling, l'export aggregato e' limitato dal catalogo
 e la matrice browser va ampliata solo se cresce il perimetro di compatibilita'.
+
+### Manutenzione post-audit — runtime e dipendenze
+
+La settima tranche chiude i rilievi di supply chain e igiene emersi nella verifica del
+6 agosto 2026, senza modificare schema o comportamento applicativo:
+
+| Rilievo | Stato | Evidenza |
+|---|---|---|
+| Contratto runtime ambiguo (`node >=24`) | Chiuso | `engines.node` limitato a `24.x`, coerente con `.nvmrc`, README e CI |
+| Vulnerabilita' transitiva nella toolchain ESLint | Chiuso | `brace-expansion` aggiornato da 5.0.7 a 5.0.9; audit produzione e completo a zero vulnerabilita' |
+| Driver SQLite fermo alla precedente ABI nativa | Chiuso | `better-sqlite3` 13.0.3 usa N-API e SQLite 3.53.4; migrazione, restore, FTS, WAL e recovery verificati |
+| Dipendenze manutentive arretrate | Chiuso | Playwright 1.62.1, ESLint 10.8.0, globals 17.9.0 e `actions/setup-node@v7` |
+| Sidecar SQLite visibili come file non tracciati | Chiuso | `.gitignore` copre esplicitamente `*.sqlite-wal` e `*.sqlite-shm` |
+
+Gate rieseguiti su Node 24.19.0: `npm test` 114/114, coverage 93,32% righe,
+78,95% branch e 97,48% funzioni, Playwright 10/10, scala 16/16 e fault/recovery
+18/18. `npm ci` non segnala script di installazione non approvati.
 
 ## Verdetto esecutivo
 
