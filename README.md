@@ -232,6 +232,7 @@ npm run coverage # copertura backend con soglie minime
 npm run test:e2e # flussi critici in Chromium
 npm run test:scale # scenari ad alto volume
 npm run test:fault # crash e recovery
+npm run test:restore-drill # backup, restore, riavvio e invarianti su DB temporaneo
 ```
 
 **Stampa ticket**: attualmente il ticket viene scritto su console (stub); l'integrazione
