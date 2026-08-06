@@ -32,11 +32,12 @@ restano come evidenza storica dei problemi originariamente rilevati.
 
 ### Gate verificati sullo stato corrente
 
-- `npm test`: 119/119 test verdi;
-- `npm run coverage`: 93,53% righe, 79,24% branch, 97,80% funzioni;
+- `npm test`: 132/132 test verdi;
+- `npm run coverage`: 93,78% righe, 79,89% branch, 98,12% funzioni;
 - `npm run test:e2e`: 10/10 flussi verdi dopo la separazione dei controller;
 - `npm run test:scale`: 17/17, inclusi aggregazione su 100.000 vendite e contesa WAL;
 - `npm run test:fault`: 19/19, inclusi migrazioni/restore interrotti, backup preventivo e stampa pendente.
+- `npm run test:restore-drill`: backup, verifica, restore, riavvio e invarianti verdi.
 
 Il solo elemento del backlog originario intenzionalmente non implementato e' P1.9. Non va
 riaperto finche' non viene scelto il prodotto di stampa e definito il relativo protocollo
@@ -164,6 +165,46 @@ riprendere il precedente refactoring ES-module annullato:
 I nuovi helper hanno ratchet dedicati: 80 righe per i tentativi frontend e 180 per il
 recovery database. I gate correnti salgono a 119/119 test, coverage 93,53% righe,
 79,24% branch e 97,80% funzioni, E2E 10/10, scala 17/17 e fault/recovery 19/19.
+
+### Release Candidate operativa — lifecycle, checkout e drill
+
+La nona tranche del 6 agosto 2026 ha riesaminato lo stato `8ee78aa` senza riaprire i
+rilievi storici gia' chiusi. Il nuovo backlog, ordinato per impatto, e' stato chiuso con
+commit intenzionali:
+
+| Rilievo corrente | Impatto | Stato ed evidenza |
+|---|---|---|
+| Il lock restore veniva rilasciato su disconnessione HTTP mentre backup/swap potevano continuare | Alto | Chiuso: il lock vive fino al `finally`; test di disconnessione impedisce la riapertura anticipata delle route DB |
+| `/api/health` non distingueva processo vivo da istanza pronta e ignorava restore/spazio | Medio | Chiuso: `/health/live` e `/health/ready`; readiness fail-closed su startup, shutdown, DB, restore e soglia disco configurabile |
+| Una richiesta lunga poteva impedire indefinitamente lo shutdown | Medio | Chiuso: timeout configurabile, chiusura idle immediata, fallback forzato con exit 1; coperti percorso lungo ed errore SQLite |
+| Mancava un drill unico backup -> verifica -> restore -> riavvio | Medio | Chiuso: `npm run test:restore-drill` su DB temporaneo e gate CI |
+| Stato e contratto pagamento restavano nell'hotspot Cassa | Medio | Chiuso: `payment-model.js` puro possiede sconti, contanti, resto, payload e recovery; test boundary e retry browser verdi |
+| Download backup usava `lstat` seguito da open del path | Medio-basso | Chiuso: descriptor `O_NOFOLLOW`, `fstat` e test symlink eliminano il TOCTOU |
+| Procedure operative e dipendenze tra moduli non erano raccolte in documenti correnti | Medio-basso | Chiuso: runbook e architettura operativa versionati |
+
+Misure prima/dopo:
+
+- `cassa-controller.js`: 1.239 -> 1.185 righe; ratchet 1.250 -> 1.200;
+- nuovo `payment-model.js`: 148 righe, ratchet 160;
+- test: 119 -> 132; coverage `src/**`: 93,53% -> 93,78% righe,
+  79,24% -> 79,89% branch, 97,80% -> 98,12% funzioni;
+- nessun ratchet alzato e nessun bump dello schema.
+
+Profilo locale su copia temporanea con 100.000 vendite e indice FTS coerente: database
+41.336.832 byte, validazione completa al riavvio 191,2 ms, pruning di 1.024 sessioni
+0,531 ms. `EXPLAIN QUERY PLAN` usa `idx_sales_created_at` per l'intervallo temporale.
+Non c'e' evidenza per cache, nuovi indici o modifica del pruning.
+
+Threat model locale/LAN riesaminato: PIN, Host/Origin, Fetch Metadata, MIME restore,
+cookie/proxy, CSP, upload limitato, traversal e diagnostica restano adeguati al modello
+single-process. I backup non seguono symlink e gli errori readiness non espongono dettagli
+SQLite. TLS resta al confine di deployment. Non e' stato introdotto uno schema v12 per
+attribuire l'operatore nell'audit: il beneficio non giustifica oggi migrazione e nuova
+superficie. Anche i parametri auth restano ai default verificati in assenza di un requisito.
+
+JSDoc/checkJs non e' stato introdotto: sui globali della SPA richiederebbe una toolchain e
+dichiarazioni ambientali non giustificate. I nuovi contratti puri sono protetti da test di
+boundary, HTTP ed E2E. La stampa P1.9 e ogni integrazione hardware restano escluse.
 
 ## Verdetto esecutivo
 

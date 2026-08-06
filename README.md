@@ -191,6 +191,10 @@ Con `APP_PIN` impostato, l'accesso è protetto da un **PIN-pad** touch:
 > imposta anche `TRUST_PROXY=loopback`: il cookie diventa `Secure` e il rate
 > limiting usa l'IP client inoltrato dal proxy attendibile.
 
+Per installazione, aggiornamento, backup, restore, crash recovery e rollback consulta il
+[runbook operativo](docs/runbook-operativo.md). I confini tra SPA, router, servizi,
+SQLite e lifecycle sono descritti nell'[architettura operativa](docs/architettura-operativa.md).
+
 <br>
 
 ## Le pagine
