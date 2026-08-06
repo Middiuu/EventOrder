@@ -51,6 +51,7 @@ jobs:
       - run: npm ci
       - run: npm run test:scale
       - run: npm run test:fault
+      - run: npm run test:restore-drill
 
   macos-smoke:
     runs-on: macos-latest

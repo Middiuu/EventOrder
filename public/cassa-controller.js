@@ -1,5 +1,5 @@
 /* exported initCassa */
-/* global APP_CONFIG, EventOrderAttempts, EventOrderCart, api, closeModal, escapeHtml, eurToCents, euro, money, openModal, refreshShellData, showToast, topOpenModal, uiAlert, uiConfirm, uiError, uiPrompt, updateSessionCard, withFormSubmitLock */
+/* global APP_CONFIG, EventOrderAttempts, EventOrderCart, EventOrderPayment, api, closeModal, escapeHtml, eurToCents, euro, money, openModal, refreshShellData, showToast, topOpenModal, uiAlert, uiConfirm, uiError, uiPrompt, updateSessionCard, withFormSubmitLock */
 // Controller della pagina Cassa. Lo stato operativo resta confinato alla
 // singola inizializzazione e viene annullato dal lifecycle SPA.
 async function initCassa(signal) {
@@ -141,6 +141,7 @@ async function initCassa(signal) {
   const cartModel = EventOrderCart.createCartModel(localStorage);
   const cart = cartModel.items;
   const productAvailable = EventOrderCart.productAvailable;
+  const paymentModel = EventOrderPayment.createPaymentModel(eurToCents);
   const attemptStore = EventOrderAttempts.createAttemptStore(localStorage);
   let suspendedCarts = [];
   let itemEditor = null;
@@ -153,8 +154,6 @@ async function initCassa(signal) {
   let resumeAttempt = null;
   let session = null;
   let databaseInstanceId = null;
-  let payMethod = "cash";
-  let discType = "none"; // none | percent | amount | gift
   let movDirection = "out"; // out = prelievo | in = versamento
 
   function attemptContext() {
@@ -183,30 +182,25 @@ async function initCassa(signal) {
 
   function restoreCheckoutUi() {
     if (!checkoutAttempt) return;
-    try {
-      const body = JSON.parse(checkoutAttempt.payload);
-      payMethod = ["cash", "card", "other"].includes(body.payment_method) ? body.payment_method : "cash";
-      payMethodBtns.forEach(button => button.classList.toggle(
-        "is-active", button.getAttribute("data-method") === payMethod
-      ));
-      discType = body.discount?.type || "none";
-      discOptBtns.forEach(button => button.classList.toggle(
-        "is-active", button.getAttribute("data-disc") === discType
-      ));
-      const needsDiscountValue = discType === "percent" || discType === "amount";
-      if (discValueField) discValueField.hidden = !needsDiscountValue;
-      if (discValueEl && needsDiscountValue) {
-        discValueEl.value = discType === "amount"
-          ? (Number(body.discount?.value || 0) / 100).toFixed(2)
-          : String(body.discount?.value ?? "");
-      }
-      if (cashReceivedEl && body.cash_received_cents != null) {
-        cashReceivedEl.value = (Number(body.cash_received_cents) / 100).toFixed(2);
-      }
-      refreshPayment();
-    } catch {
+    if (!paymentModel.restoreAttempt(checkoutAttempt.payload)) {
       setCheckoutAttempt(null);
+      return;
     }
+    payMethodBtns.forEach(button => button.classList.toggle(
+      "is-active", button.getAttribute("data-method") === paymentModel.paymentMethod
+    ));
+    discOptBtns.forEach(button => button.classList.toggle(
+      "is-active", button.getAttribute("data-disc") === paymentModel.discountType
+    ));
+    const needsDiscountValue = ["percent", "amount"].includes(paymentModel.discountType);
+    if (discValueField) discValueField.hidden = !needsDiscountValue;
+    if (discValueLabel && needsDiscountValue) {
+      discValueLabel.textContent = paymentModel.discountType === "percent" ? "Percentuale (%)" : "Sconto (€)";
+    }
+    if (discValueEl) discValueEl.value = paymentModel.discountValue;
+    if (cashReceivedEl) cashReceivedEl.value = paymentModel.cashReceivedValue;
+    if (cashPanel) cashPanel.hidden = paymentModel.paymentMethod !== "cash";
+    refreshPayment();
   }
 
   function guardPendingCheckout() {
@@ -909,61 +903,30 @@ async function initCassa(signal) {
     }
   });
 
-  // ---- Sconto / omaggio
-  function currentDiscountCents() {
-    const subtotal = cartModel.total();
-    if (discType === "gift") return subtotal;
-    if (discType === "percent") {
-      const pct = Number(String(discValueEl?.value || "").replace(",", "."));
-      if (!Number.isFinite(pct) || pct <= 0) return 0;
-      return Math.round(subtotal * Math.min(pct, 100) / 100);
-    }
-    if (discType === "amount") {
-      const c = eurToCents(discValueEl?.value);
-      if (c === null) return 0;
-      return Math.min(c, subtotal);
-    }
-    return 0;
-  }
-
-  function payableTotal() {
-    return cartModel.total() - currentDiscountCents();
-  }
-
   function setDiscount(type) {
-    discType = type;
+    paymentModel.setDiscount(type);
     discOptBtns.forEach(b => b.classList.toggle("is-active", b.getAttribute("data-disc") === type));
     const needsValue = type === "percent" || type === "amount";
     if (discValueField) discValueField.hidden = !needsValue;
     if (needsValue && discValueLabel) discValueLabel.textContent = type === "percent" ? "Percentuale (%)" : "Sconto (€)";
-    if (needsValue && discValueEl) { discValueEl.value = ""; setTimeout(() => discValueEl.focus(), 0); }
+    if (discValueEl) discValueEl.value = paymentModel.discountValue;
+    if (needsValue) setTimeout(() => discValueEl?.focus(), 0);
     refreshPayment();
-  }
-
-  function discountBody() {
-    if (discType === "none") return undefined;
-    if (discType === "gift") return { type: "gift" };
-    if (discType === "percent") return { type: "percent", value: Number(String(discValueEl?.value || "").replace(",", ".")) || 0 };
-    if (discType === "amount") return { type: "amount", value: eurToCents(discValueEl?.value) || 0 };
-    return undefined;
   }
 
   // ---- Pagamento
   function setPayMethod(method) {
-    payMethod = method;
-    payMethodBtns.forEach(b => b.classList.toggle("is-active", b.getAttribute("data-method") === method));
-    if (cashPanel) cashPanel.hidden = method !== "cash";
+    paymentModel.setPaymentMethod(method);
+    payMethodBtns.forEach(b => b.classList.toggle(
+      "is-active", b.getAttribute("data-method") === paymentModel.paymentMethod
+    ));
+    if (cashPanel) cashPanel.hidden = paymentModel.paymentMethod !== "cash";
     updatePayChange();
   }
 
   function buildQuickCash(total) {
     if (!quickCashEl) return;
-    const values = new Set([total]);
-    for (const step of [500, 1000, 2000, 5000, 10000]) {
-      values.add(Math.ceil(total / step) * step);
-    }
-    const sorted = [...values].filter(v => v >= total && v > 0).sort((a, b) => a - b).slice(0, 5);
-    quickCashEl.innerHTML = sorted.map(v =>
+    quickCashEl.innerHTML = paymentModel.quickCashValues(total).map(v =>
       `<button type="button" class="btn btn-secondary btn-compact quick-cash-btn" data-cash="${v}">${money(v)}</button>`
     ).join("");
     quickCashEl.querySelectorAll("button").forEach(button => {
@@ -980,13 +943,15 @@ async function initCassa(signal) {
 
   // Aggiorna totale, riga sconto, tasti rapidi e resto in modo coerente
   function refreshPayment() {
-    const discount = currentDiscountCents();
-    const total = payableTotal();
+    paymentModel.setDiscountValue(discValueEl?.value);
+    const subtotal = cartModel.total();
+    const discount = paymentModel.discountCents(subtotal);
+    const total = paymentModel.payableTotal(subtotal);
     if (payTotalEl) payTotalEl.textContent = money(total);
     if (discLine) {
       discLine.hidden = discount <= 0;
       if (discount > 0) {
-        if (discLineLabel) discLineLabel.textContent = discType === "gift" ? "Omaggio" : "Sconto";
+        if (discLineLabel) discLineLabel.textContent = paymentModel.discountType === "gift" ? "Omaggio" : "Sconto";
         if (discLineAmount) discLineAmount.textContent = `− ${money(discount)}`;
       }
     }
@@ -996,21 +961,15 @@ async function initCassa(signal) {
 
   function updatePayChange() {
     if (!payChangeEl) return;
-    const total = payableTotal();
-    if (payMethod !== "cash" || total <= 0) {
-      payChangeEl.textContent = money(0);
-      payChangeEl.className = "diff-ok";
-      if (confirmPayBtn) confirmPayBtn.disabled = false;
-      return;
-    }
-    const received = eurToCents(cashReceivedEl?.value);
-    if (received === null || received < total) {
+    paymentModel.setCashReceivedValue(cashReceivedEl?.value);
+    const cash = paymentModel.cashState(cartModel.total());
+    if (!cash.canConfirm) {
       payChangeEl.textContent = "—";
       payChangeEl.className = "diff-minus";
       if (confirmPayBtn) confirmPayBtn.disabled = true;
       return;
     }
-    payChangeEl.textContent = money(received - total);
+    payChangeEl.textContent = money(cash.changeCents);
     payChangeEl.className = "diff-ok";
     if (confirmPayBtn) confirmPayBtn.disabled = false;
   }
@@ -1077,33 +1036,20 @@ async function initCassa(signal) {
 
   confirmPayBtn?.addEventListener("click", async () => {
     if (isPrinting) return;
-    const total = payableTotal();
     if (!checkoutAttempt) {
-      const body = {
-        items: Array.from(cart.values()).map(it => ({
-          product_id: it.product.id,
-          qty: it.qty,
-          expected_unit_price_cents: it.unit_price_cents,
-          selected_option_value_ids: it.selected_option_value_ids,
-          note: it.note,
-        })),
-        note: orderNoteEl?.value.trim() || null,
-        payment_method: payMethod,
-        discount: discountBody(),
-      };
-      if (payMethod === "cash") {
-        if (total <= 0) {
-          body.cash_received_cents = 0;
-        } else {
-          const received = eurToCents(cashReceivedEl?.value);
-          if (received === null || received < total) return uiAlert("Contanti ricevuti insufficienti.");
-          body.cash_received_cents = received;
-        }
-      }
-      setCheckoutAttempt({
+      paymentModel.setDiscountValue(discValueEl?.value);
+      paymentModel.setCashReceivedValue(cashReceivedEl?.value);
+      const built = paymentModel.buildAttempt({
+        items: cart.values(),
+        note: orderNoteEl?.value,
+        subtotalCents: cartModel.total(),
         requestId: EventOrderAttempts.newRequestId(),
-        payload: JSON.stringify(body),
       });
+      if (built.error) {
+        await uiAlert(built.error);
+        return;
+      }
+      setCheckoutAttempt(built.attempt);
     }
     try {
       isPrinting = true;

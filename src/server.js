@@ -3,31 +3,15 @@ require("dotenv").config({ quiet: true });
 const { createApp } = require("./app");
 const { config } = require("./config");
 const { closeDatabase } = require("./db");
+const { markShuttingDown } = require("./operational-status");
+const { createShutdownController } = require("./server-lifecycle");
 
 const app = createApp();
 let server;
-let shuttingDown = false;
+let shutdownController;
 
 function shutdown(signal) {
-  if (!server || shuttingDown) return;
-  shuttingDown = true;
-  console.log(`Ricevuto ${signal}: arresto ordinato in corso...`);
-
-  // Le richieste gia' avviate (in particolare stampa, backup e restore) devono
-  // terminare davvero prima di chiudere SQLite. Forzarne il socket non annulla
-  // necessariamente il lavoro asincrono sottostante.
-  server.close((serverError) => {
-    let exitCode = serverError ? 1 : 0;
-    if (serverError) console.error("Errore durante la chiusura HTTP:", serverError);
-    try {
-      closeDatabase();
-    } catch (err) {
-      exitCode = 1;
-      console.error("Errore durante la chiusura SQLite:", err);
-    }
-    process.exitCode = exitCode;
-  });
-  server.closeIdleConnections();
+  return shutdownController?.shutdown(signal) || false;
 }
 
 function startServer() {
@@ -36,8 +20,14 @@ function startServer() {
     const actualPort = server.address().port;
     console.log(`${config.APP_NAME} avviato su http://${config.HOST}:${actualPort}`);
   });
-  process.once("SIGINT", () => shutdown("SIGINT"));
-  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  shutdownController = createShutdownController({
+    server,
+    closeDatabase,
+    markShuttingDown,
+    timeoutMs: config.SHUTDOWN_TIMEOUT_MS,
+  });
+  process.once("SIGINT", shutdown.bind(null, "SIGINT"));
+  process.once("SIGTERM", shutdown.bind(null, "SIGTERM"));
   return server;
 }
 

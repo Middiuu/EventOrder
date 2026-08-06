@@ -161,6 +161,16 @@ test("flussi vendite, report, export, backup e annullo funzionano insieme", asyn
       });
       assert.equal(migrationBackup.status, 200);
       assert.equal(migrationBackup.buffer.length, backupRes.buffer.length);
+      const symlinkName = "eventorder-backup-20260806-120000.sqlite";
+      fs.symlinkSync(
+        path.join(harness.tempDir, "backups", backupCreated.json().backup_name),
+        path.join(harness.tempDir, "backups", symlinkName)
+      );
+      const symlinkBackup = await request({
+        url: `/api/reports/backup/${symlinkName}`,
+      });
+      assert.equal(symlinkBackup.status, 400);
+      assert.equal(symlinkBackup.json().error, "Backup non valido");
       const unsafeGet = await request({ url: "/api/reports/backup" });
       assert.equal(unsafeGet.status, 405);
       assert.equal(unsafeGet.headers.allow, "POST");
@@ -626,6 +636,28 @@ test("health check e request ID restano disponibili senza autenticazione", async
         version: "1.0.0",
         schema_version: 11,
       });
+
+      const live = await request({ url: "/api/health/live" });
+      assert.equal(live.status, 200);
+      assert.deepEqual(live.json(), { status: "ok", version: "1.0.0" });
+
+      const ready = await request({ url: "/api/health/ready" });
+      assert.equal(ready.status, 200);
+      assert.equal(ready.json().checks.startup, "ready");
+      assert.equal(ready.json().checks.database, "ok");
+      assert.equal(ready.json().checks.maintenance, "idle");
+      assert.equal(ready.json().checks.disk, "ok");
+
+      const maintenance = require("../src/maintenance");
+      assert.equal(maintenance.beginRestore(), true);
+      try {
+        const unavailable = await request({ url: "/api/health/ready" });
+        assert.equal(unavailable.status, 503);
+        assert.equal(unavailable.json().checks.maintenance, "restore");
+        assert.equal((await request({ url: "/api/health/live" })).status, 200);
+      } finally {
+        maintenance.endRestore();
+      }
 
       const correlated = await request({
         url: "/api/config",

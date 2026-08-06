@@ -15,11 +15,13 @@ const { maintenanceMiddleware } = require("./maintenance");
 const system = require("./routes/system");
 const { requestIdMiddleware, log, errorFields } = require("./observability");
 const { auditMiddleware } = require("./audit");
+const { markReady } = require("./operational-status");
 
 function createApp(options = {}) {
   const printTicket = options.printTicket || printer.printTicket;
 
   initDb();
+  markReady();
 
   const app = express();
   app.disable("x-powered-by");

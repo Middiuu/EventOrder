@@ -19,6 +19,8 @@ function clearAppModules() {
     path.join(PROJECT_ROOT, "src/observability.js"),
     path.join(PROJECT_ROOT, "src/audit.js"),
     path.join(PROJECT_ROOT, "src/maintenance.js"),
+    path.join(PROJECT_ROOT, "src/operational-status.js"),
+    path.join(PROJECT_ROOT, "src/server-lifecycle.js"),
     path.join(PROJECT_ROOT, "src/printer.js"),
     path.join(PROJECT_ROOT, "src/pending-sales.js"),
     path.join(PROJECT_ROOT, "src/idempotency.js"),
@@ -103,8 +105,11 @@ async function requestHttp(baseUrl, { method = "GET", url = "/", headers = {}, b
 }
 
 function createHarness(options = {}) {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-app-"));
-  const dbPath = path.join(tempDir, "pos.sqlite");
+  const ownsTempDir = !options.dbPath;
+  const tempDir = ownsTempDir
+    ? fs.mkdtempSync(path.join(os.tmpdir(), "eventorder-app-"))
+    : path.dirname(options.dbPath);
+  const dbPath = options.dbPath || path.join(tempDir, "pos.sqlite");
   const app = loadApp({ ...options, dbPath });
 
   return {
@@ -143,7 +148,7 @@ function createHarness(options = {}) {
         delete process.env[key];
       }
       clearAppModules();
-      fs.rmSync(tempDir, { recursive: true, force: true });
+      if (ownsTempDir) fs.rmSync(tempDir, { recursive: true, force: true });
     },
   };
 }

@@ -8,6 +8,7 @@
 - `npm run coverage` enforces 90% lines, 70% branches, and 90% functions for `src/**`.
 - `npm run test:e2e` runs the Playwright critical flows.
 - `npm run test:scale` and `npm run test:fault` run the dedicated scale and recovery subsets.
+- `npm run test:restore-drill` executes backup, restore, restart, and invariant checks on a temporary database.
 
 ## Active user decisions
 
